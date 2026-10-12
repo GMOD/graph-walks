@@ -14,7 +14,7 @@ import {
 } from './walkRows.ts'
 
 import type { DecodedChunk } from './walkFormat2.ts'
-import type { WalkHeader, WalkRow } from './walkRows.ts'
+import type { BudgetNames, WalkHeader, WalkRow } from './walkRows.ts'
 
 // A window reads whole chunks and keeps the steps on it, so a narrow window
 // reads several times what it keeps: 464 haplotypes across the 1.5 kb ABCA7
@@ -115,6 +115,8 @@ export interface WalkCutOptions {
   links?: boolean
   // keep the bases of format 1 nodes written with --sequences
   sequences?: boolean
+  // how a zoom-in notice names the budgets
+  budgetNames?: BudgetNames
 }
 
 export type WalkReaderHeader = WalkHeader & { chunk: number; lookback: number }
@@ -226,6 +228,7 @@ export class WalkReader {
           byteBudget,
           region,
           chunk,
+          opts.budgetNames,
         )
       : undefined
     if (tooLarge) {
@@ -315,6 +318,7 @@ export class WalkReader {
         region,
         chunk,
         keep !== undefined,
+        opts.budgetNames,
       )
       if (error) {
         throw error

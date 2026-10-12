@@ -1,4 +1,5 @@
 export {
+  BUDGET_NAMES,
   WalkGraph,
   chunkQueryStart,
   decodeSteps,
@@ -11,6 +12,7 @@ export {
   walkRowName,
 } from './walkRows.ts'
 export type {
+  BudgetNames,
   WalkChunk,
   WalkFragment,
   WalkHeader,

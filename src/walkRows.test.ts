@@ -299,7 +299,7 @@ describe('the byte budget', () => {
       chunk,
     ))!
     expect(error.message).toBe(
-      'Too much graph here to fetch (11.0 MB against the byte budget of 5.0 MB)',
+      'Too much graph here to fetch (11.0 MB against a byte budget of 5.0 MB)',
     )
   })
 })

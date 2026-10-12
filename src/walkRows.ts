@@ -651,6 +651,17 @@ function endpoint(line: string, from: number, to: number) {
  * haplotype is also offered fewer where the reference and one haplotype, at
  * the walks' average steps, would fit the whole window.
  */
+// How a notice names the budgets, such as the config slots that set them
+export interface BudgetNames {
+  steps: string
+  bytes: string
+}
+
+export const BUDGET_NAMES: BudgetNames = {
+  steps: 'the step budget',
+  bytes: 'a byte budget of',
+}
+
 export function stepBudgetError(
   rows: WalkRow[],
   stepBudget: number,
@@ -658,6 +669,7 @@ export function stepBudgetError(
   window: { start: number; end: number },
   chunk: number,
   filtered: boolean,
+  names = BUDGET_NAMES,
 ) {
   let total = 0
   const perChunk = new Map<number, number>()
@@ -686,7 +698,7 @@ export function stepBudgetError(
   return new RegionTooLargeError(
     fitsBp > 0
       ? `Zoom in to about ${bpString(fitsBp)}${fewerFit ? ', or choose fewer haplotypes,' : ''} to see the graph`
-      : `Too many haplotype steps here to draw ${filtered ? 'these haplotypes' : 'every haplotype'} (${read.toLocaleString()} steps read, over ${readPerKept} × the step budget of ${stepBudget.toLocaleString()}); choose fewer haplotypes`,
+      : `Too many haplotype steps here to draw ${filtered ? 'these haplotypes' : 'every haplotype'} (${read.toLocaleString()} steps read, over ${readPerKept} × ${names.steps} of ${stepBudget.toLocaleString()}); choose fewer haplotypes`,
     budget,
     windowBp,
     Math.max(fitsBp, 1),
@@ -731,6 +743,7 @@ export async function byteBudgetError(
   budget: number,
   window: { start: number; end: number },
   chunk: number,
+  names = BUDGET_NAMES,
 ) {
   const bytes = await bytesTo(window.end)
   if (bytes <= budget) {
@@ -754,7 +767,7 @@ export async function byteBudgetError(
   return new RegionTooLargeError(
     fitsBp > 0
       ? `Zoom in to about ${bpString(fitsBp)} to see the graph`
-      : `Too much graph here to fetch (${megabytes(least ?? bytes)} against the byte budget of ${megabytes(budget)})`,
+      : `Too much graph here to fetch (${megabytes(least ?? bytes)} against ${names.bytes} ${megabytes(budget)})`,
     budget,
     windowBp,
     Math.max(fitsBp, 1),
