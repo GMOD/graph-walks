@@ -1,0 +1,64 @@
+{
+  "name": "@jbrowse/graph-walks",
+  "version": "0.1.0",
+  "description": "Read gfa-to-tabix walk files by range requests and cut a window of a pangenome graph: the reference, every haplotype's walk through it, and the nodes and links they visit",
+  "license": "MIT",
+  "author": {
+    "name": "Colin Diesh",
+    "email": "colin.diesh@gmail.com",
+    "url": "https://github.com/cmdcolin"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/GMOD/graph-walks.git"
+  },
+  "keywords": [
+    "pangenome",
+    "graph",
+    "gfa",
+    "tabix",
+    "haplotype"
+  ],
+  "type": "module",
+  "packageManager": "pnpm@11.20.0",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      ".": {
+        "types": "./esm/index.d.ts",
+        "default": "./esm/index.js"
+      }
+    }
+  },
+  "files": [
+    "esm"
+  ],
+  "scripts": {
+    "build": "rm -rf esm && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint --report-unused-disable-directives --max-warnings 0",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "prepack": "pnpm build",
+    "preversion": "pnpm lint && pnpm format:check && pnpm typecheck && pnpm test && pnpm build",
+    "postversion": "git push --follow-tags"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@gmod/tabix": "^3.10.1",
+    "eslint": "^10.12.0",
+    "eslint-plugin-import-x": "^4.17.1",
+    "generic-filehandle2": "^2.5.0",
+    "prettier": "^3.9.10",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.71.1",
+    "vitest": "^5.0.3"
+  }
+}

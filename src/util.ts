@@ -1,0 +1,74 @@
+// A cut's tables: what a GFA of S lines tagged LN/SN/SO/SR, L lines and W
+// lines states, every link end and walk step an index into the node table.
+// @jbrowse/bandage-core's GraphTables is the same shape.
+export interface GraphTables {
+  nodes: {
+    names: string[]
+    lengths: Int32Array
+    refs: Int32Array
+    starts: Float64Array
+    ranks: Int32Array
+    refNames: string[]
+  }
+  links: {
+    from: Int32Array
+    to: Int32Array
+    strands: Uint8Array
+  }
+  walks: {
+    names: string[]
+    starts: Float64Array
+    ends: Float64Array
+    offsets: Int32Array
+    steps: Int32Array
+    reversed: Uint8Array
+  }
+}
+
+/**
+ * A window too large to cut. `regionTooLarge` and the name are what JBrowse
+ * and @jbrowse/bandage-core read a zoom-in notice by; `fitsBp` is about how
+ * wide a window would fit.
+ */
+export class RegionTooLargeError extends Error {
+  readonly regionTooLarge = true
+  override name = 'NodeLimitError'
+
+  constructor(
+    message: string,
+    readonly limit: number,
+    readonly windowBp: number,
+    readonly fitsBp: number,
+  ) {
+    super(message)
+  }
+}
+
+const SEP = '#'
+
+export function panSNHaplotype(refName: string) {
+  const parts = refName.split(SEP)
+  return parts.length >= 3 ? `${parts[0]}${SEP}${parts[1]}` : undefined
+}
+
+export function panSNMatchesPrefix(
+  refName: string,
+  prefix: string | undefined,
+) {
+  return (
+    prefix !== undefined &&
+    (refName === prefix || refName.startsWith(prefix + SEP))
+  )
+}
+
+const precise = (n: number) => Number.parseFloat(n.toPrecision(3))
+
+// `1.5Kbp`, `12Mbp`, `850bp`, as JBrowse writes a span
+export function bpString(bp: number) {
+  const mb = precise(bp / 1_000_000)
+  return mb >= 1
+    ? `${mb.toLocaleString('en-US')}Mbp`
+    : bp >= 1000
+      ? `${precise(bp / 1000).toLocaleString('en-US')}Kbp`
+      : `${Math.floor(bp)}bp`
+}
