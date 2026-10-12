@@ -439,7 +439,11 @@ export class WalkGraph {
   private readonly format2: Format2Chunk[] = []
   private readonly t: number[] = []
 
-  constructor(private window: WalkWindow) {}
+  private readonly window: WalkWindow
+
+  constructor(window: WalkWindow) {
+    this.window = window
+  }
 
   addNode(line: string) {
     const t = tabs(line, 8, this.t)

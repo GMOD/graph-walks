@@ -132,10 +132,13 @@ export class WalkReader {
 
   // `chunkWithoutHeader` is the chunk size of a walk file from before
   // gfa-to-tabix 0.4.0, whose header does not state one
-  constructor(
-    private files: WalkFileSet,
-    private chunkWithoutHeader = 65536,
-  ) {}
+  private readonly files: WalkFileSet
+  private readonly chunkWithoutHeader: number
+
+  constructor(files: WalkFileSet, chunkWithoutHeader = 65536) {
+    this.files = files
+    this.chunkWithoutHeader = chunkWithoutHeader
+  }
 
   // The header, read once for every caller: one caller giving up stops only
   // its own wait, and a read that fails is tried again by the next caller

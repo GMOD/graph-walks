@@ -34,13 +34,20 @@ export class RegionTooLargeError extends Error {
   readonly regionTooLarge = true
   override name = 'NodeLimitError'
 
+  readonly limit: number
+  readonly windowBp: number
+  readonly fitsBp: number
+
   constructor(
     message: string,
-    readonly limit: number,
-    readonly windowBp: number,
-    readonly fitsBp: number,
+    limit: number,
+    windowBp: number,
+    fitsBp: number,
   ) {
     super(message)
+    this.limit = limit
+    this.windowBp = windowBp
+    this.fitsBp = fitsBp
   }
 }
 
