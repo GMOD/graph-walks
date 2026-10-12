@@ -1,4 +1,4 @@
-import { decodeChunk, pieceLinks } from './walkFormat2.ts'
+import { decodeChunk, pieceLinks } from './walkChunk.ts'
 import {
   WalkGraph,
   byteBudgetError,
@@ -6,14 +6,12 @@ import {
   joinPieces,
   keptStepsError,
   lookbackChunks,
-  parseWalkRow,
   stepBudgetError,
   walkCut,
   walkHeader,
-  walkRowName,
 } from './walkRows.ts'
 
-import type { DecodedChunk } from './walkFormat2.ts'
+import type { DecodedChunk } from './walkChunk.ts'
 import type { BudgetNames, WalkHeader, WalkRow } from './walkRows.ts'
 
 // A window reads whole chunks and keeps the steps on it, so a narrow window
@@ -51,12 +49,9 @@ export interface TabixSource {
   ): Promise<number>
 }
 
-// Format 1 is three files, `<prefix>.<sample>.walks/nodes/links.bed.gz`;
-// format 2 is the walk file alone
-export interface WalkFileSet {
-  walks: TabixSource
-  nodes?: TabixSource
-  links?: TabixSource
+// A walk file gfa-to-tabix 0.12 or earlier wrote, which the reader refuses
+export class WalkFormatError extends Error {
+  override name = 'WalkFormatError'
 }
 
 // @gmod/tabix loops forever on a NaN end and reads nothing for a NaN start
@@ -67,17 +62,6 @@ function checkRange(refName: string, start: number, end: number) {
       `${refName}:${start}-${end} is not a finite range to query the graph's index for`,
     )
   }
-}
-
-function getLines(
-  file: TabixSource,
-  refName: string,
-  start: number,
-  end: number,
-  opts: { signal?: AbortSignal; lineCallback: (line: string) => void },
-) {
-  checkRange(refName, start, end)
-  return file.getLines(refName, start, end, opts)
 }
 
 // Settles like `promise` unless `signal` aborts first
@@ -111,9 +95,9 @@ export interface WalkCutOptions {
   // limit
   byteBudget?: number
   context?: number
-  // false leaves the link file unread, for a caller that draws no edges
+  // false lists no links, for a caller that draws no edges
   links?: boolean
-  // keep the bases of format 1 nodes written with --sequences
+  // keep the bases of the nodes, from a file written with --sequences
   sequences?: boolean
   // how a zoom-in notice names the budgets
   budgetNames?: BudgetNames
@@ -122,33 +106,34 @@ export interface WalkCutOptions {
 export type WalkReaderHeader = WalkHeader & { chunk: number; lookback: number }
 
 /**
- * A walk-indexed graph's three files, read a window at a time: one read of
- * each over whole chunks, from the lookback chunks before the window to its
- * end. The indexes first estimate the bytes those reads fetch, and a window
- * past the byte budget reads no row. Only the walks `keep` accepts are
- * decoded. The step budget bounds the steps the cut keeps, and rows holding
- * READ_STEPS_PER_KEPT times as many stop the reads, which go out together.
+ * A `gfa-to-tabix --walks` file, `<prefix>.<sample>.walks.bed.gz`, read a
+ * window at a time: one read over whole chunks, from the lookback chunks
+ * before the window to its end, each chunk decoded once. The index first
+ * estimates the bytes the read fetches, and a window past the byte budget
+ * reads no row. Only the walks `keep` accepts are decoded. The step budget
+ * bounds the steps the cut keeps, and rows holding READ_STEPS_PER_KEPT times
+ * as many stop the read.
  */
 export class WalkReader {
   private headerRead: Promise<WalkReaderHeader> | undefined
+  private readonly walks: TabixSource
 
-  // `chunkWithoutHeader` is the chunk size of a walk file from before
-  // gfa-to-tabix 0.4.0, whose header does not state one
-  private readonly files: WalkFileSet
-  private readonly chunkWithoutHeader: number
-
-  constructor(files: WalkFileSet, chunkWithoutHeader = 65536) {
-    this.files = files
-    this.chunkWithoutHeader = chunkWithoutHeader
+  constructor(walks: TabixSource) {
+    this.walks = walks
   }
 
   // The header, read once for every caller: one caller giving up stops only
   // its own wait, and a read that fails is tried again by the next caller
   header(opts: { signal?: AbortSignal } = {}) {
     if (!this.headerRead) {
-      const read = this.files.walks.getHeaderLines().then(lines => {
+      const read = this.walks.getHeaderLines().then(lines => {
         const header = walkHeader(lines)
-        const chunk = header.chunk ?? this.chunkWithoutHeader
+        if (header.format !== 2) {
+          throw new WalkFormatError(
+            'This walk file is format 1, from gfa-to-tabix 0.12 or earlier; rebuild it with gfa-to-tabix 1.0 or later',
+          )
+        }
+        const chunk = header.chunk ?? 65536
         return {
           ...header,
           chunk,
@@ -167,7 +152,7 @@ export class WalkReader {
 
   // The reference sequences the walk file holds windows on
   referenceSequences(opts: { signal?: AbortSignal } = {}) {
-    return this.files.walks.getReferenceSequenceNames(opts)
+    return this.walks.getReferenceSequenceNames(opts)
   }
 
   async queryStart(start: number, opts: { signal?: AbortSignal } = {}) {
@@ -186,39 +171,20 @@ export class WalkReader {
       context = WALK_CONTEXT,
       stepBudget = Infinity,
       byteBudget = Infinity,
+      links = true,
     } = opts
-    const { chunk, lookback, format } = await this.header({ signal })
-    // format 2 holds the whole cut in its walk file
-    const format2 = format === 2
-    const nodeFile = this.files.nodes
-    const linkFile = opts.links === false ? undefined : this.files.links
-    if (!format2 && !nodeFile) {
-      throw new Error(
-        'A format 1 walk file needs its node file: open it with `nodes`',
-      )
-    }
-    const links = format2 ? opts.links !== false : linkFile !== undefined
+    const { chunk, lookback } = await this.header({ signal })
     const from = chunkQueryStart(region.start, chunk, lookback)
-    const files = format2
-      ? [this.files.walks]
-      : [this.files.walks, nodeFile!, ...(linkFile ? [linkFile] : [])]
+    const bytesForRegions = this.walks.bytesForRegions?.bind(this.walks)
     const budgeted =
-      Number.isFinite(byteBudget) &&
-      files.every(file => file.bytesForRegions !== undefined)
-    const bytesFor = async (spans: { start: number; end: number }[]) => {
-      if (!budgeted) {
-        return 0
-      }
-      const sizes = await Promise.all(
-        files.map(file =>
-          file.bytesForRegions!(
+      Number.isFinite(byteBudget) && bytesForRegions !== undefined
+    const bytesFor = async (spans: { start: number; end: number }[]) =>
+      budgeted
+        ? bytesForRegions(
             spans.map(span => ({ refName, ...span })),
             { signal },
-          ),
-        ),
-      )
-      return sizes.reduce((sum, bytes) => sum + bytes, 0)
-    }
+          )
+        : 0
     const tooLarge = budgeted
       ? await byteBudgetError(
           async end => {
@@ -249,36 +215,16 @@ export class WalkReader {
       context,
       sequences: opts.sequences,
     })
-    const read = (
-      file: TabixSource,
-      lineCallback: (line: string) => void,
-      start = from,
-      end = region.end,
-    ) =>
-      getLines(file, refName, start, end, {
-        signal: reads.signal,
-        lineCallback,
-      })
-    const addRow = (line: string) => {
-      if (keep === undefined || keep(walkRowName(line))) {
-        rows.push(parseWalkRow(line))
-      }
-    }
-    const addNode = (line: string) => {
-      graph.addNode(line)
-    }
-    const addLink = (line: string) => {
-      graph.addLink(line)
-    }
     const decoded = new Set<number>()
     const ends: DecodedChunk['ends'] = []
-    // Format 2: each chunk read is decoded once, into the rows, nodes and
-    // links format 1 would have filed, and the links between pieces read
-    const readChunks = async (start = from, end = region.end) => {
+    // each chunk read is decoded once, into its rows, nodes and the links
+    // between pieces
+    const readChunks = async (start: number, end: number) => {
+      checkRange(refName, start, end)
       const byChunk = new Map<number, string[][]>()
-      await read(
-        this.files.walks,
-        line => {
+      await this.walks.getLines(refName, start, end, {
+        signal: reads.signal,
+        lineCallback: line => {
           const cols = line.split('\t')
           const cs = +cols[1]!
           const held = byChunk.get(cs)
@@ -288,20 +234,19 @@ export class WalkReader {
             byChunk.set(cs, [cols])
           }
         },
-        start,
-        end,
-      )
+      })
       for (const [cs, chunkRows] of byChunk) {
         if (decoded.has(cs)) {
           continue
         }
         decoded.add(cs)
-        const chunkCut = decodeChunk(chunkRows, keep)
+        const chunkCut = decodeChunk(chunkRows, keep, opts.sequences)
         rows.push(...chunkCut.rows)
         for (const [id, node] of chunkCut.nodes) {
           graph.placeNode(id, node)
         }
-        graph.addFormat2Chunk(chunkCut.chunk)
+        graph.addSequences(chunkCut.sequences)
+        graph.addChunk(chunkCut.chunk)
         ends.push(...chunkCut.ends)
       }
       if (links) {
@@ -310,8 +255,9 @@ export class WalkReader {
         }
       }
     }
-    const checkSteps = () => {
-      const error = stepBudgetError(
+    try {
+      await readChunks(from, region.end)
+      const tooManyRead = stepBudgetError(
         rows,
         stepBudget,
         READ_STEPS_PER_KEPT,
@@ -320,18 +266,9 @@ export class WalkReader {
         keep !== undefined,
         opts.budgetNames,
       )
-      if (error) {
-        throw error
+      if (tooManyRead) {
+        throw tooManyRead
       }
-    }
-    try {
-      await (format2
-        ? readChunks().then(checkSteps)
-        : Promise.all([
-            read(this.files.walks, addRow).then(checkSteps),
-            read(nodeFile!, addNode),
-            ...(linkFile ? [read(linkFile, addLink)] : []),
-          ]))
       // the chunks read, first to last, which a follow widens to the
       // farthest chunk a cut-off walk goes on in, so the reference between
       // is read too
@@ -358,17 +295,7 @@ export class WalkReader {
         }
         first = Math.min(first, ...starts)
         last = Math.max(last, ...starts)
-        await Promise.all(
-          spans.flatMap(({ start, end }) =>
-            format2
-              ? [readChunks(start, end)]
-              : [
-                  read(this.files.walks, addRow, start, end),
-                  read(nodeFile!, addNode, start, end),
-                  ...(linkFile ? [read(linkFile, addLink, start, end)] : []),
-                ],
-          ),
-        )
+        await Promise.all(spans.map(({ start, end }) => readChunks(start, end)))
         cut = walkCut(joinPieces(rows), graph.nodes, refName)
       }
     } catch (error) {

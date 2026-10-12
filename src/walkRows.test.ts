@@ -5,78 +5,50 @@ import {
   chunkQueryStart,
   joinPieces,
   lookbackChunks,
-  parseWalkRow,
   stepBudgetError,
   walkCut,
   walkHeader,
   walkNameFilter,
-  walkRowName,
 } from './walkRows.ts'
 
 import type { WalkRow } from './walkRows.ts'
 
-// steps as the builder writes them: id * 2 + reversed, as deltas after the
-// first
-function encode(steps: [number, boolean][]) {
-  let prev = 0
-  return steps
-    .map(([id, reversed], i) => {
-      const value = (i === 0 ? id : id - prev) * 2 + (reversed ? 1 : 0)
-      prev = id
-      return value
-    })
-    .join(',')
-}
-
-function walkLine(
+// A decoded walk row: a piece of `name` from `hapOffset`, through `steps`
+function walkRow(
   name: string,
   piece: number,
   hapOffset: number,
   steps: [number, boolean][],
-  chunkStart = 0,
-) {
-  return [
-    'GRCh38#0#chr1',
-    chunkStart,
-    chunkStart + 1,
+  more: Partial<WalkRow> = {},
+): WalkRow {
+  return {
+    chunkStart: 0,
     name,
-    0,
+    fragStart: 0,
     hapOffset,
     piece,
-    steps.length,
-    encode(steps),
-  ].join('\t')
+    n: steps.length,
+    steps: {
+      ids: Int32Array.from(steps, ([id]) => id),
+      rev: Uint8Array.from(steps, ([, reversed]) => (reversed ? 1 : 0)),
+    },
+    ...more,
+  }
 }
 
 const forward = (...ids: number[]) =>
   ids.map(id => [id, false] as [number, boolean])
 
-test('a walk row is named and parsed without reading past its steps', () => {
-  const line = `${walkLine('HG002#1#chr1', 3, 500, [
-    [7, false],
-    [9, true],
-    [8, false],
-  ])}\tXX:Z:later`
-  expect(walkRowName(line)).toBe('HG002#1#chr1')
-  const row = parseWalkRow(line)
-  expect(row).toMatchObject({ name: 'HG002#1#chr1', piece: 3, n: 3 })
-  const [run] = joinPieces([row])
-  expect([...run!.ids]).toEqual([7, 9, 8])
-  expect([...run!.rev]).toEqual([0, 1, 0])
-})
-
-test('a row names the chunks its path goes on in, and a run takes its ends', () => {
+test('a run takes the chunks its first and last rows say its path goes on in', () => {
   const rows = [
-    `${walkLine('HG002#1#chr1', 0, 0, forward(10, 11))}\tnx:i:1000`,
-    `${walkLine('HG002#1#chr1', 1, 300, forward(12))}\tpv:i:0\tXX:Z:later\tnx:Z:GRCh38#0#chr2:5000`,
-  ].map(parseWalkRow)
-  expect(rows.map(r => [r.prev, r.next])).toEqual([
-    [undefined, { refName: 'GRCh38#0#chr1', start: 1000 }],
-    [
-      { refName: 'GRCh38#0#chr1', start: 0 },
-      { refName: 'GRCh38#0#chr2', start: 5000 },
-    ],
-  ])
+    walkRow('HG002#1#chr1', 0, 0, forward(10, 11), {
+      next: { refName: 'GRCh38#0#chr1', start: 1000 },
+    }),
+    walkRow('HG002#1#chr1', 1, 300, forward(12), {
+      prev: { refName: 'GRCh38#0#chr1', start: 0 },
+      next: { refName: 'GRCh38#0#chr2', start: 5000 },
+    }),
+  ]
   const [run] = joinPieces(rows)
   expect([run!.prev, run!.next]).toEqual([
     undefined,
@@ -86,10 +58,10 @@ test('a row names the chunks its path goes on in, and a run takes its ends', () 
 
 test('continuation rows join by piece index, and a missing piece splits the walk', () => {
   const rows = [
-    walkLine('HG002#1#chr1', 3, 900, forward(30)),
-    walkLine('HG002#1#chr1', 1, 300, forward(12, 13)),
-    walkLine('HG002#1#chr1', 0, 100, forward(10, 11)),
-  ].map(parseWalkRow)
+    walkRow('HG002#1#chr1', 3, 900, forward(30)),
+    walkRow('HG002#1#chr1', 1, 300, forward(12, 13)),
+    walkRow('HG002#1#chr1', 0, 100, forward(10, 11)),
+  ]
   const runs = joinPieces(rows)
   expect(runs.map(r => [r.hapOffset, [...r.ids]])).toEqual([
     [100, [10, 11, 12, 13]],
@@ -122,7 +94,7 @@ describe('the step budget', () => {
       hapOffset: 0,
       piece: 0,
       n,
-      enc: '',
+      steps: { ids: new Int32Array(n), rev: new Uint8Array(n) },
       chunkStart,
     }))
 
@@ -313,10 +285,8 @@ function graph() {
     end: 250,
     context: 0,
   })
-  const node = (id: number, rank: number, ref: string, start: number) => {
-    g.addNode(
-      `GRCh38#0#chr1\t0\t1\t${id}\t${rank}\t${ref}\t${start}\t${start + 100}\tLN:i:100\tSQ:Z:${'A'.repeat(100)}`,
-    )
+  const node = (id: number, rank: number, refName: string, start: number) => {
+    g.placeNode(id, { rank, refName, start, end: start + 100 })
   }
   node(1, 0, 'GRCh38#0#chr1', 0)
   node(2, 0, 'GRCh38#0#chr1', 100)
@@ -334,12 +304,12 @@ function graph() {
     [5, 3],
     [6, 1],
   ]) {
-    g.addLink(`GRCh38#0#chr1\t0\t1\t${a}+\t${b}+\t...`)
+    g.addLinkEnds(a! * 2, b! * 2)
   }
   return g
 }
 
-test('node rows are read once, past their eighth column not at all', () => {
+test('a node is placed once', () => {
   const g = graph()
   expect(g.nodes.size).toBe(6)
   expect(g.nodes.get(2)).toEqual({
@@ -353,15 +323,13 @@ test('node rows are read once, past their eighth column not at all', () => {
 
 test('a cut is written as the GFA its tables stand for', () => {
   const g = graph()
-  const runs = joinPieces(
-    [
-      walkLine('GRCh38#0#chr1', 0, 0, forward(1, 2, 3, 4)),
-      // brings allele 5 into the cut between two steps on the window
-      walkLine('HG002#1#chr1', 0, 0, forward(2, 5, 3)),
-      // enters at 3 from 1 through allele 5
-      walkLine('HG002#2#chr1', 0, 1000, forward(6, 1, 5, 3, 4)),
-    ].map(parseWalkRow),
-  )
+  const runs = joinPieces([
+    walkRow('GRCh38#0#chr1', 0, 0, forward(1, 2, 3, 4)),
+    // brings allele 5 into the cut between two steps on the window
+    walkRow('HG002#1#chr1', 0, 0, forward(2, 5, 3)),
+    // enters at 3 from 1 through allele 5
+    walkRow('HG002#2#chr1', 0, 1000, forward(6, 1, 5, 3, 4)),
+  ])
   const { kept, fragments } = walkCut(runs, g.nodes, 'GRCh38#0#chr1')
   expect([...kept].sort()).toEqual([1, 2, 3, 5])
   expect(
@@ -390,22 +358,20 @@ test('a cut is written as the GFA its tables stand for', () => {
 
 test('a walk leaving the window is followed to where it rejoins the reference', () => {
   const g = graph()
-  const runs = joinPieces(
-    [
-      walkLine('GRCh38#0#chr1', 0, 0, forward(1, 2, 3, 4)),
-      // leaves at 2 through allele 5 and rejoins at 4
-      walkLine('HG002#1#chr1', 0, 0, forward(1, 2, 5, 4)),
-      // deletes 3, from 2 straight to 4
-      walkLine('HG002#2#chr1', 0, 0, forward(1, 2, 4)),
-      // enters at 3 from 1 through allele 6, and runs on back into allele 5,
-      // which HG002#1 brings into the cut
-      walkLine('HG002#3#chr1', 0, 0, forward(5, 1, 6, 3)),
-      // leaves at 2 through allele 5 and ends there
-      walkLine('HG002#4#chr1', 0, 0, forward(2, 5)),
-      // starts on allele 6 and enters at 3
-      walkLine('HG002#5#chr1', 0, 0, forward(6, 3)),
-    ].map(parseWalkRow),
-  )
+  const runs = joinPieces([
+    walkRow('GRCh38#0#chr1', 0, 0, forward(1, 2, 3, 4)),
+    // leaves at 2 through allele 5 and rejoins at 4
+    walkRow('HG002#1#chr1', 0, 0, forward(1, 2, 5, 4)),
+    // deletes 3, from 2 straight to 4
+    walkRow('HG002#2#chr1', 0, 0, forward(1, 2, 4)),
+    // enters at 3 from 1 through allele 6, and runs on back into allele 5,
+    // which HG002#1 brings into the cut
+    walkRow('HG002#3#chr1', 0, 0, forward(5, 1, 6, 3)),
+    // leaves at 2 through allele 5 and ends there
+    walkRow('HG002#4#chr1', 0, 0, forward(2, 5)),
+    // starts on allele 6 and enters at 3
+    walkRow('HG002#5#chr1', 0, 0, forward(6, 3)),
+  ])
   const { kept, fragments } = walkCut(runs, g.nodes, 'GRCh38#0#chr1')
   expect([...kept].sort()).toEqual([1, 2, 3, 4, 5, 6])
   expect(
@@ -422,23 +388,19 @@ test('a walk leaving the window is followed to where it rejoins the reference', 
 
 test('a walk is not followed to another reference sequence', () => {
   const g = graph()
-  g.addNode('GRCh38#0#chr1\t0\t1\t7\t0\tGRCh38#0#chr2\t0\t100\tLN:i:100')
-  const runs = joinPieces(
-    [walkLine('HG002#1#chr1', 0, 0, forward(2, 3, 5, 7))].map(parseWalkRow),
-  )
+  g.placeNode(7, { rank: 0, refName: 'GRCh38#0#chr2', start: 0, end: 100 })
+  const runs = joinPieces([walkRow('HG002#1#chr1', 0, 0, forward(2, 3, 5, 7))])
   const { fragments } = walkCut(runs, g.nodes, 'GRCh38#0#chr1')
   expect(fragments.map(f => [...f.ids])).toEqual([[2, 3, 5]])
 })
 
 test('the reference walk is written first, whatever order the rows came in', () => {
   const g = graph()
-  const runs = joinPieces(
-    [
-      walkLine('HG002#2#chr1', 0, 0, forward(2, 3)),
-      walkLine('GRCh38#0#chr1', 0, 0, forward(1, 2, 3, 4)),
-      walkLine('HG002#1#chr1', 0, 0, forward(2, 5, 3)),
-    ].map(parseWalkRow),
-  )
+  const runs = joinPieces([
+    walkRow('HG002#2#chr1', 0, 0, forward(2, 3)),
+    walkRow('GRCh38#0#chr1', 0, 0, forward(1, 2, 3, 4)),
+    walkRow('HG002#1#chr1', 0, 0, forward(2, 5, 3)),
+  ])
   const { kept, fragments } = walkCut(runs, g.nodes, 'GRCh38#0#chr1')
   expect(g.tables(kept, fragments).walks.names).toEqual([
     'GRCh38#0#chr1',

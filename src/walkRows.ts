@@ -1,33 +1,22 @@
 import { RegionTooLargeError, bpString, panSNMatchesPrefix } from './util.ts'
-import { placeAndLink } from './walkFormat2.ts'
+import { placeAndLink } from './walkChunk.ts'
 
 import type { GraphTables } from './util.ts'
-import type { Format2Chunk } from './walkFormat2.ts'
+import type { Chunk } from './walkChunk.ts'
 
-// A walk-indexed graph is three tabix files filed under fixed chunks of each
-// reference: walk rows, node rows and link rows. A row's first three columns
-// name its chunk, either as the whole chunk or as its first base.
-//
-//   walks: anchor cs ce sample#hap#contig fragStart hapOffset piece nsteps steps
-//   nodes: anchor cs ce id rank stableName start end [tags]
-//   links: anchor cs ce src+ tgt- [both endpoints' coordinates]
-//
-// Steps are node-id deltas with the orientation in the low bit,
-// comma-separated, the first of each row absolute. A haplotype path's piece in
-// one chunk is cut into rows of at most a fixed number of steps, and each row
-// takes the next piece index, so consecutive indices of one path join. From
-// gfa-to-tabix 0.6.0 a row ends with `pv:i:` and `nx:i:`, the start of the
-// chunk its path's piece before and after it is filed under (`pv:Z:seq:start`
-// on another reference sequence), with no tag at either end of the path.
+// A walk row of gfa-to-tabix's format 2, its steps decoded with its chunk
+// (walkFormat2.ts). A haplotype path is cut into pieces, one per chunk it
+// passes, and each piece's row takes the next piece index, so consecutive
+// indices of one path join. A row names the chunk its path's piece before and
+// after it is filed under, `prev` and `next`, with none at either end of the
+// path.
 export interface WalkRow {
   name: string
   fragStart: number
   hapOffset: number
   piece: number
   n: number
-  enc: string
-  // a format-2 row's steps, decoded with its chunk
-  steps?: { ids: Int32Array; rev: Uint8Array }
+  steps: { ids: Int32Array; rev: Uint8Array }
   chunkStart: number
   prev?: WalkChunk
   next?: WalkChunk
@@ -52,51 +41,13 @@ export interface WalkWindow {
   start: number
   end: number
   context: number
-  // keep each node's bases, from the SQ:Z: tag `--sequences` writes
+  // keep each node's bases, from the SQ:Z: tags `--sequences` writes
   sequences?: boolean
 }
 
-// The name column, read without splitting the steps, so a row the cut does
-// not want costs a few indexOf calls
-export function walkRowName(line: string) {
-  let at = -1
-  for (let k = 0; k < 3; k++) {
-    at = line.indexOf('\t', at + 1)
-  }
-  return line.slice(at + 1, line.indexOf('\t', at + 1))
-}
-
-export function parseWalkRow(line: string): WalkRow {
-  const c = line.split('\t')
-  const row: WalkRow = {
-    chunkStart: +c[1]!,
-    name: c[3]!,
-    fragStart: +c[4]!,
-    hapOffset: +c[5]!,
-    piece: +c[6]!,
-    n: +c[7]!,
-    enc: c[8]!,
-  }
-  for (let k = 9; k < c.length; k++) {
-    const tag = c[k]!
-    const side = tag.startsWith('pv:')
-      ? 'prev'
-      : tag.startsWith('nx:')
-        ? 'next'
-        : undefined
-    if (side) {
-      const at = tag.lastIndexOf(':')
-      row[side] = {
-        refName: tag[3] === 'Z' ? tag.slice(5, at) : c[0]!,
-        start: +tag.slice(at + 1),
-      }
-    }
-  }
-  return row
-}
-
 export interface WalkHeader {
-  // 2 for gfa-to-tabix's format 2 (format:i:2); format 1 states none
+  // 2 for gfa-to-tabix's format 2 (format:i:2); format 1 states none, and
+  // the reader refuses it
   format?: number
   chunk?: number
   maxNode?: number
@@ -110,11 +61,10 @@ function integerTag(line: string, tag: string) {
 }
 
 /**
- * What a walk file's header states: its chunk size in a
- * `#walks\tchunk:i:65536` line, from gfa-to-tabix 0.4.0 a
- * `#reference\tGRCh38` line per reference sample and a
- * `#haplotype\tHG002#1` line per other haplotype with rows, and from 0.5.0
- * the longest node in bp as `maxnode:i:1024` beside the chunk size
+ * What a walk file's header states: a `#walks` line with the format, the
+ * chunk size and the longest node in bp, `format:i:2\tchunk:i:65536\tmaxnode:i:1024`,
+ * a `#reference\tGRCh38` line naming the reference sample and a
+ * `#haplotype\tHG002#1` line per other haplotype with rows
  */
 export function walkHeader(lines: string[]): WalkHeader {
   const header: WalkHeader = { references: [], haplotypes: [] }
@@ -164,36 +114,6 @@ export function walkNameFilter(
         wanted.some(prefix => panSNMatchesPrefix(name, prefix))
 }
 
-export function decodeSteps(
-  enc: string,
-  n: number,
-  ids = new Int32Array(n),
-  rev = new Uint8Array(n),
-  at = 0,
-) {
-  let prev = 0
-  let i = at
-  let v = 0
-  let neg = false
-  for (let p = 0; p <= enc.length; p++) {
-    const ch = p < enc.length ? enc.charCodeAt(p) : 44
-    if (ch === 44) {
-      const d = neg ? -v : v
-      const r = d & 1
-      rev[i] = r
-      prev += (d - r) / 2
-      ids[i++] = prev
-      v = 0
-      neg = false
-    } else if (ch === 45) {
-      neg = true
-    } else {
-      v = v * 10 + (ch - 48)
-    }
-  }
-  return { ids, rev }
-}
-
 // One stretch of a haplotype path: rows of consecutive piece index, decoded,
 // and where the path goes on before and after it, when the rows say
 export interface WalkRun {
@@ -239,12 +159,8 @@ function decodeRun(pieces: WalkRow[]): WalkRun {
   const rev = new Uint8Array(n)
   let at = 0
   for (const p of pieces) {
-    if (p.steps) {
-      ids.set(p.steps.ids, at)
-      rev.set(p.steps.rev, at)
-    } else {
-      decodeSteps(p.enc, p.n, ids, rev, at)
-    }
+    ids.set(p.steps.ids, at)
+    rev.set(p.steps.rev, at)
     at += p.n
   }
   const first = pieces[0]!
@@ -415,54 +331,21 @@ export function walkCut(
   return { kept, fragments, open: [...open.values()] }
 }
 
-// The positions of a line's first `n` tabs, -1 past the last
-function tabs(line: string, n: number, out: number[]) {
-  let at = -1
-  for (let k = 0; k < n; k++) {
-    at = at === -1 && k > 0 ? -1 : line.indexOf('\t', at + 1)
-    out[k] = at
-  }
-  return out
-}
-
 /**
- * The node and link rows a walk cut reads, parsed as they arrive, and the
- * tables of the cut they make with its walks. A node filed under two chunks
- * arrives twice and is read once; columns past a node row's eighth (LN:i:,
- * SQ:Z: and whatever follows) are read only for the bases a window asks for.
+ * The nodes and links of the chunks a cut reads, and the tables of the cut
+ * they make with its walks. A node in two chunks is placed once.
  */
 export class WalkGraph {
   readonly nodes = new Map<number, WalkNode>()
   readonly sequences = new Map<number, string>()
   private links: number[] = []
-  // format 2's chunks, whose nodes off R and links tables() fills in
-  private readonly format2: Format2Chunk[] = []
-  private readonly t: number[] = []
+  // the chunks read, whose nodes off R and links tables() fills in
+  private readonly chunks: Chunk[] = []
 
   private readonly window: WalkWindow
 
   constructor(window: WalkWindow) {
     this.window = window
-  }
-
-  addNode(line: string) {
-    const t = tabs(line, 8, this.t)
-    const id = +line.slice(t[2]! + 1, t[3])
-    if (!this.nodes.has(id)) {
-      if (this.window.sequences) {
-        const at = line.indexOf('\tSQ:Z:')
-        if (at >= 0) {
-          const end = line.indexOf('\t', at + 1)
-          this.sequences.set(id, line.slice(at + 6, end < 0 ? undefined : end))
-        }
-      }
-      this.placeNode(id, {
-        rank: +line.slice(t[3]! + 1, t[4]),
-        refName: line.slice(t[4]! + 1, t[5]),
-        start: +line.slice(t[5]! + 1, t[6]),
-        end: +line.slice(t[6]! + 1, t[7] === -1 ? undefined : t[7]),
-      })
-    }
   }
 
   // A node with its position, unless the cut already holds it
@@ -486,17 +369,17 @@ export class WalkGraph {
     this.links.push(source, target)
   }
 
-  addFormat2Chunk(chunk: Format2Chunk) {
-    this.format2.push(chunk)
+  addChunk(chunk: Chunk) {
+    this.chunks.push(chunk)
   }
 
-  // An endpoint is held as id * 2 + 1 when reversed
-  addLink(line: string) {
-    const t = tabs(line, 5, this.t)
-    this.links.push(
-      endpoint(line, t[2]! + 1, t[3]!),
-      endpoint(line, t[3]! + 1, t[4] === -1 ? line.length : t[4]!),
-    )
+  // Bases of nodes a chunk's rows give, for a window that asks for them
+  addSequences(sequences: Map<number, string>) {
+    if (this.window.sequences) {
+      for (const [id, bases] of sequences) {
+        this.sequences.set(id, bases)
+      }
+    }
   }
 
   /**
@@ -507,9 +390,9 @@ export class WalkGraph {
    * for the same rows.
    */
   tables(kept: Set<number>, fragments: WalkFragment[]): GraphTables {
-    if (this.format2.length > 0) {
+    if (this.chunks.length > 0) {
       placeAndLink(
-        this.format2,
+        this.chunks,
         kept,
         (id, node) => {
           const held = this.nodes.get(id)
@@ -634,12 +517,6 @@ export class WalkGraph {
         (a.name < b.name ? -1 : a.name > b.name ? 1 : a.hapStart - b.hapStart),
     )
   }
-}
-
-function endpoint(line: string, from: number, to: number) {
-  return (
-    +line.slice(from, to - 1) * 2 + (line.charCodeAt(to - 1) === 45 ? 1 : 0)
-  )
 }
 
 /**

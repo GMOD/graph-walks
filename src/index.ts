@@ -3,16 +3,13 @@ export {
   WalkGraph,
   byteBudgetError,
   chunkQueryStart,
-  decodeSteps,
   joinPieces,
   keptStepsError,
   lookbackChunks,
-  parseWalkRow,
   stepBudgetError,
   walkCut,
   walkHeader,
   walkNameFilter,
-  walkRowName,
 } from './walkRows.ts'
 export type {
   BudgetNames,
@@ -24,12 +21,11 @@ export type {
   WalkRun,
   WalkWindow,
 } from './walkRows.ts'
-export { WalkReader } from './walkReader.ts'
-export { referenceNodes } from './walkFormat2.ts'
+export { WalkFormatError, WalkReader } from './walkReader.ts'
+export { referenceNodes } from './walkChunk.ts'
 export type {
   TabixSource,
   WalkCutOptions,
-  WalkFileSet,
   WalkReaderHeader,
 } from './walkReader.ts'
 export {

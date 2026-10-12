@@ -1,7 +1,7 @@
 import type { WalkChunk, WalkRow } from './walkRows.ts'
 
-// Format 2 of gfa-to-tabix --walks, one file per reference (that repo's
-// docs/walks-format.md). A chunk lists its `ref` rows, which joined in
+// A chunk of gfa-to-tabix's walk format 2, one file per reference (that
+// repo's docs/walks-format.md). A chunk lists its `ref` rows, which joined in
 // hapOffset order are the chunk's reference path R; a `nodes` row with the
 // lengths of the nodes its routes visit; `route` rows, each a way off R; and a
 // `walk` row per piece of every other path, naming the routes it takes in
@@ -341,7 +341,7 @@ function decodeWalk(
 
 // A chunk as decoded, kept until the cut knows its nodes: tables() then
 // places the cut's nodes off R and lists the links among them
-export interface Format2Chunk {
+export interface Chunk {
   path: RefPath
   routes: Route[]
   // walk rows in path-name order, choices parsed
@@ -350,6 +350,8 @@ export interface Format2Chunk {
 }
 
 export interface DecodedChunk {
+  // node bases from the rows' SQ:Z: tags, when asked for
+  sequences: Map<number, string>
   // the reference's rows and the kept walk rows, steps decoded
   rows: WalkRow[]
   // R's nodes with their positions, and the kept walks' nodes off R with
@@ -363,7 +365,28 @@ export interface DecodedChunk {
     first: number
     last: number
   }[]
-  chunk: Format2Chunk
+  chunk: Chunk
+}
+
+// The bases an SQ:Z: tag at or after column `from` joins, one node's per
+// length, as `ids` names them
+function sliceBases(
+  cols: string[],
+  from: number,
+  ids: number[],
+  lengths: number[],
+  out: Map<number, string>,
+) {
+  const tag = cols.slice(from).find(c => c.startsWith('SQ:Z:'))
+  if (tag === undefined) {
+    return
+  }
+  let at = 5
+  for (let k = 0; k < ids.length; k++) {
+    const length = lengths[k]!
+    out.set(ids[k]!, tag.slice(at, at + length))
+    at += length
+  }
 }
 
 /**
@@ -373,11 +396,13 @@ export interface DecodedChunk {
 export function decodeChunk(
   rows: string[][],
   keep: ((name: string) => boolean) | undefined,
+  withSequences = false,
 ): DecodedChunk {
   const path = new RefPath()
   const lengths = new Map<number, number>()
   const routes: Route[] = []
   const out: DecodedChunk = {
+    sequences: new Map(),
     rows: [],
     nodes: new Map(),
     ends: [],
@@ -391,6 +416,9 @@ export function decodeChunk(
     const nodeLengths = numbers(cols[10]!)
     const hapOffset = +cols[6]!
     path.add(handles, nodeLengths)
+    if (withSequences) {
+      sliceBases(cols, 11, handles.map(idOf), nodeLengths, out.sequences)
+    }
     let start = hapOffset
     for (let k = 0; k < handles.length; k++) {
       const id = idOf(handles[k]!)
@@ -421,7 +449,6 @@ export function decodeChunk(
         hapOffset,
         piece: +cols[7]!,
         n: handles.length,
-        enc: '',
         steps: {
           ids: Int32Array.from(handles, idOf),
           rev: Uint8Array.from(handles, h => h & 1),
@@ -437,7 +464,11 @@ export function decodeChunk(
       let id = 0
       for (let k = 0; k < ids.length; k++) {
         id += ids[k]!
+        ids[k] = id
         lengths.set(id, nodeLengths[k]!)
+      }
+      if (withSequences) {
+        sliceBases(cols, 6, ids, nodeLengths, out.sequences)
       }
     } else if (cols[3] === 'route') {
       const entry = tokens(cols[4]!, previous, [])
@@ -504,7 +535,6 @@ export function decodeChunk(
         hapOffset: +cols[6]!,
         piece: +cols[7]!,
         n,
-        enc: '',
         steps: decodeWalk(path, routes, cols, choices, n),
         ...tags(cols, 12, cols[0]!),
       })
@@ -521,7 +551,7 @@ export function decodeChunk(
  * node rows had it. Links are R's and the routes', both ends in the cut.
  */
 export function placeAndLink(
-  chunks: Format2Chunk[],
+  chunks: Chunk[],
   kept: Set<number>,
   place: (id: number, node: PlacedNode) => void,
   link: (a: number, b: number) => void,

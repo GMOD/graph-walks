@@ -4,11 +4,13 @@ Cuts a window out of a pangenome graph stored as
 [gfa-to-tabix](https://github.com/GMOD/gfa-to-tabix) walk files, by range
 requests.
 
-- **In:** a `gfa-to-tabix --walks` file set and a region on its reference
+- **In:** a `gfa-to-tabix --walks` file, `<prefix>.<sample>.walks.bed.gz` with
+  its `.tbi`, and a region on its reference
 - **Out:** the reference over the region, every haplotype's walk through it, and
   the nodes and links they visit, as typed arrays
-- Reads format 1 (`.walks.bed.gz` with `.nodes.bed.gz` and `.links.bed.gz`) and
-  format 2 (`.walks.bed.gz` alone), each with its `.tbi`
+- Reads walk format 2, which gfa-to-tabix writes from 1.0. The reader refuses a
+  format 1 file, from gfa-to-tabix 0.12 or earlier, with a `WalkFormatError`
+  asking for a rebuild
 - Has no runtime dependencies: it reads through any object with
   [@gmod/tabix](https://github.com/GMOD/tabix-js)'s `TabixIndexedFile` methods
 
@@ -32,16 +34,13 @@ import {
 } from '@jbrowse/graph-walks'
 import { RemoteFile } from 'generic-filehandle2'
 
-const file = (url: string) =>
+const url = 'https://example.org/hprc-v2.1-mc-grch38.GRCh38.walks.bed.gz'
+const reader = new WalkReader(
   new TabixIndexedFile({
     filehandle: new RemoteFile(url),
     tbiFilehandle: new RemoteFile(`${url}.tbi`),
-  })
-const prefix = 'https://jbrowse.org/demos/hprc/hprc-v2.1-mc-grch38.GRCh38'
-const reader = new WalkReader({
-  walks: file(`${prefix}.walks.bed.gz`),
-  nodes: file(`${prefix}.nodes.bed.gz`),
-})
+  }),
+)
 
 const refName = 'GRCh38#0#chr6'
 const { graph, kept, fragments } = await reader.cut(
@@ -68,8 +67,8 @@ const tables = graph.tables(kept, fragments)
 | `context`    | bp of reference kept past each end of the region; default 1000            |
 | `stepBudget` | The most steps a cut keeps; no limit by default                           |
 | `byteBudget` | The most compressed bytes a cut fetches; no limit by default              |
-| `links`      | `false` leaves the link file unread                                       |
-| `sequences`  | Keep each node's bases in `graph.sequences`, from `--sequences` files     |
+| `links`      | `false` lists no links, for a caller that draws no edges                  |
+| `sequences`  | Keep each node's bases in `graph.sequences`, from a `--sequences` file    |
 | `signal`     | An `AbortSignal` that stops the reads                                     |
 
 A cut over a budget throws a `RegionTooLargeError`. Its `fitsBp` holds about how
@@ -77,9 +76,14 @@ wide a window would fit, and JBrowse shows it as a zoom-in notice.
 
 ## How a cut works
 
+- A chunk holds the reference's path through it once, each way a haplotype
+  leaves that path once, and every other path's piece as the list of ways it
+  takes; gfa-to-tabix's
+  [walks-format.md](https://github.com/GMOD/gfa-to-tabix/blob/main/docs/walks-format.md)
+  describes the rows
 - A cut reads every chunk under the region, and the chunks before it as far as
   the header's `maxnode` reaches, since a node is filed under the chunk holding
-  its start
+  its start, and decodes each chunk once
 - A haplotype that leaves the reference near the region is followed to where it
   rejoins, and the reference is cut out as far as those rejoins reach
 - A walk the read cuts off goes on in the chunk its row names (`pv:`/`nx:`

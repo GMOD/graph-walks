@@ -4,7 +4,8 @@
     "noEmit": false,
     "declaration": true,
     "rootDir": "src",
-    "outDir": "esm"
+    "outDir": "esm",
+    "types": []
   },
   "exclude": ["src/**/*.test.ts", "src/testing.ts"]
 }
