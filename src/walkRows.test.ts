@@ -9,6 +9,7 @@ import {
   walkCut,
   walkHeader,
   walkNameFilter,
+  walksKept,
 } from './walkRows.ts'
 
 import type { WalkRow } from './walkRows.ts'
@@ -83,6 +84,15 @@ test('the haplotype filter keeps the named walks and the reference', () => {
       'HG0029#1#chr1',
     ].filter(keep),
   ).toEqual(['GRCh38#0#chr1', 'HG002#1#chr1', 'HG002#2#chr1', 'HG00097#2#CM2'])
+})
+
+test("a cut keeps its reference walk by the reference's whole name when it has no haplotype", () => {
+  const keep = walksKept(['HG002'], 'chm13#chr1')!
+  expect(['chm13#chr1', 'HG002#1#chr1', 'HG003#1#chr1'].filter(keep)).toEqual([
+    'chm13#chr1',
+    'HG002#1#chr1',
+  ])
+  expect(walksKept(['HG002'], 'GRCh38#0#chr1')!('GRCh38#0#chr1')).toBe(true)
 })
 
 describe('the step budget', () => {

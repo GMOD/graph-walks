@@ -153,6 +153,13 @@ test("a cut keeps each node's bases when asked", async () => {
   expect(await walks.referenceSequences()).toEqual(['GRCh38#0#chrM'])
 })
 
+test('a contig names its sequence on the reference sample', async () => {
+  const walks = reader('hprc-chrM.GRCh38')
+  expect(await walks.sequenceFor('GRCh38', 'chrM')).toBe('GRCh38#0#chrM')
+  expect(await walks.sequenceFor('hg38', 'GRCh38#0#chrM')).toBe('GRCh38#0#chrM')
+  expect(await walks.sequenceFor('GRCh38', 'chr1')).toBeUndefined()
+})
+
 // The GFA format 1 files of the same graphs cut to, recorded before format 1
 // was dropped, when a format 2 cut was checked to be the format 1 cut
 const goldens = JSON.parse(

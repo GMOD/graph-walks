@@ -53,6 +53,21 @@ export class RegionTooLargeError extends Error {
 
 const SEP = '#'
 
+// `grape#1#chr1` -> `grape`
+export function panSNSample(refName: string) {
+  return refName.split(SEP)[0]!
+}
+
+// `grape#1#chr1` and `grape#chr1` -> `chr1`
+export function panSNContig(refName: string) {
+  const parts = refName.split(SEP)
+  return parts.length >= 3
+    ? parts.slice(2).join(SEP)
+    : parts.length === 2
+      ? parts[1]!
+      : refName
+}
+
 export function panSNHaplotype(refName: string) {
   const parts = refName.split(SEP)
   return parts.length >= 3 ? `${parts[0]}${SEP}${parts[1]}` : undefined

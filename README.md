@@ -27,11 +27,7 @@ npm install @jbrowse/graph-walks @gmod/tabix
 
 ```ts
 import { TabixIndexedFile } from '@gmod/tabix'
-import {
-  WalkReader,
-  panSNHaplotype,
-  walkNameFilter,
-} from '@jbrowse/graph-walks'
+import { WalkReader, walksKept } from '@jbrowse/graph-walks'
 import { RemoteFile } from 'generic-filehandle2'
 
 const url = 'https://example.org/hprc-v2.1-mc-grch38.GRCh38.walks.bed.gz'
@@ -46,7 +42,7 @@ const refName = 'GRCh38#0#chr6'
 const { graph, kept, fragments } = await reader.cut(
   refName,
   { start: 160_614_798, end: 160_647_758 },
-  { keep: walkNameFilter(['HG00097', 'HG00133'], panSNHaplotype(refName)) },
+  { keep: walksKept(['HG00097', 'HG00133'], refName) },
 )
 const tables = graph.tables(kept, fragments)
 ```
@@ -73,6 +69,18 @@ const tables = graph.tables(kept, fragments)
 
 A cut over a budget throws a `RegionTooLargeError`. Its `fitsBp` holds about how
 wide a window would fit, and JBrowse shows it as a zoom-in notice.
+`WALK_BUDGETS` holds the step and byte budgets the JBrowse plugin and BandageJS
+cut by.
+
+## Naming the window
+
+- `reader.sequenceFor(sample, refName)` gives the walk file's sequence for a
+  contig on a sample: `chr6` on `GRCh38` is `GRCh38#0#chr6`, and a pggb file's
+  `chm13#chr1` is `chr1` on `chm13`
+- `walksKept(haplotypes, refName)` is the `keep` filter for a cut on `refName`:
+  its own walk and those of the haplotypes named
+- `refNameLookup` and `resolveRefName` resolve a contig the same way against any
+  tabix file's sequence names
 
 ## How a cut works
 

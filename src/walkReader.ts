@@ -1,3 +1,4 @@
+import { refNameLookup, resolveRefName } from './refNames.ts'
 import { decodeChunk, pieceLinks } from './walkChunk.ts'
 import {
   WalkGraph,
@@ -29,6 +30,9 @@ const FOLLOW_CHUNKS = 4
 // bp of reference a cut keeps past each end of the window
 const WALK_CONTEXT = 1000
 
+// The budgets the JBrowse graph plugin and BandageJS cut a browser's window by
+export const WALK_BUDGETS = { stepBudget: 4_000_000, byteBudget: 8_000_000 }
+
 /**
  * A Tabix-indexed file as the reader uses one: @gmod/tabix's
  * TabixIndexedFile is one. `bytesForRegions` estimates the compressed bytes a
@@ -56,7 +60,7 @@ export class WalkFormatError extends Error {
 
 // @gmod/tabix loops forever on a NaN end and reads nothing for a NaN start
 // (GMOD/tabix-js#157), so every query refuses a range that is not finite first
-function checkRange(refName: string, start: number, end: number) {
+export function checkRange(refName: string, start: number, end: number) {
   if (!Number.isFinite(start) || !Number.isFinite(end)) {
     throw new Error(
       `${refName}:${start}-${end} is not a finite range to query the graph's index for`,
@@ -116,6 +120,7 @@ export type WalkReaderHeader = WalkHeader & { chunk: number; lookback: number }
  */
 export class WalkReader {
   private headerRead: Promise<WalkReaderHeader> | undefined
+  private lookupRead: Promise<Map<string, string>> | undefined
   private readonly walks: TabixSource
 
   constructor(walks: TabixSource) {
@@ -153,6 +158,29 @@ export class WalkReader {
   // The reference sequences the walk file holds windows on
   referenceSequences(opts: { signal?: AbortSignal } = {}) {
     return this.walks.getReferenceSequenceNames(opts)
+  }
+
+  /**
+   * The walk file's sequence for `refName` on `sample`, or for `refName` as
+   * the file spells it: `chr6` on `GRCh38` is `GRCh38#0#chr6`. Undefined when
+   * the file holds neither.
+   */
+  async sequenceFor(
+    sample: string,
+    refName: string,
+    opts: { signal?: AbortSignal } = {},
+  ) {
+    if (!this.lookupRead) {
+      const read = this.walks.getReferenceSequenceNames().then(refNameLookup)
+      read.catch(() => {
+        if (this.lookupRead === read) {
+          this.lookupRead = undefined
+        }
+      })
+      this.lookupRead = read
+    }
+    const lookup = await raceAbort(this.lookupRead, opts.signal)
+    return resolveRefName(lookup, sample, refName)
   }
 
   async queryStart(start: number, opts: { signal?: AbortSignal } = {}) {

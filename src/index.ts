@@ -10,6 +10,7 @@ export {
   walkCut,
   walkHeader,
   walkNameFilter,
+  walksKept,
 } from './walkRows.ts'
 export type {
   BudgetNames,
@@ -21,7 +22,13 @@ export type {
   WalkRun,
   WalkWindow,
 } from './walkRows.ts'
-export { WalkFormatError, WalkReader } from './walkReader.ts'
+export {
+  WALK_BUDGETS,
+  WalkFormatError,
+  WalkReader,
+  checkRange,
+} from './walkReader.ts'
+export { refNameLookup, resolveRefName } from './refNames.ts'
 export { referenceNodes } from './walkChunk.ts'
 export type {
   TabixSource,
@@ -31,7 +38,9 @@ export type {
 export {
   RegionTooLargeError,
   bpString,
+  panSNContig,
   panSNHaplotype,
   panSNMatchesPrefix,
+  panSNSample,
 } from './util.ts'
 export type { GraphTables } from './util.ts'
