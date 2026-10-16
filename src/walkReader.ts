@@ -359,6 +359,15 @@ export class WalkReader {
       const [lo, hi] = [first - reach, last + reach]
       cut = cutRows()
       let spent = await bytesFor([{ refName, start: from, end: region.end }])
+      // chunks an excursion fetched alone, which a later span reads again
+      const fetched: Span[] = []
+      const inSpans = (spans: Span[], c: WalkChunk) =>
+        spans.some(
+          span =>
+            span.refName === c.refName &&
+            c.start >= span.start &&
+            c.start < span.end,
+        )
       for (let round = 0; round < FOLLOW_ROUNDS; round++) {
         const starts = cut.open
           .filter(c => c.refName === refName && c.start >= lo && c.start <= hi)
@@ -372,13 +381,7 @@ export class WalkReader {
         const fetch = new Map<string, Span>()
         for (const { chunk: c } of missing) {
           const key = chunkKey(c)
-          const inSpans = spans.some(
-            span =>
-              span.refName === c.refName &&
-              c.start >= span.start &&
-              c.start < span.end,
-          )
-          if (!untaken.has(key) && !inSpans) {
+          if (!untaken.has(key) && !inSpans(spans, c)) {
             fetch.set(key, { ...c, end: c.start + 1 })
           }
         }
@@ -396,7 +399,10 @@ export class WalkReader {
           cut = cutRows()
           continue
         }
-        spent += await bytesFor([...spans, ...fetch.values()])
+        spent +=
+          (await bytesFor([...spans, ...fetch.values()])) -
+          (await bytesFor(fetched.filter(c => inSpans(spans, c))))
+        fetched.push(...fetch.values())
         if (spent > byteBudget) {
           break
         }

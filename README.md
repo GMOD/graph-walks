@@ -8,9 +8,10 @@ requests.
   its `.tbi`, and a region on its reference
 - **Out:** the reference over the region, every haplotype's walk through it, and
   the nodes and links they visit, as typed arrays
-- Reads walk format 2, which gfa-to-tabix writes from 1.0. The reader refuses a
-  format 1 file, from gfa-to-tabix 0.12 or earlier, with a `WalkFormatError`
-  asking for a rebuild
+- Reads walk formats 2 and 3. Format 3 adds tags linking a contig's records, so
+  a fragment can say where a record ends. The reader refuses any other format,
+  such as format 1 from gfa-to-tabix 0.12 or earlier, with a `WalkFormatError`
+  naming it
 - Has no runtime dependencies: it reads through any object with
   [@gmod/tabix](https://github.com/GMOD/tabix-js)'s `TabixIndexedFile` methods
 
@@ -57,20 +58,41 @@ const tables = graph.tables(kept, fragments)
 
 ## Cut options
 
-| Option       | Effect                                                                    |
-| ------------ | ------------------------------------------------------------------------- |
-| `keep`       | Which walks to decode, by `sample#haplotype#contig`; every one by default |
-| `context`    | bp of reference kept past each end of the region; default 1000            |
-| `stepBudget` | The most steps a cut keeps; no limit by default                           |
-| `byteBudget` | The most compressed bytes a cut fetches; no limit by default              |
-| `links`      | `false` lists no links, for a caller that draws no edges                  |
-| `sequences`  | Keep each node's bases in `graph.sequences`, from a `--sequences` file    |
-| `signal`     | An `AbortSignal` that stops the reads                                     |
+| Option       | Effect                                                                                                    |
+| ------------ | --------------------------------------------------------------------------------------------------------- |
+| `keep`       | Which walks to decode, by `sample#haplotype#contig`; every one by default                                 |
+| `context`    | bp of reference kept past each end of the region; default 1000                                            |
+| `stepBudget` | The most steps a cut keeps; no limit by default                                                           |
+| `byteBudget` | The most compressed bytes a cut fetches; no limit by default                                              |
+| `links`      | `false` lists no links, for a caller that draws no edges                                                  |
+| `sequences`  | Keep each node's bases in `graph.sequences`, from a `--sequences` file                                    |
+| `signal`     | An `AbortSignal` that stops the reads                                                                     |
+| `excursions` | Read the chunks a walk visits between two of its fragments, at any distance, so they join; off by default |
 
 A cut over a budget throws a `RegionTooLargeError`. Its `fitsBp` holds about how
 wide a window would fit, and JBrowse shows it as a zoom-in notice.
 `WALK_BUDGETS` holds the step and byte budgets the JBrowse plugin and BandageJS
 cut by.
+
+## Fragments
+
+Each of `fragments` is one walk's stretch through the cut: `name`, `fragStart`
+(the W line's start), `hapStart`/`hapEnd`, and its steps. `before` and `after`
+say why it stops:
+
+| `kind`      | The walk                                                                                                   |
+| ----------- | ---------------------------------------------------------------------------------------------------------- |
+| `window`    | goes on in the rows read, and the cut trimmed it                                                           |
+| `elsewhere` | goes on in `chunk`, which the cut did not read; `bp` on, it comes back, when the read holds its next piece |
+| `break`     | reaches its record's end, and the contig's next record starts `bp` on (format 3)                           |
+| `end`       | reaches the contig's last record in the graph, or its path's end (format 3)                                |
+| `recordEnd` | reaches its record's end, and the format 2 file does not say whether the contig goes on                    |
+
+- The `excursions` option joins a walk that leaves the window and comes back
+  into one fragment. The cut keeps the nodes the walk visits away, at their own
+  reference positions with `onWindow` false, and cuts the reference no wider
+- Without `excursions`, a cut reads on to at most four chunks past what it read,
+  so a walk that goes farther away and comes back stays two fragments
 
 ## Naming the window
 
