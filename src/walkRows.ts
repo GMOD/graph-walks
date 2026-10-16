@@ -93,7 +93,7 @@ function integerTag(line: string, tag: string) {
 
 /**
  * What a walk file's header states: a `#walks` line with the format, the
- * chunk size and the longest node in bp, `format:i:2\tchunk:i:65536\tmaxnode:i:1024`,
+ * chunk size and the longest node in bp, `format:i:3\tchunk:i:65536\tmaxnode:i:1024`,
  * a `#reference\tGRCh38` line naming the reference sample and a
  * `#haplotype\tHG002#1` line per other haplotype with rows
  */
