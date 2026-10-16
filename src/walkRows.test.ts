@@ -1,4 +1,5 @@
 import { graphTablesGFA } from './testing.ts'
+import { WALK_STOP_KINDS } from './util.ts'
 import {
   WalkGraph,
   byteBudgetError,
@@ -417,4 +418,28 @@ test('the reference walk is written first, whatever order the rows came in', () 
     'HG002#1#chr1',
     'HG002#2#chr1',
   ])
+})
+
+test('the tables keep each walk record start and why it stops', () => {
+  const g = graph()
+  const runs = joinPieces([
+    walkRow('GRCh38#0#chr1', 0, 0, forward(1, 2, 3, 4)),
+    walkRow('HG002#1#chr1', 0, 500, forward(2, 5, 3), { fragStart: 400 }),
+  ])
+  const { kept, fragments } = walkCut(runs, g.nodes, 'GRCh38#0#chr1')
+  fragments[1]!.after = {
+    kind: 'elsewhere',
+    chunk: { refName: 'GRCh38#0#chr1', start: 65536 },
+  }
+  fragments[1]!.before = { kind: 'break', bp: 19021 }
+  const { walks } = g.tables(kept, fragments)
+  expect([...walks.fragStarts!]).toEqual([0, 400])
+  expect([...walks.before!.kinds].map(k => WALK_STOP_KINDS[k])).toEqual([
+    'window',
+    'break',
+  ])
+  expect([...walks.before!.bp]).toEqual([Number.NaN, 19021])
+  expect([...walks.after!.chunkRefs]).toEqual([-1, 0])
+  expect([...walks.after!.chunkStarts]).toEqual([Number.NaN, 65536])
+  expect(walks.after!.chunkRefNames).toEqual(['GRCh38#0#chr1'])
 })

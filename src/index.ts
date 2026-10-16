@@ -40,10 +40,11 @@ export type {
 } from './walkReader.ts'
 export {
   RegionTooLargeError,
+  WALK_STOP_KINDS,
   bpString,
   panSNContig,
   panSNHaplotype,
   panSNMatchesPrefix,
   panSNSample,
 } from './util.ts'
-export type { GraphTables } from './util.ts'
+export type { GraphTables, WalkStopTable } from './util.ts'

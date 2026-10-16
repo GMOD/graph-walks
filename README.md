@@ -91,6 +91,10 @@ say why it stops:
 - The `excursions` option joins a walk that leaves the window and comes back
   into one fragment. The cut keeps the nodes the walk visits away, at their own
   reference positions with `onWindow` false, and cuts the reference no wider
+- `graph.tables(kept, fragments)` keeps each walk's `fragStarts` and its
+  `before`/`after` stops as columns: `kinds` indexes `WALK_STOP_KINDS`, `bp` is
+  NaN where a stop states none, and `chunkRefs` indexes `chunkRefNames`, -1 for
+  none, beside `chunkStarts`
 - Without `excursions`, a cut reads on to at most four chunks past what it read,
   so a walk that goes farther away and comes back stays two fragments
 

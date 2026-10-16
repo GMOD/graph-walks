@@ -1,12 +1,13 @@
 import {
   RegionTooLargeError,
+  WALK_STOP_KINDS,
   bpString,
   panSNHaplotype,
   panSNMatchesPrefix,
 } from './util.ts'
 import { placeAndLink } from './walkChunk.ts'
 
-import type { GraphTables } from './util.ts'
+import type { GraphTables, WalkStopTable } from './util.ts'
 import type { Chunk } from './walkChunk.ts'
 
 // A walk row of gfa-to-tabix's format 2 or 3, its steps decoded with its
@@ -473,6 +474,36 @@ export function walkCut(
   return { kept, fragments, open: [...open.values()], excursions }
 }
 
+function stopTable(stops: WalkStop[]): WalkStopTable {
+  const chunkRefNames: string[] = []
+  const refIndex = new Map<string, number>()
+  const table: WalkStopTable = {
+    kinds: new Uint8Array(stops.length),
+    bp: new Float64Array(stops.length).fill(Number.NaN),
+    chunkRefs: new Int32Array(stops.length).fill(-1),
+    chunkStarts: new Float64Array(stops.length).fill(Number.NaN),
+    chunkRefNames,
+  }
+  stops.forEach((stop, i) => {
+    table.kinds[i] = WALK_STOP_KINDS.indexOf(stop.kind)
+    if ('bp' in stop && stop.bp !== undefined) {
+      table.bp[i] = stop.bp
+    }
+    if ('chunk' in stop && stop.chunk) {
+      const { refName, start } = stop.chunk
+      let ref = refIndex.get(refName)
+      if (ref === undefined) {
+        ref = chunkRefNames.length
+        refIndex.set(refName, ref)
+        chunkRefNames.push(refName)
+      }
+      table.chunkRefs[i] = ref
+      table.chunkStarts[i] = start
+    }
+  })
+  return table
+}
+
 /**
  * The nodes and links of the chunks a cut reads, and the tables of the cut
  * they make with its walks. A node in two chunks is placed once.
@@ -644,6 +675,9 @@ export class WalkGraph {
         offsets,
         steps,
         reversed,
+        fragStarts: Float64Array.from(walks, f => f.fragStart),
+        before: stopTable(walks.map(f => f.before)),
+        after: stopTable(walks.map(f => f.after)),
       },
     }
   }
