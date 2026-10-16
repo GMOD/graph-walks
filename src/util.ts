@@ -22,28 +22,21 @@ export interface GraphTables {
     offsets: Int32Array
     steps: Int32Array
     reversed: Uint8Array
-    // each fragment's W record start, and why it stops at either end, from a
-    // walk-file cut; absent from tables another source builds
-    fragStarts?: Float64Array
+    // what lies past either end of each walk, from a walk-file cut; absent
+    // from tables another source builds
     before?: WalkStopTable
     after?: WalkStopTable
   }
 }
 
-// The kinds a WalkStop names, coded by index
-export const WALK_STOP_KINDS = [
-  'window',
-  'elsewhere',
-  'break',
-  'end',
-  'recordEnd',
-] as const
-
-// A WalkStop per walk: its kind's index in WALK_STOP_KINDS, `bp` NaN where the
-// stop states none, and the chunk as an index into `chunkRefNames`, -1 for none
+// A WalkStop per walk: `kinds` indexes `kindNames`, `bp` is NaN where the stop
+// states none, `trimmed` is 0 where it states none, and `chunkRefs` indexes
+// `chunkRefNames`, -1 for none
 export interface WalkStopTable {
   kinds: Uint8Array
+  kindNames: string[]
   bp: Float64Array
+  trimmed: Float64Array
   chunkRefs: Int32Array
   chunkStarts: Float64Array
   chunkRefNames: string[]

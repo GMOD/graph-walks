@@ -1,6 +1,5 @@
 import {
   RegionTooLargeError,
-  WALK_STOP_KINDS,
   bpString,
   panSNHaplotype,
   panSNMatchesPrefix,
@@ -10,13 +9,13 @@ import { placeAndLink } from './walkChunk.ts'
 import type { GraphTables, WalkStopTable } from './util.ts'
 import type { Chunk } from './walkChunk.ts'
 
-// A walk row of gfa-to-tabix's format 2 or 3, its steps decoded with its
-// chunk (walkChunk.ts). A haplotype path is cut into pieces, one per chunk it
+// A walk row of gfa-to-tabix's format 3, its steps decoded with its chunk
+// (walkChunk.ts). A haplotype path is cut into pieces, one per chunk it
 // passes, and each piece's row takes the next piece index, so consecutive
 // indices of one path join. A row names the chunk its path's piece before and
 // after it is filed under, `prev` and `next`, with none at either end of the
-// path. In format 3 a record's first and last rows also name the gap to the
-// contig's record before and after, `prevRecord` and `nextRecord`.
+// path. A record's first and last rows also name the gap to the contig's
+// record before and after, `prevRecord` and `nextRecord`.
 export interface WalkRow {
   name: string
   fragStart: number
@@ -44,23 +43,21 @@ export interface WalkGap {
 }
 
 /**
- * Why a fragment stops at one end:
- * - `window`: the cut trimmed a walk that goes on in the rows read
+ * What lies past one end of a fragment. `trimmed` bp of the walk come first
+ * where the cut read them but kept none, then:
  * - `elsewhere`: the walk goes on in `chunk`, which the cut did not read; `bp`
  *   is how far on it comes back, when the read holds its next piece
- * - `break`: the contig's record ends, and its next record starts `bp` on
- *   (format 3)
- * - `end`: the contig's last record in the graph ends (format 3), or the path
- *   ends
- * - `recordEnd`: the record ends, and a format 2 file does not say whether
- *   another record of the contig goes on
+ * - `break`: the contig's record ends, and its next record starts `bp` on;
+ *   `chunk` files that record's nearest piece, when it has rows
+ * - `end`: the contig's last record in the graph ends
  */
-export type WalkStop =
-  | { kind: 'window' }
+export type WalkStop = (
   | { kind: 'elsewhere'; chunk: WalkChunk; bp?: number }
   | { kind: 'break'; bp: number; chunk?: WalkChunk }
   | { kind: 'end' }
-  | { kind: 'recordEnd' }
+) & { trimmed?: number }
+
+const WALK_STOP_KINDS = ['elsewhere', 'break', 'end'] as const
 
 export interface WalkNode {
   refName: string
@@ -81,7 +78,7 @@ export interface WalkWindow {
 }
 
 export interface WalkHeader {
-  // format:i:2 or format:i:3; format 1 states none, and the reader refuses it
+  // format:i:3; the reader refuses any other, and format 1 states none
   format?: number
   chunk?: number
   maxNode?: number
@@ -164,7 +161,6 @@ export interface WalkRun {
   fragStart: number
   hapOffset: number
   firstPiece: number
-  lastPiece: number
   ids: Int32Array
   rev: Uint8Array
   prev?: WalkChunk
@@ -218,7 +214,6 @@ function decodeRun(pieces: WalkRow[]): WalkRun {
     fragStart: first.fragStart,
     hapOffset: first.hapOffset,
     firstPiece: first.piece,
-    lastPiece: last.piece,
     ids,
     rev,
     prev: first.prev,
@@ -239,16 +234,6 @@ export interface WalkFragment {
   after: WalkStop
 }
 
-// The pieces of a walk missing between two of its fragments, `from` to `to`
-// exclusive, and the chunks the pieces next to them are filed under
-export interface WalkExcursion {
-  name: string
-  fragStart: number
-  from: number
-  to: number
-  chunks: WalkChunk[]
-}
-
 /**
  * The cut a window draws from its walks: the reference inside the window plus
  * its context, and each run from its first to its last step on that stretch.
@@ -264,16 +249,12 @@ export interface WalkExcursion {
  * it reaches through nodes other walks brought in, so with a window edge inside
  * a collapsed array a row's length depends on which haplotypes are cut.
  *
- * Each fragment says why it stops at either end (WalkStop). `linksRecords`
- * is true for a format 3 file, whose rows tell a record's end from the
- * contig's. Two fragments of one walk with pieces missing between them make
- * an excursion, which a reader can fill by reading the chunks it names.
+ * Each fragment says what lies past either end (WalkStop).
  */
 export function walkCut(
   runs: WalkRun[],
   nodes: Map<number, WalkNode>,
   refName: string,
-  linksRecords = false,
 ) {
   const onWindow = (id: number) => nodes.get(id)?.onWindow === true
   const reference = (id: number) => {
@@ -381,32 +362,28 @@ export function walkCut(
     }
     return bp
   }
-  const byPath = new Map<string, WalkRun[]>()
+  // each run's neighbours in its record, by piece index
+  const byRecord = new Map<string, WalkRun[]>()
   for (const run of runs) {
     const key = `${run.name}\t${run.fragStart}`
-    const list = byPath.get(key)
+    const list = byRecord.get(key)
     if (list) {
       list.push(run)
     } else {
-      byPath.set(key, [run])
+      byRecord.set(key, [run])
     }
   }
   const neighbours = new Map<WalkRun, [WalkRun?, WalkRun?]>()
-  for (const list of byPath.values()) {
+  for (const list of byRecord.values()) {
     list.sort((a, b) => a.firstPiece - b.firstPiece)
     list.forEach((run, i) => {
       neighbours.set(run, [list[i - 1], list[i + 1]])
     })
   }
-  const stop = (
-    run: WalkRun,
-    trimmed: boolean,
-    after: boolean,
-    edge: number,
-  ): WalkStop => {
-    if (trimmed) {
-      return { kind: 'window' }
-    }
+  const runEnd = (run: WalkRun) =>
+    run.hapOffset + bpOf(run.ids, 0, run.ids.length)
+  const stop = (run: WalkRun, after: boolean, trimmed: number): WalkStop => {
+    const cut = trimmed > 0 ? { trimmed } : {}
     const chunk = after ? run.next : run.prev
     if (chunk) {
       const other = neighbours.get(run)?.[after ? 1 : 0]
@@ -415,18 +392,16 @@ export function walkCut(
             kind: 'elsewhere',
             chunk,
             bp: after
-              ? other.hapOffset - edge
-              : edge - other.hapOffset - bpOf(other.ids, 0, other.ids.length),
+              ? other.hapOffset - runEnd(run)
+              : run.hapOffset - runEnd(other),
+            ...cut,
           }
-        : { kind: 'elsewhere', chunk }
+        : { kind: 'elsewhere', chunk, ...cut }
     }
     const gap = after ? run.nextRecord : run.prevRecord
-    return gap
-      ? { kind: 'break', ...gap }
-      : { kind: linksRecords ? 'end' : 'recordEnd' }
+    return gap ? { kind: 'break', ...gap, ...cut } : { kind: 'end', ...cut }
   }
   const fragments: WalkFragment[] = []
-  const fragmentOf = new Map<WalkRun, WalkFragment>()
   for (const { run, first: f, last: l } of spans) {
     const { ids, rev } = run
     let first = f
@@ -439,39 +414,18 @@ export function walkCut(
     }
     const hapStart = run.hapOffset + bpOf(ids, 0, first)
     const hapEnd = hapStart + bpOf(ids, first, last + 1)
-    const fragment: WalkFragment = {
+    fragments.push({
       name: run.name,
       fragStart: run.fragStart,
       hapStart,
       hapEnd,
       ids: ids.subarray(first, last + 1),
       rev: rev.subarray(first, last + 1),
-      before: stop(run, first > 0, false, hapStart),
-      after: stop(run, last < ids.length - 1, true, hapEnd),
-    }
-    fragments.push(fragment)
-    fragmentOf.set(run, fragment)
+      before: stop(run, false, hapStart - run.hapOffset),
+      after: stop(run, true, runEnd(run) - hapEnd),
+    })
   }
-  const excursions: WalkExcursion[] = []
-  for (const list of byPath.values()) {
-    const cut = list.filter(run => fragmentOf.has(run))
-    for (let i = 1; i < cut.length; i++) {
-      const a = cut[i - 1]!
-      const b = cut[i]!
-      const { after } = fragmentOf.get(a)!
-      const { before } = fragmentOf.get(b)!
-      if (after.kind === 'elsewhere' && before.kind === 'elsewhere') {
-        excursions.push({
-          name: a.name,
-          fragStart: a.fragStart,
-          from: a.lastPiece,
-          to: b.firstPiece,
-          chunks: [after.chunk, before.chunk],
-        })
-      }
-    }
-  }
-  return { kept, fragments, open: [...open.values()], excursions }
+  return { kept, fragments, open: [...open.values()] }
 }
 
 function stopTable(stops: WalkStop[]): WalkStopTable {
@@ -479,13 +433,16 @@ function stopTable(stops: WalkStop[]): WalkStopTable {
   const refIndex = new Map<string, number>()
   const table: WalkStopTable = {
     kinds: new Uint8Array(stops.length),
+    kindNames: [...WALK_STOP_KINDS],
     bp: new Float64Array(stops.length).fill(Number.NaN),
+    trimmed: new Float64Array(stops.length),
     chunkRefs: new Int32Array(stops.length).fill(-1),
     chunkStarts: new Float64Array(stops.length).fill(Number.NaN),
     chunkRefNames,
   }
   stops.forEach((stop, i) => {
     table.kinds[i] = WALK_STOP_KINDS.indexOf(stop.kind)
+    table.trimmed[i] = stop.trimmed ?? 0
     if ('bp' in stop && stop.bp !== undefined) {
       table.bp[i] = stop.bp
     }
@@ -675,7 +632,6 @@ export class WalkGraph {
         offsets,
         steps,
         reversed,
-        fragStarts: Float64Array.from(walks, f => f.fragStart),
         before: stopTable(walks.map(f => f.before)),
         after: stopTable(walks.map(f => f.after)),
       },

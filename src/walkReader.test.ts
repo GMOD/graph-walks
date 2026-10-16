@@ -7,8 +7,6 @@ import { RegionTooLargeError, panSNHaplotype } from './util.ts'
 import { WalkFormatError, WalkReader } from './walkReader.ts'
 import { walkNameFilter } from './walkRows.ts'
 
-import type { WalkFragment } from './walkRows.ts'
-
 const DATA = new URL('../test_data/', import.meta.url).pathname
 
 function reader(name: string) {
@@ -45,7 +43,7 @@ const walkNames = (text: string) =>
 test('the header names the format, the reference, the haplotypes and the chunk size', async () => {
   const header = await reader('header.GRCh38').header()
   expect(header).toMatchObject({
-    format: 2,
+    format: 3,
     chunk: 1000,
     references: ['GRCh38'],
     haplotypes: ['HG00097#1', 'HG002#1', 'HG002#2'],
@@ -57,8 +55,23 @@ test('a format 1 walk file is refused, with what to rebuild it with', async () =
   await expect(walks.header()).rejects.toThrow(WalkFormatError)
   await expect(
     walks.cut('GRCh38#0#chr1', { start: 0, end: 600 }),
-  ).rejects.toThrow(/rebuild it with gfa-to-tabix 1.0/)
+  ).rejects.toThrow(/rebuild it with gfa-to-tabix 1.1/)
 })
+
+test.each([2, 4])(
+  'a format %i walk file is refused, with what to rebuild it with',
+  async format => {
+    const walks = new WalkReader({
+      getHeaderLines: () =>
+        Promise.resolve([`#walks\tformat:i:${format}\tchunk:i:1000`]),
+      getLines: () => Promise.resolve(),
+      getReferenceSequenceNames: () => Promise.resolve([]),
+    })
+    await expect(walks.header()).rejects.toThrow(
+      `This walk file is format ${format}; @jbrowse/graph-walks reads format 3, so rebuild it with gfa-to-tabix 1.1 or later`,
+    )
+  },
+)
 
 test('a cut keeps the reference and the haplotypes asked for', async () => {
   const names = walkNames(
@@ -104,118 +117,65 @@ test('a walk the read cuts off is read on to the chunk its row names', async () 
   expect([...hg002.ids]).toContain(9)
 })
 
-// Twenty 500 bp reference nodes in 1 kb chunks, built by gfa-to-tabix as
-// format 3 (records) and format 2 (records-f2):
+// Twenty 500 bp reference nodes in 1 kb chunks, built by gfa-to-tabix:
 //   W GRCh38 0 chr1 0    10000 >1>2>...>20
 //   W HG002  1 chr1 0    2000  >1>2>3>4
 //   W HG002  1 chr1 2500 3200  >30          visits no reference node
 //   W HG002  1 chr1 4000 7000  >7>8>...>12
 //   W HG003  1 chr1 0    10000 >1>2>3>19>20>4>5>...>18
-const stops = async (name: string, start: number, end: number) => {
-  const { fragments } = await reader(`${name}.GRCh38`).cut(
+const records = async (start: number, end: number, name: string) => {
+  const { fragments } = await reader('records.GRCh38').cut(
     'GRCh38#0#chr1',
     { start, end },
     { context: 0 },
   )
-  const hg002 = fragments.find(f => f.name === 'HG002#1#chr1')!
-  return [hg002.fragStart, hg002.before, hg002.after]
+  return fragments
+    .filter(f => f.name === name)
+    .map(f => [f.fragStart, f.hapStart, f.hapEnd, f.before, f.after])
 }
+const chunk = (start: number) => ({ refName: 'GRCh38#0#chr1', start })
 
-test("a format 3 fragment stops at a record's end with the bp to the next record", async () => {
-  expect(await stops('records', 1000, 2000)).toEqual([
-    0,
-    { kind: 'window' },
-    { kind: 'break', bp: 500 },
+test("a fragment stops at its record's end with the bp to the contig's next record", async () => {
+  expect(await records(1000, 2000, 'HG002#1#chr1')).toEqual([
+    [0, 1000, 2000, { kind: 'end', trimmed: 1000 }, { kind: 'break', bp: 500 }],
   ])
-  expect(await stops('records', 3000, 3600)).toEqual([
-    4000,
-    { kind: 'break', bp: 800 },
-    { kind: 'window' },
+  expect(await records(3000, 3600, 'HG002#1#chr1')).toEqual([
+    [
+      4000,
+      4000,
+      5000,
+      { kind: 'break', bp: 800 },
+      { kind: 'elsewhere', chunk: chunk(5000), trimmed: 1000 },
+    ],
   ])
-  expect(await stops('records', 5000, 6000)).toEqual([
-    4000,
-    { kind: 'window' },
-    { kind: 'end' },
+  expect(await records(5000, 6000, 'HG002#1#chr1')).toEqual([
+    [
+      4000,
+      6000,
+      7000,
+      { kind: 'elsewhere', chunk: chunk(3000), trimmed: 1000 },
+      { kind: 'end' },
+    ],
   ])
 })
 
-test("a format 2 fragment stops at a record's end without saying whether the contig goes on", async () => {
-  expect((await stops('records-f2', 1000, 2000))[2]).toEqual({
-    kind: 'recordEnd',
-  })
-  expect((await stops('records-f2', 3000, 3600))[1]).toEqual({
-    kind: 'recordEnd',
-  })
-  expect((await stops('records-f2', 5000, 6000))[2]).toEqual({
-    kind: 'recordEnd',
-  })
-})
-
-const hg003 = (fragments: WalkFragment[]) =>
-  fragments
-    .filter(f => f.name === 'HG003#1#chr1')
-    .map(f => [f.hapStart, f.hapEnd, [...f.ids], f.before, f.after])
-
-test.each(['records', 'records-f2'])(
-  'a walk leaving the window for eight chunks stops where it leaves and comes back (%s)',
-  async name => {
-    const { fragments } = await reader(`${name}.GRCh38`).cut(
-      'GRCh38#0#chr1',
-      { start: 1000, end: 2000 },
-      { context: 0 },
-    )
-    const away = { refName: 'GRCh38#0#chr1', start: 9000 }
-    expect(hg003(fragments)).toEqual([
-      [
-        1000,
-        1500,
-        [3],
-        { kind: 'window' },
-        { kind: 'elsewhere', chunk: away, bp: 1000 },
-      ],
-      [
-        2500,
-        3000,
-        [4],
-        { kind: 'elsewhere', chunk: away, bp: 1000 },
-        { kind: 'window' },
-      ],
-    ])
-  },
-)
-
-test.each(['records', 'records-f2'])(
-  'the excursion option reads the chunk a walk visits between two fragments and joins them (%s)',
-  async name => {
-    const getLines = vi.spyOn(TabixIndexedFile.prototype, 'getLines')
-    const { graph, kept, fragments } = await reader(`${name}.GRCh38`).cut(
-      'GRCh38#0#chr1',
-      { start: 1000, end: 2000 },
-      { context: 0, excursions: true },
-    )
-    const reads = getLines.mock.calls.map(call => String(call.slice(1, 3)))
-    getLines.mockRestore()
-    expect(reads).toContain('9000,9001')
-    expect(hg003(fragments)).toEqual([
-      [1000, 3000, [3, 19, 20, 4], { kind: 'window' }, { kind: 'window' }],
-    ])
-    expect(kept.has(19) && kept.has(20)).toBe(true)
-    expect(graph.nodes.get(19)).toMatchObject({ start: 9000, onWindow: false })
-    expect(fragments.find(f => f.name === 'GRCh38#0#chr1')!.ids).toEqual(
-      Int32Array.from([3, 4]),
-    )
-  },
-)
-
-test('a walk file of a format the reader does not know is refused by name', async () => {
-  const walks = new WalkReader({
-    getHeaderLines: () => Promise.resolve(['#walks\tformat:i:4\tchunk:i:1000']),
-    getLines: () => Promise.resolve(),
-    getReferenceSequenceNames: () => Promise.resolve([]),
-  })
-  await expect(walks.header()).rejects.toThrow(
-    'This walk file is format 4, which this version of @jbrowse/graph-walks cannot read; it reads formats 2 and 3',
-  )
+test('a walk leaving the window for eight chunks stops where it leaves and comes back', async () => {
+  expect(await records(1000, 2000, 'HG003#1#chr1')).toEqual([
+    [
+      0,
+      1000,
+      1500,
+      { kind: 'end', trimmed: 1000 },
+      { kind: 'elsewhere', chunk: chunk(9000), bp: 1000 },
+    ],
+    [
+      0,
+      2500,
+      3000,
+      { kind: 'elsewhere', chunk: chunk(9000), bp: 1000 },
+      { kind: 'elsewhere', chunk: chunk(3000), trimmed: 1000 },
+    ],
+  ])
 })
 
 test('a cut on a signal already aborted reads no row', async () => {

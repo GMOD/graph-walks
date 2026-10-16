@@ -15,7 +15,6 @@ export {
 export type {
   BudgetNames,
   WalkChunk,
-  WalkExcursion,
   WalkFragment,
   WalkGap,
   WalkHeader,
@@ -40,7 +39,6 @@ export type {
 } from './walkReader.ts'
 export {
   RegionTooLargeError,
-  WALK_STOP_KINDS,
   bpString,
   panSNContig,
   panSNHaplotype,

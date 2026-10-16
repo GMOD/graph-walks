@@ -1,6 +1,6 @@
 import type { WalkChunk, WalkRow } from './walkRows.ts'
 
-// A chunk of gfa-to-tabix's walk format 2 or 3, one file per reference (that
+// A chunk of gfa-to-tabix's walk format 3, one file per reference (that
 // repo's docs/walks-format.md). A chunk lists its `ref` rows, which joined in
 // hapOffset order are the chunk's reference path R; a `nodes` row with the
 // lengths of the nodes its routes visit; `route` rows, each a way off R; and a

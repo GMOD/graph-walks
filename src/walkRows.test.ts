@@ -1,5 +1,4 @@
 import { graphTablesGFA } from './testing.ts'
-import { WALK_STOP_KINDS } from './util.ts'
 import {
   WalkGraph,
   byteBudgetError,
@@ -420,7 +419,7 @@ test('the reference walk is written first, whatever order the rows came in', () 
   ])
 })
 
-test('the tables keep each walk record start and why it stops', () => {
+test('the tables keep what lies past either end of each walk', () => {
   const g = graph()
   const runs = joinPieces([
     walkRow('GRCh38#0#chr1', 0, 0, forward(1, 2, 3, 4)),
@@ -430,16 +429,16 @@ test('the tables keep each walk record start and why it stops', () => {
   fragments[1]!.after = {
     kind: 'elsewhere',
     chunk: { refName: 'GRCh38#0#chr1', start: 65536 },
+    trimmed: 120,
   }
   fragments[1]!.before = { kind: 'break', bp: 19021 }
-  const { walks } = g.tables(kept, fragments)
-  expect([...walks.fragStarts!]).toEqual([0, 400])
-  expect([...walks.before!.kinds].map(k => WALK_STOP_KINDS[k])).toEqual([
-    'window',
-    'break',
-  ])
-  expect([...walks.before!.bp]).toEqual([Number.NaN, 19021])
-  expect([...walks.after!.chunkRefs]).toEqual([-1, 0])
-  expect([...walks.after!.chunkStarts]).toEqual([Number.NaN, 65536])
-  expect(walks.after!.chunkRefNames).toEqual(['GRCh38#0#chr1'])
+  const { before, after } = g.tables(kept, fragments).walks
+  const kinds = (t: typeof before) => [...t!.kinds].map(k => t!.kindNames[k])
+  expect(kinds(before)).toEqual(['end', 'break'])
+  expect(kinds(after)).toEqual(['end', 'elsewhere'])
+  expect([...before!.bp]).toEqual([Number.NaN, 19021])
+  expect(after!.trimmed[1]).toBe(120)
+  expect([...after!.chunkRefs]).toEqual([-1, 0])
+  expect([...after!.chunkStarts]).toEqual([Number.NaN, 65536])
+  expect(after!.chunkRefNames).toEqual(['GRCh38#0#chr1'])
 })
