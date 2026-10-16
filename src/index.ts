@@ -15,11 +15,14 @@ export {
 export type {
   BudgetNames,
   WalkChunk,
+  WalkExcursion,
   WalkFragment,
+  WalkGap,
   WalkHeader,
   WalkNode,
   WalkRow,
   WalkRun,
+  WalkStop,
   WalkWindow,
 } from './walkRows.ts'
 export {

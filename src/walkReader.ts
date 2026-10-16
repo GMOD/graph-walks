@@ -13,7 +13,13 @@ import {
 } from './walkRows.ts'
 
 import type { DecodedChunk } from './walkChunk.ts'
-import type { BudgetNames, WalkHeader, WalkRow } from './walkRows.ts'
+import type {
+  BudgetNames,
+  WalkChunk,
+  WalkExcursion,
+  WalkHeader,
+  WalkRow,
+} from './walkRows.ts'
 
 // A window reads whole chunks and keeps the steps on it, so a narrow window
 // reads several times what it keeps: 464 haplotypes across the 1.5 kb ABCA7
@@ -29,6 +35,28 @@ const FOLLOW_CHUNKS = 4
 
 // bp of reference a cut keeps past each end of the window
 const WALK_CONTEXT = 1000
+
+interface Span {
+  refName: string
+  start: number
+  end: number
+}
+
+const chunkKey = (c: WalkChunk) => `${c.refName}:${c.start}`
+
+// The chunks excursions name, each with which rows of it fill a gap
+function excursionsMissing(excursions: WalkExcursion[]) {
+  return excursions.flatMap(e =>
+    e.chunks.map(chunk => ({
+      chunk,
+      wants: (row: WalkRow) =>
+        row.name === e.name &&
+        row.fragStart === e.fragStart &&
+        row.piece > e.from &&
+        row.piece < e.to,
+    })),
+  )
+}
 
 // The budgets the JBrowse graph plugin and BandageJS cut a browser's window by
 export const WALK_BUDGETS = { stepBudget: 4_000_000, byteBudget: 8_000_000 }
@@ -53,7 +81,7 @@ export interface TabixSource {
   ): Promise<number>
 }
 
-// A walk file gfa-to-tabix 0.12 or earlier wrote, which the reader refuses
+// A walk file in a format other than 2 or 3, which the reader refuses
 export class WalkFormatError extends Error {
   override name = 'WalkFormatError'
 }
@@ -105,6 +133,9 @@ export interface WalkCutOptions {
   sequences?: boolean
   // how a zoom-in notice names the budgets
   budgetNames?: BudgetNames
+  // read the chunks a walk visits between two of its fragments, however far
+  // or on whichever sequence, so the fragments join; off by default
+  excursions?: boolean
 }
 
 export type WalkReaderHeader = WalkHeader & { chunk: number; lookback: number }
@@ -133,9 +164,14 @@ export class WalkReader {
     if (!this.headerRead) {
       const read = this.walks.getHeaderLines().then(lines => {
         const header = walkHeader(lines)
-        if (header.format !== 2) {
+        if (header.format === undefined) {
           throw new WalkFormatError(
             'This walk file is format 1, from gfa-to-tabix 0.12 or earlier; rebuild it with gfa-to-tabix 1.0 or later',
+          )
+        }
+        if (header.format !== 2 && header.format !== 3) {
+          throw new WalkFormatError(
+            `This walk file is format ${header.format}, which this version of @jbrowse/graph-walks cannot read; it reads formats 2 and 3`,
           )
         }
         const chunk = header.chunk ?? 65536
@@ -201,23 +237,18 @@ export class WalkReader {
       byteBudget = Infinity,
       links = true,
     } = opts
-    const { chunk, lookback } = await this.header({ signal })
+    const { chunk, lookback, format } = await this.header({ signal })
     const from = chunkQueryStart(region.start, chunk, lookback)
     const bytesForRegions = this.walks.bytesForRegions?.bind(this.walks)
     const budgeted =
       Number.isFinite(byteBudget) && bytesForRegions !== undefined
-    const bytesFor = async (spans: { start: number; end: number }[]) =>
-      budgeted
-        ? bytesForRegions(
-            spans.map(span => ({ refName, ...span })),
-            { signal },
-          )
-        : 0
+    const bytesFor = async (spans: Span[]) =>
+      budgeted && spans.length > 0 ? bytesForRegions(spans, { signal }) : 0
     const tooLarge = budgeted
       ? await byteBudgetError(
           async end => {
             checkRange(refName, from, end)
-            return bytesFor([{ start: from, end }])
+            return bytesFor([{ refName, start: from, end }])
           },
           byteBudget,
           region,
@@ -243,14 +274,33 @@ export class WalkReader {
       context,
       sequences: opts.sequences,
     })
-    const decoded = new Set<number>()
-    const ends: DecodedChunk['ends'] = []
     // each chunk read is decoded once, into its rows, nodes and the links
-    // between pieces
-    const readChunks = async (start: number, end: number) => {
-      checkRange(refName, start, end)
+    // between pieces; the kept rows an excursion's read leaves untaken wait
+    // here for a later read
+    const untaken = new Map<string, WalkRow[]>()
+    const ends: DecodedChunk['ends'] = []
+    const take = (key: string, wanted?: (row: WalkRow) => boolean) => {
+      const waiting = untaken.get(key)
+      if (!waiting?.length) {
+        return
+      }
+      const rest: WalkRow[] = []
+      for (const row of waiting) {
+        if (!wanted || wanted(row)) {
+          rows.push(row)
+        } else {
+          rest.push(row)
+        }
+      }
+      untaken.set(key, rest)
+    }
+    const readChunks = async (
+      { refName: seq, start, end }: Span,
+      wanted?: (row: WalkRow) => boolean,
+    ) => {
+      checkRange(seq, start, end)
       const byChunk = new Map<number, string[][]>()
-      await this.walks.getLines(refName, start, end, {
+      await this.walks.getLines(seq, start, end, {
         signal: reads.signal,
         lineCallback: line => {
           const cols = line.split('\t')
@@ -264,18 +314,18 @@ export class WalkReader {
         },
       })
       for (const [cs, chunkRows] of byChunk) {
-        if (decoded.has(cs)) {
-          continue
+        const key = chunkKey({ refName: seq, start: cs })
+        if (!untaken.has(key)) {
+          const chunkCut = decodeChunk(chunkRows, keep, opts.sequences)
+          untaken.set(key, chunkCut.rows)
+          for (const [id, node] of chunkCut.nodes) {
+            graph.placeNode(id, node)
+          }
+          graph.addSequences(chunkCut.sequences)
+          graph.addChunk(chunkCut.chunk)
+          ends.push(...chunkCut.ends)
         }
-        decoded.add(cs)
-        const chunkCut = decodeChunk(chunkRows, keep, opts.sequences)
-        rows.push(...chunkCut.rows)
-        for (const [id, node] of chunkCut.nodes) {
-          graph.placeNode(id, node)
-        }
-        graph.addSequences(chunkCut.sequences)
-        graph.addChunk(chunkCut.chunk)
-        ends.push(...chunkCut.ends)
+        take(key, wanted)
       }
       if (links) {
         for (const [a, b] of pieceLinks(ends)) {
@@ -283,8 +333,11 @@ export class WalkReader {
         }
       }
     }
+    const linksRecords = format === 3
+    const cutRows = () =>
+      walkCut(joinPieces(rows), graph.nodes, refName, linksRecords)
     try {
-      await readChunks(from, region.end)
+      await readChunks({ refName, start: from, end: region.end })
       const tooManyRead = stepBudgetError(
         rows,
         stepBudget,
@@ -304,27 +357,57 @@ export class WalkReader {
       let last = Math.floor((region.end - 1) / chunk) * chunk
       const reach = FOLLOW_CHUNKS * chunk
       const [lo, hi] = [first - reach, last + reach]
-      cut = walkCut(joinPieces(rows), graph.nodes, refName)
-      let spent = await bytesFor([{ start: from, end: region.end }])
+      cut = cutRows()
+      let spent = await bytesFor([{ refName, start: from, end: region.end }])
       for (let round = 0; round < FOLLOW_ROUNDS; round++) {
         const starts = cut.open
           .filter(c => c.refName === refName && c.start >= lo && c.start <= hi)
           .map(c => c.start)
         const spans = [
-          { start: Math.min(first, ...starts), end: first },
-          { start: last + chunk, end: Math.max(last, ...starts) + 1 },
+          { refName, start: Math.min(first, ...starts), end: first },
+          { refName, start: last + chunk, end: Math.max(last, ...starts) + 1 },
         ].filter(span => span.end > span.start)
-        if (spans.length === 0) {
-          break
+        const missing = opts.excursions ? excursionsMissing(cut.excursions) : []
+        const wanted = (row: WalkRow) => missing.some(m => m.wants(row))
+        const fetch = new Map<string, Span>()
+        for (const { chunk: c } of missing) {
+          const key = chunkKey(c)
+          const inSpans = spans.some(
+            span =>
+              span.refName === c.refName &&
+              c.start >= span.start &&
+              c.start < span.end,
+          )
+          if (!untaken.has(key) && !inSpans) {
+            fetch.set(key, { ...c, end: c.start + 1 })
+          }
         }
-        spent += await bytesFor(spans)
+        const takeHeld = () => {
+          const held = rows.length
+          for (const { chunk } of missing) {
+            take(chunkKey(chunk), wanted)
+          }
+          return rows.length > held
+        }
+        if (spans.length + fetch.size === 0) {
+          if (!takeHeld()) {
+            break
+          }
+          cut = cutRows()
+          continue
+        }
+        spent += await bytesFor([...spans, ...fetch.values()])
         if (spent > byteBudget) {
           break
         }
         first = Math.min(first, ...starts)
         last = Math.max(last, ...starts)
-        await Promise.all(spans.map(({ start, end }) => readChunks(start, end)))
-        cut = walkCut(joinPieces(rows), graph.nodes, refName)
+        await Promise.all([
+          ...spans.map(span => readChunks(span)),
+          ...[...fetch.values()].map(span => readChunks(span, wanted)),
+        ])
+        takeHeld()
+        cut = cutRows()
       }
     } catch (error) {
       reads.abort()

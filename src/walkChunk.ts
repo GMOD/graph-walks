@@ -1,6 +1,6 @@
 import type { WalkChunk, WalkRow } from './walkRows.ts'
 
-// A chunk of gfa-to-tabix's walk format 2, one file per reference (that
+// A chunk of gfa-to-tabix's walk format 2 or 3, one file per reference (that
 // repo's docs/walks-format.md). A chunk lists its `ref` rows, which joined in
 // hapOffset order are the chunk's reference path R; a `nodes` row with the
 // lengths of the nodes its routes visit; `route` rows, each a way off R; and a
@@ -63,25 +63,34 @@ export function canonicalLink(a: number, b: number): [number, number] {
   return a > otherStrand(b) ? [otherStrand(b), otherStrand(a)] : [a, b]
 }
 
+// A chunk tag's value, `i:cs` on the row's own sequence or `Z:seq:cs`
+function chunkTag(tag: string, anchor: string): WalkChunk {
+  const at = tag.lastIndexOf(':')
+  return {
+    refName: tag[3] === 'Z' ? tag.slice(5, at) : anchor,
+    start: +tag.slice(at + 1),
+  }
+}
+
+// The neighbour tags pv/nx, and format 3's record tags pg/pr and ng/nr
 function tags(cols: string[], from: number, anchor: string) {
-  let prev: WalkChunk | undefined
-  let next: WalkChunk | undefined
+  const out: Pick<WalkRow, 'prev' | 'next' | 'prevRecord' | 'nextRecord'> = {}
   for (let k = from; k < cols.length; k++) {
     const tag = cols[k]!
-    if (tag.startsWith('pv:') || tag.startsWith('nx:')) {
-      const at = tag.lastIndexOf(':')
-      const chunk = {
-        refName: tag[3] === 'Z' ? tag.slice(5, at) : anchor,
-        start: +tag.slice(at + 1),
-      }
-      if (tag.startsWith('pv:')) {
-        prev = chunk
-      } else {
-        next = chunk
-      }
+    const key = tag.slice(0, 2)
+    if (key === 'pv') {
+      out.prev = chunkTag(tag, anchor)
+    } else if (key === 'nx') {
+      out.next = chunkTag(tag, anchor)
+    } else if (key === 'pg' || key === 'ng') {
+      const side = key === 'pg' ? 'prevRecord' : 'nextRecord'
+      out[side] = { ...out[side], bp: +tag.slice(5) }
+    } else if (key === 'pr' || key === 'nr') {
+      const side = key === 'pr' ? 'prevRecord' : 'nextRecord'
+      out[side] = { bp: 0, ...out[side], chunk: chunkTag(tag, anchor) }
     }
   }
-  return { prev, next }
+  return out
 }
 
 // The chunk's reference path R: its handles, the bp of its steps before each

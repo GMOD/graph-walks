@@ -9,12 +9,13 @@ import { placeAndLink } from './walkChunk.ts'
 import type { GraphTables } from './util.ts'
 import type { Chunk } from './walkChunk.ts'
 
-// A walk row of gfa-to-tabix's format 2, its steps decoded with its chunk
-// (walkFormat2.ts). A haplotype path is cut into pieces, one per chunk it
+// A walk row of gfa-to-tabix's format 2 or 3, its steps decoded with its
+// chunk (walkChunk.ts). A haplotype path is cut into pieces, one per chunk it
 // passes, and each piece's row takes the next piece index, so consecutive
 // indices of one path join. A row names the chunk its path's piece before and
 // after it is filed under, `prev` and `next`, with none at either end of the
-// path.
+// path. In format 3 a record's first and last rows also name the gap to the
+// contig's record before and after, `prevRecord` and `nextRecord`.
 export interface WalkRow {
   name: string
   fragStart: number
@@ -25,12 +26,40 @@ export interface WalkRow {
   chunkStart: number
   prev?: WalkChunk
   next?: WalkChunk
+  prevRecord?: WalkGap
+  nextRecord?: WalkGap
 }
 
 export interface WalkChunk {
   refName: string
   start: number
 }
+
+// Contig bp the graph lacks between two records, and the chunk the other
+// record's nearest piece is filed under, when that record has rows
+export interface WalkGap {
+  bp: number
+  chunk?: WalkChunk
+}
+
+/**
+ * Why a fragment stops at one end:
+ * - `window`: the cut trimmed a walk that goes on in the rows read
+ * - `elsewhere`: the walk goes on in `chunk`, which the cut did not read; `bp`
+ *   is how far on it comes back, when the read holds its next piece
+ * - `break`: the contig's record ends, and its next record starts `bp` on
+ *   (format 3)
+ * - `end`: the contig's last record in the graph ends (format 3), or the path
+ *   ends
+ * - `recordEnd`: the record ends, and a format 2 file does not say whether
+ *   another record of the contig goes on
+ */
+export type WalkStop =
+  | { kind: 'window' }
+  | { kind: 'elsewhere'; chunk: WalkChunk; bp?: number }
+  | { kind: 'break'; bp: number; chunk?: WalkChunk }
+  | { kind: 'end' }
+  | { kind: 'recordEnd' }
 
 export interface WalkNode {
   refName: string
@@ -51,8 +80,7 @@ export interface WalkWindow {
 }
 
 export interface WalkHeader {
-  // 2 for gfa-to-tabix's format 2 (format:i:2); format 1 states none, and
-  // the reader refuses it
+  // format:i:2 or format:i:3; format 1 states none, and the reader refuses it
   format?: number
   chunk?: number
   maxNode?: number
@@ -132,11 +160,16 @@ export function walksKept(wanted: string[] | undefined, refName: string) {
 // and where the path goes on before and after it, when the rows say
 export interface WalkRun {
   name: string
+  fragStart: number
   hapOffset: number
+  firstPiece: number
+  lastPiece: number
   ids: Int32Array
   rev: Uint8Array
   prev?: WalkChunk
   next?: WalkChunk
+  prevRecord?: WalkGap
+  nextRecord?: WalkGap
 }
 
 export function joinPieces(rows: WalkRow[]) {
@@ -178,22 +211,41 @@ function decodeRun(pieces: WalkRow[]): WalkRun {
     at += p.n
   }
   const first = pieces[0]!
+  const last = pieces.at(-1)!
   return {
     name: first.name,
+    fragStart: first.fragStart,
     hapOffset: first.hapOffset,
+    firstPiece: first.piece,
+    lastPiece: last.piece,
     ids,
     rev,
     prev: first.prev,
-    next: pieces.at(-1)!.next,
+    next: last.next,
+    prevRecord: first.prevRecord,
+    nextRecord: last.nextRecord,
   }
 }
 
 export interface WalkFragment {
   name: string
+  fragStart: number
   hapStart: number
   hapEnd: number
   ids: Int32Array
   rev: Uint8Array
+  before: WalkStop
+  after: WalkStop
+}
+
+// The pieces of a walk missing between two of its fragments, `from` to `to`
+// exclusive, and the chunks the pieces next to them are filed under
+export interface WalkExcursion {
+  name: string
+  fragStart: number
+  from: number
+  to: number
+  chunks: WalkChunk[]
 }
 
 /**
@@ -210,11 +262,17 @@ export interface WalkFragment {
  * node drew without it. The run-on adds no node, so one pass is enough, but
  * it reaches through nodes other walks brought in, so with a window edge inside
  * a collapsed array a row's length depends on which haplotypes are cut.
+ *
+ * Each fragment says why it stops at either end (WalkStop). `linksRecords`
+ * is true for a format 3 file, whose rows tell a record's end from the
+ * contig's. Two fragments of one walk with pieces missing between them make
+ * an excursion, which a reader can fill by reading the chunks it names.
  */
 export function walkCut(
   runs: WalkRun[],
   nodes: Map<number, WalkNode>,
   refName: string,
+  linksRecords = false,
 ) {
   const onWindow = (id: number) => nodes.get(id)?.onWindow === true
   const reference = (id: number) => {
@@ -315,7 +373,59 @@ export function walkCut(
     const node = nodes.get(id)
     return node === undefined ? 0 : node.end - node.start
   }
+  const bpOf = (ids: Int32Array, from: number, to: number) => {
+    let bp = 0
+    for (let i = from; i < to; i++) {
+      bp += length(ids[i]!)
+    }
+    return bp
+  }
+  const byPath = new Map<string, WalkRun[]>()
+  for (const run of runs) {
+    const key = `${run.name}\t${run.fragStart}`
+    const list = byPath.get(key)
+    if (list) {
+      list.push(run)
+    } else {
+      byPath.set(key, [run])
+    }
+  }
+  const neighbours = new Map<WalkRun, [WalkRun?, WalkRun?]>()
+  for (const list of byPath.values()) {
+    list.sort((a, b) => a.firstPiece - b.firstPiece)
+    list.forEach((run, i) => {
+      neighbours.set(run, [list[i - 1], list[i + 1]])
+    })
+  }
+  const stop = (
+    run: WalkRun,
+    trimmed: boolean,
+    after: boolean,
+    edge: number,
+  ): WalkStop => {
+    if (trimmed) {
+      return { kind: 'window' }
+    }
+    const chunk = after ? run.next : run.prev
+    if (chunk) {
+      const other = neighbours.get(run)?.[after ? 1 : 0]
+      return other
+        ? {
+            kind: 'elsewhere',
+            chunk,
+            bp: after
+              ? other.hapOffset - edge
+              : edge - other.hapOffset - bpOf(other.ids, 0, other.ids.length),
+          }
+        : { kind: 'elsewhere', chunk }
+    }
+    const gap = after ? run.nextRecord : run.prevRecord
+    return gap
+      ? { kind: 'break', ...gap }
+      : { kind: linksRecords ? 'end' : 'recordEnd' }
+  }
   const fragments: WalkFragment[] = []
+  const fragmentOf = new Map<WalkRun, WalkFragment>()
   for (const { run, first: f, last: l } of spans) {
     const { ids, rev } = run
     let first = f
@@ -326,23 +436,41 @@ export function walkCut(
     while (last < ids.length - 1 && kept.has(ids[last + 1]!)) {
       last++
     }
-    let hapStart = run.hapOffset
-    for (let i = 0; i < first; i++) {
-      hapStart += length(ids[i]!)
-    }
-    let hapEnd = hapStart
-    for (let i = first; i <= last; i++) {
-      hapEnd += length(ids[i]!)
-    }
-    fragments.push({
+    const hapStart = run.hapOffset + bpOf(ids, 0, first)
+    const hapEnd = hapStart + bpOf(ids, first, last + 1)
+    const fragment: WalkFragment = {
       name: run.name,
+      fragStart: run.fragStart,
       hapStart,
       hapEnd,
       ids: ids.subarray(first, last + 1),
       rev: rev.subarray(first, last + 1),
-    })
+      before: stop(run, first > 0, false, hapStart),
+      after: stop(run, last < ids.length - 1, true, hapEnd),
+    }
+    fragments.push(fragment)
+    fragmentOf.set(run, fragment)
   }
-  return { kept, fragments, open: [...open.values()] }
+  const excursions: WalkExcursion[] = []
+  for (const list of byPath.values()) {
+    const cut = list.filter(run => fragmentOf.has(run))
+    for (let i = 1; i < cut.length; i++) {
+      const a = cut[i - 1]!
+      const b = cut[i]!
+      const { after } = fragmentOf.get(a)!
+      const { before } = fragmentOf.get(b)!
+      if (after.kind === 'elsewhere' && before.kind === 'elsewhere') {
+        excursions.push({
+          name: a.name,
+          fragStart: a.fragStart,
+          from: a.lastPiece,
+          to: b.firstPiece,
+          chunks: [after.chunk, before.chunk],
+        })
+      }
+    }
+  }
+  return { kept, fragments, open: [...open.values()], excursions }
 }
 
 /**
