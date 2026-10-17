@@ -4,6 +4,7 @@ export {
   byteBudgetError,
   chunkQueryStart,
   joinPieces,
+  keptNodesError,
   keptStepsError,
   lookbackChunks,
   stepBudgetError,
@@ -33,6 +34,7 @@ export {
 export { refNameLookup, resolveRefName } from './refNames.ts'
 export { referenceNodes } from './walkChunk.ts'
 export type {
+  RegionCutOptions,
   TabixSource,
   WalkCutOptions,
   WalkReaderHeader,

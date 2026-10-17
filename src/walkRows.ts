@@ -726,14 +726,33 @@ export function keptStepsError(
   filtered: boolean,
 ) {
   const total = fragments.reduce((sum, f) => sum + f.ids.length, 0)
-  if (total <= budget) {
+  return keptOverError(total, budget, window, filtered)
+}
+
+// keptStepsError's notice for a cut that keeps more nodes than `limit`
+export function keptNodesError(
+  nodes: number,
+  limit: number,
+  window: { start: number; end: number },
+  filtered: boolean,
+) {
+  return keptOverError(nodes, limit, window, filtered)
+}
+
+function keptOverError(
+  kept: number,
+  limit: number,
+  window: { start: number; end: number },
+  filtered: boolean,
+) {
+  if (kept <= limit) {
     return undefined
   }
   const windowBp = window.end - window.start
-  const fitsBp = Math.max(1, Math.floor((windowBp * budget) / total))
+  const fitsBp = Math.max(1, Math.floor((windowBp * limit) / kept))
   return new RegionTooLargeError(
     `Zoom in to about ${bpString(fitsBp)}${filtered ? '' : ', or choose fewer haplotypes,'} to see the graph`,
-    budget,
+    limit,
     windowBp,
     fitsBp,
   )

@@ -5,11 +5,13 @@ import {
   byteBudgetError,
   chunkQueryStart,
   joinPieces,
+  keptNodesError,
   keptStepsError,
   lookbackChunks,
   stepBudgetError,
   walkCut,
   walkHeader,
+  walksKept,
 } from './walkRows.ts'
 
 import type { DecodedChunk } from './walkChunk.ts'
@@ -105,6 +107,17 @@ export interface WalkCutOptions {
   sequences?: boolean
   // how a zoom-in notice names the budgets
   budgetNames?: BudgetNames
+}
+
+export interface RegionCutOptions extends Omit<WalkCutOptions, 'keep'> {
+  // the `sample#haplotype` walks to keep beside the reference; every walk when
+  // undefined or empty
+  haplotypes?: string[]
+  // the sample whose sequence the region names, the file's first reference
+  // by default
+  referenceSample?: string
+  // the most nodes a cut keeps; Infinity, the default, has no limit
+  nodeLimit?: number
 }
 
 export type WalkReaderHeader = WalkHeader & { chunk: number; lookback: number }
@@ -342,5 +355,42 @@ export class WalkReader {
       throw tooMany
     }
     return { graph, ...cut }
+  }
+
+  /**
+   * The graph under a region as tables: the reference sample's sequence over
+   * `region`, with `context` bp either side, and the walks of the haplotypes
+   * asked for. `region.refName` may be a contig (`chr6`) or the file's whole
+   * name; the result names the sequence as the file does.
+   */
+  async cutRegion(
+    region: { refName: string; start: number; end: number },
+    opts: RegionCutOptions = {},
+  ) {
+    const { haplotypes, referenceSample, nodeLimit = Infinity, ...rest } = opts
+    const { signal } = opts
+    const header = await this.header({ signal })
+    const sample = referenceSample ?? header.references[0] ?? ''
+    const refName = await this.sequenceFor(sample, region.refName, { signal })
+    if (refName === undefined) {
+      const names = await this.referenceSequences({ signal })
+      throw new Error(
+        `The walk file has no sequence ${region.refName} on ${sample}; it holds ${names.slice(0, 5).join(', ')}${names.length > 5 ? ', …' : ''}`,
+      )
+    }
+    const { graph, kept, fragments } = await this.cut(refName, region, {
+      ...rest,
+      keep: walksKept(haplotypes, refName),
+    })
+    const tooMany = keptNodesError(
+      kept.size,
+      nodeLimit,
+      region,
+      !!haplotypes?.length,
+    )
+    if (tooMany) {
+      throw tooMany
+    }
+    return { tables: graph.tables(kept, fragments), refName, sample }
   }
 }

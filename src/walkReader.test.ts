@@ -236,6 +236,46 @@ test('a contig names its sequence on the reference sample', async () => {
   expect(await walks.sequenceFor('GRCh38', 'chr1')).toBeUndefined()
 })
 
+test("a region cut names the file's sequence for a contig, and keeps the haplotypes asked for", async () => {
+  const cut = await reader('header.GRCh38').cutRegion(
+    { refName: 'chr1', start: 1000, end: 2600 },
+    { haplotypes: ['HG002#2'] },
+  )
+  expect(cut.refName).toBe('GRCh38#0#chr1')
+  expect(cut.sample).toBe('GRCh38')
+  expect(walkNames(graphTablesGFA(cut.tables))).toEqual([
+    'GRCh38#0#chr1',
+    'HG002#2#chr1',
+  ])
+  const whole = await reader('header.GRCh38').cutRegion({
+    refName: 'GRCh38#0#chr1',
+    start: 1000,
+    end: 2600,
+  })
+  expect(graphTablesGFA(whole.tables)).toBe(
+    await gfa(reader('header.GRCh38'), 1000, 2600),
+  )
+})
+
+test('a region cut on a sequence the file lacks names the ones it holds', async () => {
+  await expect(
+    reader('header.GRCh38').cutRegion({ refName: 'chr2', start: 0, end: 100 }),
+  ).rejects.toThrow(
+    'The walk file has no sequence chr2 on GRCh38; it holds GRCh38#0#chr1',
+  )
+})
+
+test('a region cut over its node limit says how far to zoom in', async () => {
+  const error = await reader('header.GRCh38')
+    .cutRegion({ refName: 'chr1', start: 0, end: 3600 }, { nodeLimit: 4 })
+    .catch((e: unknown) => e)
+  expect(error).toBeInstanceOf(RegionTooLargeError)
+  expect(error).toMatchObject({ limit: 4, windowBp: 3600 })
+  expect((error as Error).message).toMatch(
+    /^Zoom in to about [\d.]+K?bp, or choose fewer haplotypes, to see the graph$/,
+  )
+})
+
 // The GFA format 1 files of the same graphs cut to, recorded before format 1
 // was dropped, when a format 2 cut was checked to be the format 1 cut
 const goldens = JSON.parse(
