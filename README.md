@@ -1,19 +1,20 @@
 # @jbrowse/graph-walks
 
 Cuts a window out of a pangenome graph stored as
-[gfa-to-tabix](https://github.com/GMOD/gfa-to-tabix) walk files, by range
-requests.
+[gfa-to-tabix](https://github.com/GMOD/gfa-to-tabix) files, by range requests.
 
 - **In:** a `gfa-to-tabix --walks` file, `<prefix>.<sample>.walks.bed.gz` with
-  its `.tbi`, and a region on its reference
-- **Out:** the reference over the region, every haplotype's walk through it, and
-  the nodes and links they visit, as typed arrays
+  its `.tbi`, or a segment index, `<prefix>.segs.bed.gz` and
+  `<prefix>.links.bed.gz`, and a region on the reference
+- **Out:** from a walk file, the reference over the region, every haplotype's
+  walk through it, and the nodes and links they visit, as typed arrays; from a
+  segment index, the segments and links under the region as GFA text
 - Reads walk format 3, which gfa-to-tabix writes from 1.1. The reader refuses
   any other format with a `WalkFormatError` asking for a rebuild
 - Has no runtime dependencies: it reads through any object with
   [@gmod/tabix](https://github.com/GMOD/tabix-js)'s `TabixIndexedFile` methods
 
-The JBrowse graph plugin, BandageJS and the sequenceTubeMap fork read walk files
+The JBrowse graph plugin, BandageJS, ggbandage and the sequenceTubeMap fork read
 through it.
 
 ## Install
@@ -53,6 +54,22 @@ const tables = graph.tables(kept, fragments)
   read from the walk file's first block
 - `reader.referenceSequences()` lists the sequences a region can be on, in full
   PanSN: `GRCh38#0#chr6`
+
+## A region by contig
+
+```ts
+const { tables, refName, sample } = await reader.cutRegion(
+  { refName: 'chr6', start: 160_614_798, end: 160_647_758 },
+  { haplotypes: ['HG00097', 'HG00133'], nodeLimit: 100_000 },
+)
+```
+
+- `cutRegion` resolves `chr6` to the reference sample's sequence,
+  `GRCh38#0#chr6`, and keeps the haplotypes named, every one when none are
+- `referenceSample` names another sample than the header's first reference. A
+  sequence the file lacks throws, naming the ones it holds
+- `nodeLimit` caps the nodes kept and throws the budgets' `RegionTooLargeError`.
+  The cut options below apply too, with `haplotypes` in place of `keep`
 
 ## Cut options
 
@@ -100,6 +117,29 @@ not keep, then:
   its own walk and those of the haplotypes named
 - `refNameLookup` and `resolveRefName` resolve a contig the same way against any
   tabix file's sequence names
+
+## Segment indexes
+
+```ts
+import { rgfaCut } from '@jbrowse/graph-walks'
+
+const gfa = await rgfaCut(
+  { segments: segsFile, links: linksFile },
+  { refName: 'GRCh38#0#chr6', start: 160_614_798, end: 160_647_758 },
+  { hops: 1 },
+)
+```
+
+- `segsFile` and `linksFile` are `TabixIndexedFile`s, or any object with its
+  `getLines`
+- gfa-to-tabix's default, anchored layout files every allele under the reference
+  interval its bubble hangs from, so one read of each file holds the whole cut
+- Its contig layout files each segment under the segment's own sequence. Each of
+  `hops` rounds follows links out from the window, and a last read closes every
+  allele reached
+- `rgfaCut` writes each segment as `*` with LN/SN/SO/SR tags and the tag
+  column's tags, sorted, so one region always gives the same text
+- `parseSegmentRow`, `parseLinkLine` and `segmentSamples` read single rows
 
 ## How a cut works
 

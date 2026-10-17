@@ -48,3 +48,14 @@ export {
   panSNSample,
 } from './util.ts'
 export type { GraphTables, WalkStopTable } from './util.ts'
+export {
+  formatSubgraph,
+  linkKey,
+  parseLinkLine,
+  parseSegmentLine,
+  parseSegmentRow,
+  segmentSamples,
+} from './rgfaBed.ts'
+export type { RgfaLink, RgfaSegment, StableSpan } from './rgfaBed.ts'
+export { rgfaCut } from './rgfaCut.ts'
+export type { RgfaFiles } from './rgfaCut.ts'
