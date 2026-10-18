@@ -331,6 +331,31 @@ test('a node is placed once', () => {
   })
 })
 
+test("a node's reference position wins, whichever chunk is read first", () => {
+  const g = graph()
+  g.placeNode(7, { rank: 1, refName: 'HG002#1#chr1', start: 0, end: 100 })
+  g.placeNode(7, { rank: 0, refName: 'GRCh38#0#chr1', start: 200, end: 300 })
+  g.placeNode(7, { rank: 1, refName: 'HG002#1#chr1', start: 0, end: 100 })
+  g.placeNode(8, { rank: 0, refName: 'GRCh38#0#chr1', start: 900, end: 1000 })
+  g.placeNode(8, { rank: 0, refName: 'GRCh38#0#chr1', start: 150, end: 250 })
+  expect([g.nodes.get(7), g.nodes.get(8)]).toEqual([
+    {
+      rank: 0,
+      refName: 'GRCh38#0#chr1',
+      start: 200,
+      end: 300,
+      onWindow: true,
+    },
+    {
+      rank: 0,
+      refName: 'GRCh38#0#chr1',
+      start: 150,
+      end: 250,
+      onWindow: true,
+    },
+  ])
+})
+
 test('a cut is written as the GFA its tables stand for', () => {
   const g = graph()
   const runs = joinPieces([

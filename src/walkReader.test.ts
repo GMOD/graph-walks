@@ -276,6 +276,93 @@ test('a region cut over its node limit says how far to zoom in', async () => {
   )
 })
 
+// A walk file from rows written space-separated, served in chunk order or
+// reversed
+function inline(lines: string[], reversed = false) {
+  const rows = lines.map(line => line.split(' ').join('\t'))
+  const header = rows.filter(row => row.startsWith('#'))
+  const body = rows.filter(row => !row.startsWith('#'))
+  return new WalkReader({
+    getHeaderLines: () => Promise.resolve(header),
+    getLines: (refName, start, end, { lineCallback }) => {
+      const hits = body.filter(row => {
+        const [seq, cs] = row.split('\t')
+        return seq === refName && +cs! < end && +cs! + 1 > start
+      })
+      for (const row of reversed ? hits.reverse() : hits) {
+        lineCallback(row)
+      }
+      return Promise.resolve()
+    },
+    getReferenceSequenceNames: () => Promise.resolve(['R#0#chr']),
+  })
+}
+
+// Eight 4 bp reference nodes in 16 bp chunks:
+//   W R  0 chr >1>2>3>4>5>6>7>8
+//   W H1 1 c   >1>2>6>3>4>5>6>7>8
+//   W H2 1 c   >5>6>2>7>8
+// Today's writer files each visit to the other chunk as a separate piece. A
+// writer that stays keeps the visit in its piece as a route interior, so chunk
+// 0's route steps on 6, which chunk 16's ref row places, and chunk 16's on 2.
+const tinyHeader = [
+  '#walks format:i:3 chunk:i:16 maxnode:i:4',
+  '#reference R',
+  '#haplotype H1#1',
+  '#haplotype H2#1',
+]
+const pieces = [
+  ...tinyHeader,
+  'R#0#chr 0 1 ref R#0#chr 0 0 0 4 2,2,2,2 4,4,4,4 nx:i:16',
+  'R#0#chr 0 1 walk H1#1#c 0 0 0 2 2 2 . nx:i:16',
+  'R#0#chr 0 1 walk H1#1#c 0 12 2 2 6 2 . pv:i:16 nx:i:16',
+  'R#0#chr 0 1 walk H2#1#c 0 8 1 1 4 0 . pv:i:16 nx:i:16',
+  'R#0#chr 16 17 ref R#0#chr 0 16 1 4 10,2,2,2 4,4,4,4 pv:i:0',
+  'R#0#chr 16 17 walk H1#1#c 0 8 1 1 12 0 . pv:i:0 nx:i:0',
+  'R#0#chr 16 17 walk H1#1#c 0 20 3 4 10 6 . pv:i:0',
+  'R#0#chr 16 17 walk H2#1#c 0 0 0 2 10 2 . nx:i:0',
+  'R#0#chr 16 17 walk H2#1#c 0 12 2 2 14 2 . pv:i:0',
+]
+const stays = [
+  ...tinyHeader,
+  'R#0#chr 0 1 ref R#0#chr 0 0 0 4 2,2,2,2 4,4,4,4 nx:i:16',
+  'R#0#chr 0 1 nodes 6 4',
+  'R#0#chr 0 1 route 4 8 -6',
+  'R#0#chr 0 1 walk H1#1#c 0 0 0 5 2 6 0 nx:i:16',
+  'R#0#chr 16 17 ref R#0#chr 0 16 1 4 10,2,2,2 4,4,4,4 pv:i:0',
+  'R#0#chr 16 17 nodes 2 4',
+  'R#0#chr 16 17 route 12 -8 10',
+  'R#0#chr 16 17 walk H1#1#c 0 20 1 4 10 6 . pv:i:0',
+  'R#0#chr 16 17 walk H2#1#c 0 0 0 5 10 6 0',
+]
+
+// Each window reads both chunks, the first as the chunk before it
+describe.each([
+  [4, 20],
+  [16, 32],
+  [20, 28],
+  [0, 32],
+])('a reference node a route steps on, cut %i-%i', (start, end) => {
+  test.each([
+    { haplotypes: undefined },
+    { haplotypes: ['H1'] },
+    { haplotypes: ['H2'] },
+  ])(
+    'keeps its reference position, haplotypes $haplotypes',
+    async ({ haplotypes }) => {
+      const cut = (lines: string[], reversed?: boolean) =>
+        inline(lines, reversed)
+          .cutRegion({ refName: 'chr', start, end }, { haplotypes, context: 0 })
+          .then(({ tables }) => graphTablesGFA(tables))
+      const text = await cut(pieces)
+      expect(text).toMatch(/^S\t2\t\*\tLN:i:4\tSN:Z:R#0#chr\tSO:i:4\tSR:i:0$/m)
+      expect(text).toMatch(/^S\t6\t\*\tLN:i:4\tSN:Z:R#0#chr\tSO:i:20\tSR:i:0$/m)
+      expect(await cut(stays)).toBe(text)
+      expect(await cut(stays, true)).toBe(text)
+    },
+  )
+})
+
 // The GFA format 1 files of the same graphs cut to, recorded before format 1
 // was dropped, when a format 2 cut was checked to be the format 1 cut
 const goldens = JSON.parse(

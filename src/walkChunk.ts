@@ -557,7 +557,9 @@ export function decodeChunk(
  * nodes, from the chunks a cut read: `kept` holds the node ids the cut draws.
  * A node off R takes its position from the path whose name sorts first among
  * those visiting it in the chunks read, at its earliest offset, as format 1's
- * node rows had it. Links are R's and the routes', both ends in the cut.
+ * node rows had it. A node on any read chunk's R keeps its reference position,
+ * even where another chunk's route steps on it. Links are R's and the routes',
+ * both ends in the cut.
  */
 export function placeAndLink(
   chunks: Chunk[],
@@ -565,6 +567,12 @@ export function placeAndLink(
   place: (id: number, node: PlacedNode) => void,
   link: (a: number, b: number) => void,
 ) {
+  const offR = new Set<number>()
+  for (const id of kept) {
+    if (!chunks.some(({ path }) => path.occurrences.has(id))) {
+      offR.add(id)
+    }
+  }
   const best = new Map<number, PlacedNode>()
   for (const { path, routes, walks, lengths } of chunks) {
     const handles = path.handles
@@ -581,7 +589,7 @@ export function placeAndLink(
       let from = entry
       for (const h of interior) {
         const inCut = kept.has(idOf(h))
-        any ||= inCut
+        any ||= offR.has(idOf(h))
         if (inCut && from !== NONE && kept.has(idOf(from))) {
           link(...canonicalLink(from, h))
         }
@@ -642,7 +650,7 @@ export function placeAndLink(
             const h = interiorAt(route, flip, k)
             const id = idOf(h)
             const length = lengthOf(h)
-            if (kept.has(id)) {
+            if (offR.has(id)) {
               const held = best.get(id)
               if (
                 !held ||
