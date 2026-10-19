@@ -249,12 +249,21 @@ export interface WalkFragment {
  * it reaches through nodes other walks brought in, so with a window edge inside
  * a collapsed array a row's length depends on which haplotypes are cut.
  *
+ * A contained cut keeps the reference over the window and its context alone,
+ * and splits a run wherever it steps onto the reference off that stretch.
+ * Each piece between those steps that steps on the stretch is kept from its
+ * first such step to its last, so a detour that comes back is kept whole, and
+ * `context` bp of the walk past either end. At AMY1 haplotypes go from a 4 kb
+ * window to the other copies and back: the cut above keeps 9,928 nodes there,
+ * the contained cut 182.
+ *
  * Each fragment says what lies past either end (WalkStop).
  */
 export function walkCut(
   runs: WalkRun[],
   nodes: Map<number, WalkNode>,
   refName: string,
+  { contained = false, context = 0 } = {},
 ) {
   const onWindow = (id: number) => nodes.get(id)?.onWindow === true
   const reference = (id: number) => {
@@ -295,7 +304,47 @@ export function walkCut(
   let reachStart = Infinity
   let reachEnd = -Infinity
   const spans: { run: WalkRun; first: number; last: number }[] = []
-  for (const run of runs) {
+  const length = (id: number) => {
+    const node = nodes.get(id)
+    return node === undefined ? 0 : node.end - node.start
+  }
+  // A contained run's spans: each stretch between steps onto the reference
+  // off the window that has steps on it, from its first such step to its
+  // last, and `context` bp of the walk past either
+  const containedSpans = (run: WalkRun) => {
+    const { ids } = run
+    let from = 0
+    let first = -1
+    let last = -1
+    for (let i = 0; i <= ids.length; i++) {
+      const node = i < ids.length ? nodes.get(ids[i]!) : undefined
+      if (i === ids.length || (node?.rank === 0 && !node.onWindow)) {
+        if (first >= 0) {
+          for (let bp = 0; first > from && bp < context;) {
+            bp += length(ids[--first]!)
+          }
+          for (let bp = 0; last < i - 1 && bp < context;) {
+            bp += length(ids[++last]!)
+          }
+          if (first === 0) {
+            goesOn(run.prev)
+          }
+          if (last === ids.length - 1) {
+            goesOn(run.next)
+          }
+          spans.push({ run, first, last })
+        }
+        from = i + 1
+        first = -1
+      } else if (node?.onWindow) {
+        if (first < 0) {
+          first = i
+        }
+        last = i
+      }
+    }
+  }
+  const detourSpan = (run: WalkRun) => {
     const { ids } = run
     let first = -1
     let last = -1
@@ -320,6 +369,13 @@ export function walkCut(
         }
       }
       spans.push({ run, first, last })
+    }
+  }
+  for (const run of runs) {
+    if (contained) {
+      containedSpans(run)
+    } else {
+      detourSpan(run)
     }
   }
   const inReach = (id: number) => {
@@ -350,10 +406,6 @@ export function walkCut(
     for (let i = span.first; i <= span.last; i++) {
       kept.add(ids[i]!)
     }
-  }
-  const length = (id: number) => {
-    const node = nodes.get(id)
-    return node === undefined ? 0 : node.end - node.start
   }
   const bpOf = (ids: Int32Array, from: number, to: number) => {
     let bp = 0

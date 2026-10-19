@@ -331,3 +331,91 @@ describe.each([
     },
   )
 })
+
+// A walk file from rows written space-separated, which notes the chunk of
+// each row it serves
+function rowsReader(lines: string[], served: number[] = []) {
+  const rows = lines.map(line => line.split(' ').join('\t'))
+  return new WalkReader({
+    getHeaderLines: () =>
+      Promise.resolve(rows.filter(row => row.startsWith('#'))),
+    getLines: (refName, start, end, { lineCallback }) => {
+      for (const row of rows) {
+        const [seq, cs] = row.split('\t')
+        if (seq === refName && +cs! < end && +cs! + 1 > start) {
+          served.push(+cs!)
+          lineCallback(row)
+        }
+      }
+      return Promise.resolve()
+    },
+    getReferenceSequenceNames: () => Promise.resolve(['R#0#chr']),
+  })
+}
+
+// Twelve 4 bp reference nodes in 16 bp chunks; H#1 goes from 7 to 11, in
+// chunk 32, and back to 6:
+//   W R  0 chr >1>2>3>4>5>6>7>8>9>10>11>12
+//   W H  1 h   >5>6>7>11>6>7>8
+const copyJump = [
+  '#walks format:i:3 chunk:i:16 maxnode:i:4',
+  '#reference R',
+  '#haplotype H#1',
+  'R#0#chr 0 1 ref R#0#chr 0 0 0 4 2,2,2,2 4,4,4,4 nx:i:16',
+  'R#0#chr 16 17 ref R#0#chr 0 16 1 4 10,2,2,2 4,4,4,4 pv:i:0 nx:i:32',
+  'R#0#chr 16 17 walk H#1#h 0 0 0 3 10 4 . nx:i:32',
+  'R#0#chr 16 17 walk H#1#h 0 16 2 3 12 4 . pv:i:32',
+  'R#0#chr 32 33 ref R#0#chr 0 32 2 4 18,2,2,2 4,4,4,4 pv:i:16',
+  'R#0#chr 32 33 walk H#1#h 0 12 1 1 22 0 . pv:i:16 nx:i:16',
+]
+const copyJumpCut = async (
+  start: number,
+  end: number,
+  contained: boolean,
+  served: number[] = [],
+) => {
+  const { graph, kept, fragments } = await rowsReader(copyJump, served).cut(
+    'R#0#chr',
+    { start, end },
+    { context: 0, contained },
+  )
+  return {
+    text: graphTablesGFA(graph.tables(kept, fragments)),
+    walks: fragments
+      .filter(f => f.name === 'H#1#h')
+      .map(f => [f.hapStart, f.hapEnd, [...f.ids], f.before, f.after]),
+  }
+}
+
+test('a contained cut splits a walk where it steps onto the reference off the window', async () => {
+  const detour = await copyJumpCut(20, 36, false)
+  expect(detour.walks).toEqual([
+    [4, 28, [6, 7, 11, 6, 7, 8], { kind: 'end', trimmed: 4 }, { kind: 'end' }],
+  ])
+  expect(detour.text).toMatch(/^S\t11\t/m)
+  const contained = await copyJumpCut(20, 36, true)
+  expect(contained.walks).toEqual([
+    [4, 12, [6, 7], { kind: 'end', trimmed: 4 }, { kind: 'end', trimmed: 16 }],
+    [16, 28, [6, 7, 8], { kind: 'end', trimmed: 16 }, { kind: 'end' }],
+  ])
+  expect(contained.text).not.toMatch(/^S\t11\t/m)
+  expect(contained.text).toMatch(/^W\tR\t0\tchr\t20\t36\t>6>7>8>9$/m)
+})
+
+test('a contained cut reads on only to chunks under the window', async () => {
+  const served: number[] = []
+  const { walks } = await copyJumpCut(20, 28, true, served)
+  const elsewhere = {
+    kind: 'elsewhere',
+    chunk: { refName: 'R#0#chr', start: 32 },
+    bp: 4,
+  }
+  expect(walks).toEqual([
+    [4, 12, [6, 7], { kind: 'end', trimmed: 4 }, elsewhere],
+    [16, 24, [6, 7], elsewhere, { kind: 'end', trimmed: 4 }],
+  ])
+  expect(new Set(served)).toEqual(new Set([0, 16]))
+  const detour: number[] = []
+  await copyJumpCut(20, 28, false, detour)
+  expect(new Set(detour)).toEqual(new Set([0, 16, 32]))
+})

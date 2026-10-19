@@ -396,6 +396,56 @@ test('a walk leaving the window is followed to where it rejoins the reference', 
   ])
 })
 
+test('a contained cut splits a walk where it steps onto the reference off the window', () => {
+  const g = graph()
+  g.placeNode(8, { rank: 1, refName: 'HG002#3#chr1', start: 0, end: 100 })
+  const runs = joinPieces([
+    walkRow('GRCh38#0#chr1', 0, 0, forward(1, 2, 3, 4)),
+    // takes 2 and 3, goes back to 1 and takes 2 again, then 4
+    walkRow('HG002#1#chr1', 0, 0, forward(2, 3, 1, 2, 4)),
+    // leaves 3 through alleles 5 and 6 and comes back to 2
+    walkRow('HG002#2#chr1', 0, 0, forward(2, 3, 5, 6, 2)),
+    // leaves 3 through alleles 5 and 8 and does not come back
+    walkRow('HG002#3#chr1', 0, 0, forward(3, 5, 8)),
+  ])
+  const { kept, fragments } = walkCut(runs, g.nodes, 'GRCh38#0#chr1', {
+    contained: true,
+    context: 50,
+  })
+  expect([...kept].sort()).toEqual([2, 3, 5, 6])
+  const end = { kind: 'end' }
+  expect(
+    fragments.map(f => [
+      f.name,
+      f.hapStart,
+      f.hapEnd,
+      [...f.ids],
+      f.before,
+      f.after,
+    ]),
+  ).toEqual([
+    [
+      'GRCh38#0#chr1',
+      100,
+      300,
+      [2, 3],
+      { ...end, trimmed: 100 },
+      { ...end, trimmed: 100 },
+    ],
+    ['HG002#1#chr1', 0, 200, [2, 3], end, { ...end, trimmed: 300 }],
+    [
+      'HG002#1#chr1',
+      300,
+      400,
+      [2],
+      { ...end, trimmed: 300 },
+      { ...end, trimmed: 100 },
+    ],
+    ['HG002#2#chr1', 0, 500, [2, 3, 5, 6, 2], end, end],
+    ['HG002#3#chr1', 0, 200, [3, 5], end, { ...end, trimmed: 100 }],
+  ])
+})
+
 test('a walk is not followed to another reference sequence', () => {
   const g = graph()
   g.placeNode(7, { rank: 0, refName: 'GRCh38#0#chr2', start: 0, end: 100 })

@@ -107,6 +107,9 @@ export interface WalkCutOptions {
   sequences?: boolean
   // how a zoom-in notice names the budgets
   budgetNames?: BudgetNames
+  // keep the reference over the window and its context alone, and split each
+  // walk where it steps onto the reference off them
+  contained?: boolean
 }
 
 export interface RegionCutOptions extends Omit<WalkCutOptions, 'keep'> {
@@ -213,6 +216,7 @@ export class WalkReader {
       stepBudget = Infinity,
       byteBudget = Infinity,
       links = true,
+      contained = false,
     } = opts
     const { chunk, lookback } = await this.header({ signal })
     const from = chunkQueryStart(region.start, chunk, lookback)
@@ -316,8 +320,15 @@ export class WalkReader {
       let first = from
       let last = Math.floor((region.end - 1) / chunk) * chunk
       const reach = FOLLOW_CHUNKS * chunk
-      const [lo, hi] = [first - reach, last + reach]
-      cut = walkCut(joinPieces(rows), graph.nodes, refName)
+      const [lo, hi] = contained
+        ? [
+            Math.floor((region.start - context) / chunk) * chunk,
+            Math.floor((region.end + context - 1) / chunk) * chunk,
+          ]
+        : [first - reach, last + reach]
+      const cutRows = () =>
+        walkCut(joinPieces(rows), graph.nodes, refName, { contained, context })
+      cut = cutRows()
       let spent = await bytesFor([{ start: from, end: region.end }])
       for (let round = 0; round < FOLLOW_ROUNDS; round++) {
         const starts = cut.open
@@ -337,7 +348,7 @@ export class WalkReader {
         first = Math.min(first, ...starts)
         last = Math.max(last, ...starts)
         await Promise.all(spans.map(({ start, end }) => readChunks(start, end)))
-        cut = walkCut(joinPieces(rows), graph.nodes, refName)
+        cut = cutRows()
       }
     } catch (error) {
       reads.abort()

@@ -79,6 +79,7 @@ const { tables, refName, sample } = await reader.cutRegion(
 | `context`    | bp of reference kept past each end of the region; default 1000            |
 | `stepBudget` | The most steps a cut keeps; no limit by default                           |
 | `byteBudget` | The most compressed bytes a cut fetches; no limit by default              |
+| `contained`  | `true` keeps each walk within the window; see below                       |
 | `links`      | `false` lists no links, for a caller that draws no edges                  |
 | `sequences`  | Keep each node's bases in `graph.sequences`, from a `--sequences` file    |
 | `signal`     | An `AbortSignal` that stops the reads                                     |
@@ -107,6 +108,21 @@ not keep, then:
   none, beside `chunkStarts`
 - A cut reads on to at most four chunks past what it read, so a walk that goes
   farther away and comes back stays two fragments, each `elsewhere`
+
+## Contained cuts
+
+- By default a cut follows each haplotype that leaves the window until it
+  rejoins the reference, and keeps the reference out to there
+- `contained: true` keeps the reference over the window and its context alone,
+  and splits a walk wherever it steps onto the reference off that stretch. A
+  detour that comes back to the window stays whole, and the cut keeps `context`
+  bp of any other
+- Each split leaves two fragments, and each counts the bp of the walk the cut
+  read past it as `trimmed`
+- A contained cut reads on to the chunk a cut-off walk goes on in only when that
+  chunk is under the window and its context
+- At AMY1 haplotypes go from a 4 kb window to the other copies of the gene and
+  back. The default cut keeps 9,928 nodes there, and the contained cut 182
 
 ## Naming the window
 
