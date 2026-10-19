@@ -7,7 +7,7 @@ import {
 import { placeAndLink } from './walkChunk.ts'
 
 import type { GraphTables, WalkStopTable } from './util.ts'
-import type { Chunk, DecodedChunk } from './walkChunk.ts'
+import type { Chunk } from './walkChunk.ts'
 
 // A walk row of gfa-to-tabix's format 3, its steps decoded with its chunk
 // (walkChunk.ts). A haplotype path is cut into pieces, one per chunk it
@@ -481,13 +481,15 @@ export function walkCut(
 }
 
 /**
- * Adds to `into` the nodes of a decoded chunk that walkCut keeps whatever else
- * the cut reads: those on the window, and those a walk row steps on between
- * two of its steps on the window, with no step onto the reference off the
- * window between them in a contained cut
+ * Adds to `into` the nodes of decoded rows that walkCut keeps whatever else
+ * the cut reads: those of `chunk.nodes` on the window, and those a row steps
+ * on between two of its steps on the window, with no step onto the reference
+ * off the window between them in a contained cut. A node placed later at a
+ * reference position off the window can split a contained walk, so the count
+ * holds for the placements at the time.
  */
 export function surelyKept(
-  chunk: Pick<DecodedChunk, 'nodes' | 'rows'>,
+  chunk: { nodes: Map<number, unknown>; rows: WalkRow[] },
   nodes: Map<number, WalkNode>,
   contained: boolean,
   into: Set<number>,

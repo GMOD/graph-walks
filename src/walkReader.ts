@@ -283,6 +283,15 @@ export class WalkReader {
       ends.push(...chunkCut.ends)
       if (Number.isFinite(nodeLimit)) {
         surelyKept(chunkCut, graph.nodes, contained, surely)
+        if (surely.size > nodeLimit) {
+          surely.clear()
+          surelyKept(
+            { nodes: graph.nodes, rows },
+            graph.nodes,
+            contained,
+            surely,
+          )
+        }
         const over = keptNodesError(
           surely.size,
           nodeLimit,
