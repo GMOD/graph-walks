@@ -7,7 +7,7 @@ import {
 import { placeAndLink } from './walkChunk.ts'
 
 import type { GraphTables, WalkStopTable } from './util.ts'
-import type { Chunk } from './walkChunk.ts'
+import type { Chunk, DecodedChunk } from './walkChunk.ts'
 
 // A walk row of gfa-to-tabix's format 3, its steps decoded with its chunk
 // (walkChunk.ts). A haplotype path is cut into pieces, one per chunk it
@@ -480,6 +480,40 @@ export function walkCut(
   return { kept, fragments, open: [...open.values()] }
 }
 
+/**
+ * Adds to `into` the nodes of a decoded chunk that walkCut keeps whatever else
+ * the cut reads: those on the window, and those a walk row steps on between
+ * two of its steps on the window, with no step onto the reference off the
+ * window between them in a contained cut
+ */
+export function surelyKept(
+  chunk: Pick<DecodedChunk, 'nodes' | 'rows'>,
+  nodes: Map<number, WalkNode>,
+  contained: boolean,
+  into: Set<number>,
+) {
+  for (const id of chunk.nodes.keys()) {
+    if (nodes.get(id)?.onWindow) {
+      into.add(id)
+    }
+  }
+  for (const { steps } of chunk.rows) {
+    const { ids } = steps
+    let last = -1
+    for (let i = 0; i < ids.length; i++) {
+      const node = nodes.get(ids[i]!)
+      if (node?.onWindow) {
+        for (let j = last + 1; last >= 0 && j < i; j++) {
+          into.add(ids[j]!)
+        }
+        last = i
+      } else if (contained && node?.rank === 0) {
+        last = -1
+      }
+    }
+  }
+}
+
 function stopTable(stops: WalkStop[]): WalkStopTable {
   const chunkRefNames: string[] = []
   const refIndex = new Map<string, number>()
@@ -781,14 +815,16 @@ export function keptStepsError(
   return keptOverError(total, budget, window, filtered)
 }
 
-// keptStepsError's notice for a cut that keeps more nodes than `limit`
+// keptStepsError's notice for a cut that keeps more nodes than `limit`, which
+// it counted on the window before `readTo` when it stopped reading there
 export function keptNodesError(
   nodes: number,
   limit: number,
   window: { start: number; end: number },
   filtered: boolean,
+  readTo = window.end,
 ) {
-  return keptOverError(nodes, limit, window, filtered)
+  return keptOverError(nodes, limit, window, filtered, readTo)
 }
 
 function keptOverError(
@@ -796,12 +832,14 @@ function keptOverError(
   limit: number,
   window: { start: number; end: number },
   filtered: boolean,
+  readTo = window.end,
 ) {
   if (kept <= limit) {
     return undefined
   }
   const windowBp = window.end - window.start
-  const fitsBp = Math.max(1, Math.floor((windowBp * limit) / kept))
+  const readBp = Math.min(readTo, window.end) - window.start
+  const fitsBp = Math.max(1, Math.floor((readBp * limit) / kept))
   return new RegionTooLargeError(
     `Zoom in to about ${bpString(fitsBp)}${filtered ? '' : ', or choose fewer haplotypes,'} to see the graph`,
     limit,

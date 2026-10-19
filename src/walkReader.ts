@@ -9,6 +9,7 @@ import {
   keptStepsError,
   lookbackChunks,
   stepBudgetError,
+  surelyKept,
   walkCut,
   walkHeader,
   walksKept,
@@ -107,6 +108,8 @@ export interface WalkCutOptions {
   sequences?: boolean
   // how a zoom-in notice names the budgets
   budgetNames?: BudgetNames
+  // the most nodes a cut keeps; Infinity, the default, has no limit
+  nodeLimit?: number
   // keep the reference over the window and its context alone, and split each
   // walk where it steps onto the reference off them
   contained?: boolean
@@ -119,8 +122,6 @@ export interface RegionCutOptions extends Omit<WalkCutOptions, 'keep'> {
   // the sample whose sequence the region names, the file's first reference
   // by default
   referenceSample?: string
-  // the most nodes a cut keeps; Infinity, the default, has no limit
-  nodeLimit?: number
 }
 
 export type WalkReaderHeader = WalkHeader & { chunk: number; lookback: number }
@@ -217,6 +218,7 @@ export class WalkReader {
       byteBudget = Infinity,
       links = true,
       contained = false,
+      nodeLimit = Infinity,
     } = opts
     const { chunk, lookback } = await this.header({ signal })
     const from = chunkQueryStart(region.start, chunk, lookback)
@@ -262,37 +264,59 @@ export class WalkReader {
     })
     const decoded = new Set<number>()
     const ends: DecodedChunk['ends'] = []
+    const surely = new Set<number>()
+    const filtered = keep !== undefined
     // each chunk read is decoded once, into its rows, nodes and the links
-    // between pieces
+    // between pieces, and a cut over its node limit stops there
+    const decode = (cs: number, chunkRows: string[][]) => {
+      if (decoded.has(cs)) {
+        return
+      }
+      decoded.add(cs)
+      const chunkCut = decodeChunk(chunkRows, keep, opts.sequences)
+      rows.push(...chunkCut.rows)
+      for (const [id, node] of chunkCut.nodes) {
+        graph.placeNode(id, node)
+      }
+      graph.addSequences(chunkCut.sequences)
+      graph.addChunk(chunkCut.chunk)
+      ends.push(...chunkCut.ends)
+      if (Number.isFinite(nodeLimit)) {
+        surelyKept(chunkCut, graph.nodes, contained, surely)
+        const over = keptNodesError(
+          surely.size,
+          nodeLimit,
+          region,
+          filtered,
+          cs + chunk,
+        )
+        if (over) {
+          throw over
+        }
+      }
+    }
+    // rows arrive in chunk order, and each chunk is decoded as the next starts
     const readChunks = async (start: number, end: number) => {
       checkRange(refName, start, end)
-      const byChunk = new Map<number, string[][]>()
+      let at: number | undefined
+      let held: string[][] = []
       await this.walks.getLines(refName, start, end, {
         signal: reads.signal,
         lineCallback: line => {
           const cols = line.split('\t')
           const cs = +cols[1]!
-          const held = byChunk.get(cs)
-          if (held) {
-            held.push(cols)
-          } else {
-            byChunk.set(cs, [cols])
+          if (cs !== at) {
+            if (at !== undefined) {
+              decode(at, held)
+            }
+            at = cs
+            held = []
           }
+          held.push(cols)
         },
       })
-      for (const [cs, chunkRows] of byChunk) {
-        if (decoded.has(cs)) {
-          continue
-        }
-        decoded.add(cs)
-        const chunkCut = decodeChunk(chunkRows, keep, opts.sequences)
-        rows.push(...chunkCut.rows)
-        for (const [id, node] of chunkCut.nodes) {
-          graph.placeNode(id, node)
-        }
-        graph.addSequences(chunkCut.sequences)
-        graph.addChunk(chunkCut.chunk)
-        ends.push(...chunkCut.ends)
+      if (at !== undefined) {
+        decode(at, held)
       }
       if (links) {
         for (const [a, b] of pieceLinks(ends)) {
@@ -308,7 +332,7 @@ export class WalkReader {
         READ_STEPS_PER_KEPT,
         region,
         chunk,
-        keep !== undefined,
+        filtered,
         opts.budgetNames,
       )
       if (tooManyRead) {
@@ -356,12 +380,9 @@ export class WalkReader {
     } finally {
       signal?.removeEventListener('abort', stop)
     }
-    const tooMany = keptStepsError(
-      cut.fragments,
-      stepBudget,
-      region,
-      keep !== undefined,
-    )
+    const tooMany =
+      keptStepsError(cut.fragments, stepBudget, region, filtered) ??
+      keptNodesError(cut.kept.size, nodeLimit, region, filtered)
     if (tooMany) {
       throw tooMany
     }
@@ -378,7 +399,7 @@ export class WalkReader {
     region: { refName: string; start: number; end: number },
     opts: RegionCutOptions = {},
   ) {
-    const { haplotypes, referenceSample, nodeLimit = Infinity, ...rest } = opts
+    const { haplotypes, referenceSample, ...rest } = opts
     const { signal } = opts
     const header = await this.header({ signal })
     const sample = referenceSample ?? header.references[0] ?? ''
@@ -393,15 +414,6 @@ export class WalkReader {
       ...rest,
       keep: walksKept(haplotypes, refName),
     })
-    const tooMany = keptNodesError(
-      kept.size,
-      nodeLimit,
-      region,
-      !!haplotypes?.length,
-    )
-    if (tooMany) {
-      throw tooMany
-    }
     return { tables: graph.tables(kept, fragments), refName, sample }
   }
 }

@@ -377,7 +377,7 @@ const copyJumpCut = async (
   const { graph, kept, fragments } = await rowsReader(copyJump, served).cut(
     'R#0#chr',
     { start, end },
-    { context: 0, contained },
+    { context: 0, contained, nodeLimit: 5 },
   )
   return {
     text: graphTablesGFA(graph.tables(kept, fragments)),
@@ -418,4 +418,36 @@ test('a contained cut reads on only to chunks under the window', async () => {
   const detour: number[] = []
   await copyJumpCut(20, 28, false, detour)
   expect(new Set(detour)).toEqual(new Set([0, 16, 32]))
+})
+
+// Eight chunks of four 4 bp reference nodes
+const eightChunks = [
+  '#walks format:i:3 chunk:i:16 maxnode:i:4',
+  '#reference R',
+  ...Array.from({ length: 8 }, (_, c) =>
+    [
+      `R#0#chr ${16 * c} ${16 * c + 1} ref R#0#chr 0 ${16 * c} ${c} 4`,
+      `${8 * c + 2},2,2,2 4,4,4,4`,
+      ...(c > 0 ? [`pv:i:${16 * (c - 1)}`] : []),
+      ...(c < 7 ? [`nx:i:${16 * (c + 1)}`] : []),
+    ].join(' '),
+  ),
+]
+
+test('a cut over its node limit stops reading at the chunk that puts it over', async () => {
+  const served: number[] = []
+  const error = await rowsReader(eightChunks, served)
+    .cutRegion(
+      { refName: 'chr', start: 0, end: 128 },
+      { context: 0, nodeLimit: 6 },
+    )
+    .catch((e: unknown) => e)
+  expect(error).toBeInstanceOf(RegionTooLargeError)
+  expect(error).toMatchObject({ limit: 6, windowBp: 128, fitsBp: 24 })
+  expect(served).toEqual([0, 16, 32])
+  const whole = await rowsReader(eightChunks).cutRegion(
+    { refName: 'chr', start: 0, end: 128 },
+    { context: 0, nodeLimit: 32 },
+  )
+  expect(whole.tables.nodes.names).toHaveLength(32)
 })

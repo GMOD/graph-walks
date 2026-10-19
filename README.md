@@ -68,8 +68,7 @@ const { tables, refName, sample } = await reader.cutRegion(
   `GRCh38#0#chr6`, and keeps the haplotypes named, every one when none are
 - `referenceSample` names another sample than the header's first reference. A
   sequence the file lacks throws, naming the ones it holds
-- `nodeLimit` caps the nodes kept and throws the budgets' `RegionTooLargeError`.
-  The cut options below apply too, with `haplotypes` in place of `keep`
+- The cut options below apply too, with `haplotypes` in place of `keep`
 
 ## Cut options
 
@@ -79,15 +78,19 @@ const { tables, refName, sample } = await reader.cutRegion(
 | `context`    | bp of reference kept past each end of the region; default 1000            |
 | `stepBudget` | The most steps a cut keeps; no limit by default                           |
 | `byteBudget` | The most compressed bytes a cut fetches; no limit by default              |
+| `nodeLimit`  | The most nodes a cut keeps; no limit by default                           |
 | `contained`  | `true` keeps each walk within the window; see below                       |
 | `links`      | `false` lists no links, for a caller that draws no edges                  |
 | `sequences`  | Keep each node's bases in `graph.sequences`, from a `--sequences` file    |
 | `signal`     | An `AbortSignal` that stops the reads                                     |
 
-A cut over a budget throws a `RegionTooLargeError`. Its `fitsBp` holds about how
-wide a window would fit, and JBrowse shows it as a zoom-in notice.
-`WALK_BUDGETS` holds the step and byte budgets the JBrowse plugin and BandageJS
-cut by.
+- A cut over a budget or its node limit throws a `RegionTooLargeError`. The
+  error's `fitsBp` holds about how wide a window would fit, and JBrowse shows it
+  as a zoom-in notice
+- The cut checks the node limit as it decodes each chunk, against the nodes it
+  keeps whatever else it reads, and stops reading at the first chunk over it
+- `WALK_BUDGETS` holds the step and byte budgets the JBrowse plugin and
+  BandageJS cut by
 
 ## Fragments
 
