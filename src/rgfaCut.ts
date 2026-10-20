@@ -49,7 +49,8 @@ function offReference(segments: RgfaSegment[]) {
 }
 
 // A gfa-to-tabix index's two files, read as @gmod/tabix's TabixIndexedFile
-// reads them
+// reads them. They stay two because the plugin's linear track reads the
+// segment file alone (gfa-to-tabix docs/adr/0002-two-index-files.md).
 export interface RgfaFiles {
   segments: Pick<TabixSource, 'getLines'>
   links: Pick<TabixSource, 'getLines'>
@@ -104,30 +105,33 @@ export async function rgfaCut(
   const segments = new Map<string, RgfaSegment>()
   const links = new Map<string, RgfaLink>()
   const layout = { anchored: false }
-  await getLines(files.segments, window.refName, window.start, window.end, {
-    signal,
-    lineCallback: line => {
-      const row = parseSegmentRow(line)
-      layout.anchored ||= row.anchored
-      segments.set(row.segment.id, row.segment)
-    },
-  })
+  // Both layouts read the links over the window, so that read goes out
+  // beside the segment read rather than after it.
+  const [, windowLinks] = await Promise.all([
+    getLines(files.segments, window.refName, window.start, window.end, {
+      signal,
+      lineCallback: line => {
+        const row = parseSegmentRow(line)
+        layout.anchored ||= row.anchored
+        segments.set(row.segment.id, row.segment)
+      },
+    }),
+    linksOver(files.links, window, signal),
+  ])
   // An anchored index files every allele and every link under the reference
   // interval its bubble hangs from, so one read of each file holds the whole
   // graph under the window and there is nothing to hop to or close.
   if (layout.anchored) {
-    const cut = anchoredCut(
-      segments,
-      await linksOver(files.links, window, signal),
-      window,
-    )
+    const cut = anchoredCut(segments, windowLinks, window)
     return formatSubgraph(cut.segments, cut.links)
   }
   const addLinksOver = async (span: StableSpan) =>
     (await linksOver(files.links, span, signal)).flatMap(link =>
       addLink(segments, links, link),
     )
-  let frontier = offReference(await addLinksOver(window))
+  let frontier = offReference(
+    windowLinks.flatMap(link => addLink(segments, links, link)),
+  )
   for (let hop = 0; hop < hops; hop++) {
     // One hop's queries are independent of each other, so they go out
     // together rather than one round-trip at a time, and the output is sorted
