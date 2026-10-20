@@ -9,7 +9,7 @@ Cuts a window out of a pangenome graph stored as
 - **Out:** from a walk file, the reference over the region, every haplotype's
   walk through it, and the nodes and links they visit, as typed arrays; from a
   segment index, the segments and links under the region as GFA text
-- Reads walk format 4, which gfa-to-tabix writes from 1.2. The reader refuses
+- Reads walk format 5, which gfa-to-tabix writes from 1.4. The reader refuses
   any other format with a `WalkFormatError` asking for a rebuild
 - Has no runtime dependencies: it reads through any object with
   [@gmod/tabix](https://github.com/GMOD/tabix-js)'s `TabixIndexedFile` methods
@@ -73,17 +73,18 @@ const { tables, refName, sample } = await reader.cutRegion(
 
 ## Cut options
 
-| Option       | Effect                                                                    |
-| ------------ | ------------------------------------------------------------------------- |
-| `keep`       | Which walks to decode, by `sample#haplotype#contig`; every one by default |
-| `context`    | bp of reference kept past each end of the region; default 1000            |
-| `stepBudget` | The most steps a cut keeps; no limit by default                           |
-| `byteBudget` | The most compressed bytes a cut fetches; no limit by default              |
-| `nodeLimit`  | The most nodes a cut keeps; no limit by default                           |
-| `contained`  | `true` keeps each walk within the window; see below                       |
-| `links`      | `false` lists no links, for a caller that draws no edges                  |
-| `sequences`  | Keep each node's bases in `graph.sequences`, from a `--sequences` file    |
-| `signal`     | An `AbortSignal` that stops the reads                                     |
+| Option       | Effect                                                                              |
+| ------------ | ----------------------------------------------------------------------------------- |
+| `keep`       | Which walks to decode, by `sample#haplotype#contig`; every one by default           |
+| `context`    | bp of reference kept past each end of the region; default 1000                      |
+| `stepBudget` | The most steps a cut keeps; no limit by default                                     |
+| `byteBudget` | The most compressed bytes a cut fetches; no limit by default                        |
+| `nodeLimit`  | The most nodes a cut keeps; no limit by default                                     |
+| `contained`  | `true` keeps each walk within the window; see below                                 |
+| `links`      | `false` lists no links, for a caller that draws no edges                            |
+| `sequences`  | Keep each node's bases in `graph.sequences`, from a `--sequences` file              |
+| `signal`     | An `AbortSignal` that stops the reads                                               |
+| `expand`     | Which abridged walks to read in full, by `sample#haplotype#contig`; none by default |
 
 - A cut over a budget or its node limit throws a `RegionTooLargeError`. The
   error's `fitsBp` holds about how wide a window would fit, and JBrowse shows it
@@ -115,6 +116,21 @@ not keep, then:
   none, beside `chunkStarts`
 - A cut reads on to at most four chunks past what it read, so a walk that goes
   farther away and comes back stays two fragments, each `elsewhere`
+
+## Abridged walks
+
+- In a chunk over its budget, gfa-to-tabix moves the costliest paths' rows to
+  detail records and leaves one `abridged` row per path. A satellite array in a
+  pggb graph is the usual case
+- The cut gives each such row a fragment of its own with an `abridged` field:
+  its `steps` and `bp`, its `pieces`, and the `detail` record that holds them.
+  The fragment's two steps are the handles on the reference where the walk
+  leaves and rejoins, and `hapStart`/`hapEnd` span its `bp`
+- `graph.tables(kept, fragments)` keeps them as `abridgedSteps` and `abridgedBp`
+  columns, NaN for every other walk
+- With `expand` naming a walk, the cut reads its detail records and cuts it in
+  full, as a file without abridging would
+- `referenceSequences()` leaves out the detail records' sequences, `seq~cs`
 
 ## Contained cuts
 

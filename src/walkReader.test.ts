@@ -43,7 +43,7 @@ const walkNames = (text: string) =>
 test('the header names the format, the reference, the haplotypes and the chunk size', async () => {
   const header = await reader('header.GRCh38').header()
   expect(header).toMatchObject({
-    format: 4,
+    format: 5,
     chunk: 1000,
     references: ['GRCh38'],
     haplotypes: ['HG00097#1', 'HG002#1', 'HG002#2'],
@@ -55,10 +55,10 @@ test('a format 1 walk file is refused, with what to rebuild it with', async () =
   await expect(walks.header()).rejects.toThrow(WalkFormatError)
   await expect(
     walks.cut('GRCh38#0#chr1', { start: 0, end: 600 }),
-  ).rejects.toThrow(/rebuild it with gfa-to-tabix 1.2/)
+  ).rejects.toThrow(/rebuild it with gfa-to-tabix 1.4/)
 })
 
-test.each([2, 3])(
+test.each([2, 3, 4])(
   'a format %i walk file is refused, with what to rebuild it with',
   async format => {
     const walks = new WalkReader({
@@ -68,7 +68,7 @@ test.each([2, 3])(
       getReferenceSequenceNames: () => Promise.resolve([]),
     })
     await expect(walks.header()).rejects.toThrow(
-      `This walk file is format ${format}; @jbrowse/graph-walks reads format 4, so rebuild it with gfa-to-tabix 1.2 or later`,
+      `This walk file is format ${format}; @jbrowse/graph-walks reads format 5, so rebuild it with gfa-to-tabix 1.4 or later`,
     )
   },
 )
@@ -307,7 +307,7 @@ function inline(lines: string[], reversed = false) {
 // does on a reference that passes 2 and 6 twice, so chunk 0's route steps on
 // 6, which chunk 16's ref row places, and chunk 16's on 2.
 const tinyHeader = [
-  '#walks format:i:4 chunk:i:16 maxnode:i:4',
+  '#walks format:i:5 chunk:i:16 maxnode:i:4',
   '#reference R',
   '#haplotype H1#1',
   '#haplotype H2#1',
@@ -446,7 +446,7 @@ function rowsReader(lines: string[], served: number[] = []) {
 //   W R  0 chr >1>2>3>4>5>6>7>8>9>10>11>12
 //   W H  1 h   >5>6>7>11>6>7>8
 const copyJump = [
-  '#walks format:i:4 chunk:i:16 maxnode:i:4',
+  '#walks format:i:5 chunk:i:16 maxnode:i:4',
   '#reference R',
   '#haplotype H#1',
   'R#0#chr 0 1 ref R#0#chr 0 0 0 4 2,2,2,2 4,4,4,4 nx:i:16',
@@ -510,7 +510,7 @@ test('a contained cut reads on only to chunks under the window', async () => {
 
 // Eight chunks of four 4 bp reference nodes
 const eightChunks = [
-  '#walks format:i:4 chunk:i:16 maxnode:i:4',
+  '#walks format:i:5 chunk:i:16 maxnode:i:4',
   '#reference R',
   ...Array.from({ length: 8 }, (_, c) =>
     [
@@ -538,4 +538,40 @@ test('a cut over its node limit stops reading at the chunk that puts it over', a
     { context: 0, nodeLimit: 32 },
   )
   expect(whole.tables.nodes.names).toHaveLength(32)
+})
+
+// gfa-to-tabix's walks-two-refs.gfa on R in 10 bp chunks, once as written and
+// once with --abridge-bytes 1, which abridges every walk in every chunk
+async function twoRefs(name: string, expand?: (name: string) => boolean) {
+  const { graph, kept, fragments } = await reader(name).cut(
+    'R#0#chr',
+    { start: 0, end: 30 },
+    { expand },
+  )
+  return { tables: graph.tables(kept, fragments), fragments }
+}
+
+test('an abridged walk cuts to a fragment from where it leaves R to where it rejoins, with its steps and bp', async () => {
+  const { tables, fragments } = await twoRefs('abridged.R')
+  const h = fragments.filter(f => f.name === 'H#1#h')
+  expect(h.map(f => [f.hapStart, f.hapEnd, f.abridged?.steps])).toEqual([
+    [100, 112, 2],
+    [112, 127, 3],
+    [127, 133, 1],
+  ])
+  const { names, abridgedSteps } = tables.walks
+  names.forEach((name, i) => {
+    expect(Number.isNaN(abridgedSteps![i])).toBe(name === 'R#0#chr')
+  })
+})
+
+test('an expanded walk is read from its detail records as the unabridged file cuts it', async () => {
+  const all = () => true
+  expect(graphTablesGFA((await twoRefs('abridged.R', all)).tables)).toBe(
+    graphTablesGFA((await twoRefs('unabridged.R')).tables),
+  )
+})
+
+test('the reference sequences leave out detail records', async () => {
+  expect(await reader('abridged.R').referenceSequences()).toEqual(['R#0#chr'])
 })

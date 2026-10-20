@@ -253,7 +253,7 @@ test('a cut looks back as many chunks as the longest node spans', () => {
 test('a cut reads back to a long node only where the window overlaps it', () => {
   const header = {
     ...walkHeader([
-      '#walks\tformat:i:4\tchunk:i:65536\tmaxnode:i:1000000',
+      '#walks\tformat:i:5\tchunk:i:65536\tmaxnode:i:1000000',
       '#long\tGRCh38#0#chr22\t10510000\t11510000',
     ]),
     chunk: 65_536,

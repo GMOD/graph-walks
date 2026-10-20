@@ -26,6 +26,10 @@ export interface GraphTables {
     // from tables another source builds
     before?: WalkStopTable
     after?: WalkStopTable
+    // for a walk standing for pieces the writer abridged, their steps and bp,
+    // which its two steps on the reference leave out; NaN for any other walk
+    abridgedSteps?: Float64Array
+    abridgedBp?: Float64Array
   }
 }
 

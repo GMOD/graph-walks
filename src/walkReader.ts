@@ -55,7 +55,7 @@ export interface TabixSource {
   ): Promise<number>
 }
 
-// A walk file in a format other than 4, which the reader refuses
+// A walk file in a format other than 5, which the reader refuses
 export class WalkFormatError extends Error {
   override name = 'WalkFormatError'
 }
@@ -68,6 +68,11 @@ export function checkRange(refName: string, start: number, end: number) {
       `${refName}:${start}-${end} is not a finite range to query the graph's index for`,
     )
   }
+}
+
+// A detail record's sequence is its chunk's, `~` and the chunk's start
+function withoutDetails(names: string[]) {
+  return names.filter(name => !name.includes('~'))
 }
 
 // Settles like `promise` unless `signal` aborts first
@@ -112,6 +117,9 @@ export interface WalkCutOptions {
   // keep the reference over the window and its context alone, and split each
   // walk where it steps onto the reference off them
   contained?: boolean
+  // the abridged walks to read in full from their detail records, by
+  // `sample#haplotype#contig`; none by default
+  expand?: (name: string) => boolean
 }
 
 export interface RegionCutOptions extends Omit<WalkCutOptions, 'keep'> {
@@ -149,9 +157,9 @@ export class WalkReader {
     if (!this.headerRead) {
       const read = this.walks.getHeaderLines().then(lines => {
         const header = walkHeader(lines)
-        if (header.format !== 4) {
+        if (header.format !== 5) {
           throw new WalkFormatError(
-            `This walk file is format ${header.format ?? 1}; @jbrowse/graph-walks reads format 4, so rebuild it with gfa-to-tabix 1.2 or later`,
+            `This walk file is format ${header.format ?? 1}; @jbrowse/graph-walks reads format 5, so rebuild it with gfa-to-tabix 1.4 or later`,
           )
         }
         return { ...header, chunk: header.chunk ?? 65536 }
@@ -166,9 +174,10 @@ export class WalkReader {
     return raceAbort(this.headerRead, opts.signal)
   }
 
-  // The reference sequences the walk file holds windows on
-  referenceSequences(opts: { signal?: AbortSignal } = {}) {
-    return this.walks.getReferenceSequenceNames(opts)
+  // The reference sequences the walk file holds windows on, without the
+  // `seq~cs` sequences of detail records
+  async referenceSequences(opts: { signal?: AbortSignal } = {}) {
+    return withoutDetails(await this.walks.getReferenceSequenceNames(opts))
   }
 
   /**
@@ -182,7 +191,9 @@ export class WalkReader {
     opts: { signal?: AbortSignal } = {},
   ) {
     if (!this.lookupRead) {
-      const read = this.walks.getReferenceSequenceNames().then(refNameLookup)
+      const read = this.walks
+        .getReferenceSequenceNames()
+        .then(names => refNameLookup(withoutDetails(names)))
       read.catch(() => {
         if (this.lookupRead === read) {
           this.lookupRead = undefined
@@ -218,6 +229,7 @@ export class WalkReader {
       links = true,
       contained = false,
       nodeLimit = Infinity,
+      expand,
     } = opts
     const header = await this.header({ signal })
     const { chunk } = header
@@ -266,6 +278,8 @@ export class WalkReader {
     const ends: DecodedChunk['ends'] = []
     const surely = new Set<number>()
     const filtered = keep !== undefined
+    // the detail records of expanded walks, with their chunk's ref rows
+    let details: { refRows: string[][]; row: WalkRow }[] = []
     // each chunk read is decoded once, into its rows, nodes and the links
     // between pieces, and a cut over its node limit stops there
     const decode = (cs: number, chunkRows: string[][]) => {
@@ -274,9 +288,50 @@ export class WalkReader {
       }
       decoded.add(cs)
       const chunkCut = decodeChunk(chunkRows, keep, opts.sequences)
+      let refRows: string[][] | undefined
       for (const row of chunkCut.rows) {
-        rows.push(row)
+        if (row.abridged && expand?.(row.name)) {
+          refRows ??= chunkRows.filter(cols => cols[3] === 'ref')
+          details.push({ refRows, row })
+        } else {
+          rows.push(row)
+        }
       }
+      place(chunkCut, cs)
+    }
+    // A detail record's rows, decoded against the R of the chunk it came from
+    const decodeDetail = async ({
+      refRows,
+      row,
+    }: {
+      refRows: string[][]
+      row: WalkRow
+    }) => {
+      const { refName: sequence, start } = row.abridged!.detail
+      checkRange(sequence, start, start + 1)
+      const held: string[][] = []
+      await this.walks.getLines(sequence, start, start + 1, {
+        signal: reads.signal,
+        lineCallback: line => {
+          const cols = line.split('\t')
+          cols[0] = refName
+          cols[1] = String(row.chunkStart)
+          held.push(cols)
+        },
+      })
+      const chunkCut = decodeChunk(
+        [...refRows, ...held],
+        name => name === row.name,
+        opts.sequences,
+      )
+      for (const decodedRow of chunkCut.rows) {
+        if (decodedRow.name === row.name) {
+          rows.push(decodedRow)
+        }
+      }
+      place(chunkCut, row.chunkStart)
+    }
+    const place = (chunkCut: DecodedChunk, cs: number) => {
       for (const [id, node] of chunkCut.nodes) {
         graph.placeNode(id, node)
       }
@@ -330,6 +385,11 @@ export class WalkReader {
       })
       if (at !== undefined) {
         decode(at, held)
+      }
+      const pending = details
+      details = []
+      for (const detail of pending) {
+        await decodeDetail(detail)
       }
       if (links) {
         for (const [a, b] of pieceLinks(ends)) {

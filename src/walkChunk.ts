@@ -398,6 +398,42 @@ function sliceBases(
   }
 }
 
+// The row of an `abridged` line, as a two-step walk from the handle on R it
+// starts on to the one it ends on. Its detail record is filed under
+// `seq~cs`, one Tabix leaf bin apart.
+const DETAIL_SPACING = 16384
+
+function abridgedRow(cols: string[]): WalkRow {
+  const anchor = cols[0]!
+  const handles = [+cols[10]!, +cols[11]!]
+  const pieces = numbers(cols[7]!)
+  for (let k = 1; k < pieces.length; k++) {
+    pieces[k]! += pieces[k - 1]!
+  }
+  return {
+    chunkStart: +cols[1]!,
+    name: cols[4]!,
+    fragStart: +cols[5]!,
+    hapOffset: +cols[6]!,
+    piece: pieces[0]!,
+    n: handles.length,
+    steps: {
+      ids: Int32Array.from(handles, idOf),
+      rev: Uint8Array.from(handles, h => h & 1),
+    },
+    ...tags(cols, 13, anchor),
+    abridged: {
+      pieces,
+      steps: +cols[8]!,
+      bp: +cols[9]!,
+      detail: {
+        refName: `${anchor}~${cols[1]!}`,
+        start: +cols[12]! * DETAIL_SPACING,
+      },
+    },
+  }
+}
+
 /**
  * Decodes one chunk's rows, each split on tabs. `keep` names the walk rows
  * whose steps a cut wants, undefined for every one.
@@ -494,6 +530,13 @@ export function decodeChunk(
     return route
   }
   for (const cols of rows) {
+    if (cols[3] === 'abridged') {
+      const name = cols[4]!
+      if (keep === undefined || keep(name)) {
+        out.rows.push(abridgedRow(cols))
+      }
+      continue
+    }
     if (cols[3] !== 'walk') {
       continue
     }

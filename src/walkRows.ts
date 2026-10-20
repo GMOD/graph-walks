@@ -9,7 +9,7 @@ import { placeAndLink } from './walkChunk.ts'
 import type { GraphTables, WalkStopTable } from './util.ts'
 import type { Chunk } from './walkChunk.ts'
 
-// A walk row of gfa-to-tabix's format 4, its steps decoded with its chunk
+// A walk row of gfa-to-tabix's format 5, its steps decoded with its chunk
 // (walkChunk.ts). A haplotype path is cut into pieces, one per chunk it
 // passes, and each piece's row takes the next piece index, so consecutive
 // indices of one path join. A row names the chunk its path's piece before and
@@ -28,6 +28,21 @@ export interface WalkRow {
   next?: WalkChunk
   prevRecord?: WalkGap
   nextRecord?: WalkGap
+  // an `abridged` row, standing for its path's pieces in the chunk: `steps`
+  // holds the handles on R it starts and ends on
+  abridged?: Abridged
+}
+
+/**
+ * A path's pieces in a chunk that the writer moved to a detail record: their
+ * piece numbers, steps and bp, and the record's sequence and position, which a
+ * cut that expands the path reads
+ */
+export interface Abridged {
+  pieces: number[]
+  steps: number
+  bp: number
+  detail: { refName: string; start: number }
 }
 
 export interface WalkChunk {
@@ -85,7 +100,7 @@ export interface LongPass {
 }
 
 export interface WalkHeader {
-  // format:i:4; the reader refuses any other, and format 1 states none
+  // format:i:5; the reader refuses any other, and format 1 states none
   format?: number
   chunk?: number
   maxNode?: number
@@ -101,7 +116,7 @@ function integerTag(line: string, tag: string) {
 
 /**
  * What a walk file's header states: a `#walks` line with the format, the
- * chunk size and the longest node in bp, `format:i:4\tchunk:i:65536\tmaxnode:i:1024`,
+ * chunk size and the longest node in bp, `format:i:5\tchunk:i:65536\tmaxnode:i:1024`,
  * a `#reference\tGRCh38` line naming the reference sample and a
  * `#haplotype\tHG002#1` line per other haplotype with rows
  */
@@ -203,11 +218,17 @@ export interface WalkRun {
   next?: WalkChunk
   prevRecord?: WalkGap
   nextRecord?: WalkGap
+  abridged?: Abridged
 }
 
 export function joinPieces(rows: WalkRow[]) {
   const byPath = new Map<string, WalkRow[]>()
+  const runs: WalkRun[] = []
   for (const row of rows) {
+    if (row.abridged) {
+      runs.push(decodeRun([row]))
+      continue
+    }
     const key = `${row.name}\t${row.fragStart}`
     const list = byPath.get(key)
     if (list) {
@@ -216,7 +237,6 @@ export function joinPieces(rows: WalkRow[]) {
       byPath.set(key, [row])
     }
   }
-  const runs: WalkRun[] = []
   for (const pieces of byPath.values()) {
     pieces.sort((a, b) => a.piece - b.piece)
     let from = 0
@@ -256,6 +276,7 @@ function decodeRun(pieces: WalkRow[]): WalkRun {
     next: last.next,
     prevRecord: first.prevRecord,
     nextRecord: last.nextRecord,
+    ...(first.abridged ? { abridged: first.abridged } : {}),
   }
 }
 
@@ -268,6 +289,9 @@ export interface WalkFragment {
   rev: Uint8Array
   before: WalkStop
   after: WalkStop
+  // set on the fragment of an abridged row, from where it leaves R to where it
+  // rejoins, which runs `abridged.bp` on the haplotype
+  abridged?: Abridged
 }
 
 /**
@@ -407,8 +431,33 @@ export function walkCut(
       spans.push({ run, first, last })
     }
   }
+  // the window and its context, as the reference nodes on it span them
+  let windowStart = Infinity
+  let windowEnd = -Infinity
+  for (const node of nodes.values()) {
+    if (node.onWindow) {
+      windowStart = Math.min(windowStart, node.start)
+      windowEnd = Math.max(windowEnd, node.end)
+    }
+  }
+  // an abridged run is kept where its stretch of R overlaps the window
+  const abridgedSpan = (run: WalkRun) => {
+    const a = reference(run.ids[0]!)
+    const b = reference(run.ids.at(-1)!)
+    if (a?.refName !== refName || b?.refName !== refName) {
+      return
+    }
+    if (
+      Math.max(a.end, b.end) > windowStart &&
+      Math.min(a.start, b.start) < windowEnd
+    ) {
+      spans.push({ run, first: 0, last: run.ids.length - 1 })
+    }
+  }
   for (const run of runs) {
-    if (contained) {
+    if (run.abridged) {
+      abridgedSpan(run)
+    } else if (contained) {
       containedSpans(run)
     } else {
       detourSpan(run)
@@ -443,6 +492,9 @@ export function walkCut(
       kept.add(ids[i]!)
     }
   }
+  const abridgedRuns = new Set(
+    spans.filter(span => span.run.abridged).map(span => span.run),
+  )
   const bpOf = (ids: Int32Array, from: number, to: number) => {
     let bp = 0
     for (let i = from; i < to; i++) {
@@ -469,7 +521,7 @@ export function walkCut(
     })
   }
   const runEnd = (run: WalkRun) =>
-    run.hapOffset + bpOf(run.ids, 0, run.ids.length)
+    run.hapOffset + (run.abridged?.bp ?? bpOf(run.ids, 0, run.ids.length))
   const stop = (run: WalkRun, after: boolean, trimmed: number): WalkStop => {
     const cut = trimmed > 0 ? { trimmed } : {}
     const chunk = after ? run.next : run.prev
@@ -492,6 +544,20 @@ export function walkCut(
   const fragments: WalkFragment[] = []
   for (const { run, first: f, last: l } of spans) {
     const { ids, rev } = run
+    if (abridgedRuns.has(run)) {
+      fragments.push({
+        name: run.name,
+        fragStart: run.fragStart,
+        hapStart: run.hapOffset,
+        hapEnd: runEnd(run),
+        ids,
+        rev,
+        before: stop(run, false, 0),
+        after: stop(run, true, 0),
+        abridged: run.abridged,
+      })
+      continue
+    }
     let first = f
     let last = l
     while (first > 0 && kept.has(ids[first - 1]!)) {
@@ -772,6 +838,8 @@ export class WalkGraph {
         reversed,
         before: stopTable(walks.map(f => f.before)),
         after: stopTable(walks.map(f => f.after)),
+        abridgedSteps: Float64Array.from(walks, f => f.abridged?.steps ?? NaN),
+        abridgedBp: Float64Array.from(walks, f => f.abridged?.bp ?? NaN),
       },
     }
   }
