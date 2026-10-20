@@ -30,7 +30,7 @@ import { TabixIndexedFile } from '@gmod/tabix'
 import { WalkReader, walksKept } from '@jbrowse/graph-walks'
 import { RemoteFile } from 'generic-filehandle2'
 
-const url = 'https://example.org/hprc-v2.1-mc-grch38.GRCh38.walks.bed.gz'
+const url = 'https://jbrowse.org/demos/hprc/hprc-v2.1-mc-grch38-f4.GRCh38.walks.bed.gz'
 const reader = new WalkReader(
   new TabixIndexedFile({
     filehandle: new RemoteFile(url),
