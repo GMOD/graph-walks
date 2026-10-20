@@ -49,8 +49,7 @@ function offReference(segments: RgfaSegment[]) {
 }
 
 // A gfa-to-tabix index's two files, read as @gmod/tabix's TabixIndexedFile
-// reads them. They stay two because the plugin's flat LinearBasicDisplay
-// reads the segment file alone (gfa-to-tabix docs/adr/0002-two-index-files.md).
+// reads them. Why there are two: gfa-to-tabix docs/adr/0002-two-index-files.md
 export interface RgfaFiles {
   segments: Pick<TabixSource, 'getLines'>
   links: Pick<TabixSource, 'getLines'>
