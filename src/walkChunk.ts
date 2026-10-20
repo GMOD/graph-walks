@@ -126,13 +126,26 @@ export class RefPath {
   }
 
   nearest(handle: number, i: number) {
-    let best: number | undefined
-    for (const j of this.occurrences.get(idOf(handle)) ?? []) {
-      if (best === undefined || Math.abs(j - i) <= Math.abs(best - i)) {
-        best = j
+    const at = this.occurrences.get(idOf(handle))
+    if (!at) {
+      return undefined
+    }
+    let lo = 0
+    let hi = at.length
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (at[mid]! <= i) {
+        lo = mid + 1
+      } else {
+        hi = mid
       }
     }
-    return best
+    const before = at[lo - 1]
+    const after = at[lo]
+    if (before === undefined || after === undefined) {
+      return before ?? after
+    }
+    return after - i <= i - before ? after : before
   }
 
   // The position a stretch along R from position i, reading R the way `h`
@@ -570,8 +583,10 @@ export function decodeChunk(
     })
     if (keep === undefined || keep(name)) {
       const n = +cols[8]!
+      let interior = 0
       // the walk's nodes off R, by length; placeAndLink gives their position
       for (let k = 0; k < choices.length; k += 3) {
+        interior += routeOf(choices[k]!).interior.length
         for (const h of routeOf(choices[k]!).interior) {
           const id = idOf(h)
           if (!out.nodes.has(id)) {
@@ -587,6 +602,7 @@ export function decodeChunk(
         hapOffset: +cols[6]!,
         piece: +cols[7]!,
         n,
+        interior,
         steps: decodeWalk(path, routes, cols, choices, n),
         ...tags(cols, 12, cols[0]!),
       })

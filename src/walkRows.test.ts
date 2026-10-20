@@ -105,6 +105,7 @@ describe('the step budget', () => {
       hapOffset: 0,
       piece: 0,
       n,
+      interior: n,
       steps: { ids: new Int32Array(n), rev: new Uint8Array(n) },
       chunkStart,
     }))
@@ -183,8 +184,25 @@ describe('the step budget', () => {
       true,
     )!
     expect(error.message).toBe(
-      'Too many haplotype steps here to draw these haplotypes (50 steps read, over 2 × the step budget of 5); choose fewer haplotypes',
+      'Too many haplotype steps here to draw these haplotypes (50 steps read, a step along the reference counting a quarter, over 2 × the step budget of 5); choose fewer haplotypes',
     )
+  })
+
+  test('counts a step along the reference as a quarter of one off it', () => {
+    const along = rows([[100, 40]]).map(row => ({ ...row, interior: 0 }))
+    expect(
+      stepBudgetError(along, 5, 2, { start: 150, end: 180 }, chunk, true),
+    ).toBe(undefined)
+    expect(
+      stepBudgetError(
+        rows([[100, 40]]),
+        5,
+        2,
+        { start: 150, end: 180 },
+        chunk,
+        true,
+      ),
+    ).toBeDefined()
   })
 })
 

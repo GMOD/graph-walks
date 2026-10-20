@@ -22,6 +22,8 @@ export interface WalkRow {
   hapOffset: number
   piece: number
   n: number
+  // of the n steps, those off R, in routes' interiors
+  interior?: number
   steps: { ids: Int32Array; rev: Uint8Array }
   chunkStart: number
   prev?: WalkChunk
@@ -520,8 +522,16 @@ export function walkCut(
       neighbours.set(run, [list[i - 1], list[i + 1]])
     })
   }
-  const runEnd = (run: WalkRun) =>
-    run.hapOffset + (run.abridged?.bp ?? bpOf(run.ids, 0, run.ids.length))
+  const ends = new Map<WalkRun, number>()
+  const runEnd = (run: WalkRun) => {
+    let end = ends.get(run)
+    if (end === undefined) {
+      end =
+        run.hapOffset + (run.abridged?.bp ?? bpOf(run.ids, 0, run.ids.length))
+      ends.set(run, end)
+    }
+    return end
+  }
   const stop = (run: WalkRun, after: boolean, trimmed: number): WalkStop => {
     const cut = trimmed > 0 ? { trimmed } : {}
     const chunk = after ? run.next : run.prev
@@ -877,6 +887,15 @@ export const BUDGET_NAMES: BudgetNames = {
   bytes: 'a byte budget of',
 }
 
+// The reader decodes a step along R several times as fast as one off it, so
+// the read budget counts it as a quarter
+const ALONG_R_PER_STEP = 4
+
+const readSteps = (row: WalkRow) => {
+  const interior = row.interior ?? 0
+  return interior + (row.n - interior) / ALONG_R_PER_STEP
+}
+
 export function stepBudgetError(
   rows: WalkRow[],
   stepBudget: number,
@@ -890,8 +909,9 @@ export function stepBudgetError(
   const perChunk = new Map<number, number>()
   const walks = new Set<string>()
   for (const row of rows) {
-    total += row.n
-    perChunk.set(row.chunkStart, (perChunk.get(row.chunkStart) ?? 0) + row.n)
+    const steps = readSteps(row)
+    total += steps
+    perChunk.set(row.chunkStart, (perChunk.get(row.chunkStart) ?? 0) + steps)
     walks.add(row.name)
   }
   const budget = stepBudget * readPerKept
@@ -913,7 +933,7 @@ export function stepBudgetError(
   return new RegionTooLargeError(
     fitsBp > 0
       ? `Zoom in to about ${bpString(fitsBp)}${fewerFit ? ', or choose fewer haplotypes,' : ''} to see the graph`
-      : `Too many haplotype steps here to draw ${filtered ? 'these haplotypes' : 'every haplotype'} (${read.toLocaleString()} steps read, over ${readPerKept} × ${names.steps} of ${stepBudget.toLocaleString()}); choose fewer haplotypes`,
+      : `Too many haplotype steps here to draw ${filtered ? 'these haplotypes' : 'every haplotype'} (${Math.round(read).toLocaleString()} steps read, a step along the reference counting a quarter, over ${readPerKept} × ${names.steps} of ${stepBudget.toLocaleString()}); choose fewer haplotypes`,
     budget,
     windowBp,
     Math.max(fitsBp, 1),
