@@ -9,7 +9,7 @@ import { placeAndLink } from './walkChunk.ts'
 import type { GraphTables, WalkStopTable } from './util.ts'
 import type { Chunk } from './walkChunk.ts'
 
-// A walk row of gfa-to-tabix's format 3, its steps decoded with its chunk
+// A walk row of gfa-to-tabix's format 4, its steps decoded with its chunk
 // (walkChunk.ts). A haplotype path is cut into pieces, one per chunk it
 // passes, and each piece's row takes the next piece index, so consecutive
 // indices of one path join. A row names the chunk its path's piece before and
@@ -78,7 +78,7 @@ export interface WalkWindow {
 }
 
 export interface WalkHeader {
-  // format:i:3; the reader refuses any other, and format 1 states none
+  // format:i:4; the reader refuses any other, and format 1 states none
   format?: number
   chunk?: number
   maxNode?: number
@@ -93,7 +93,7 @@ function integerTag(line: string, tag: string) {
 
 /**
  * What a walk file's header states: a `#walks` line with the format, the
- * chunk size and the longest node in bp, `format:i:3\tchunk:i:65536\tmaxnode:i:1024`,
+ * chunk size and the longest node in bp, `format:i:4\tchunk:i:65536\tmaxnode:i:1024`,
  * a `#reference\tGRCh38` line naming the reference sample and a
  * `#haplotype\tHG002#1` line per other haplotype with rows
  */

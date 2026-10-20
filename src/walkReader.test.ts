@@ -43,7 +43,7 @@ const walkNames = (text: string) =>
 test('the header names the format, the reference, the haplotypes and the chunk size', async () => {
   const header = await reader('header.GRCh38').header()
   expect(header).toMatchObject({
-    format: 3,
+    format: 4,
     chunk: 1000,
     references: ['GRCh38'],
     haplotypes: ['HG00097#1', 'HG002#1', 'HG002#2'],
@@ -55,10 +55,10 @@ test('a format 1 walk file is refused, with what to rebuild it with', async () =
   await expect(walks.header()).rejects.toThrow(WalkFormatError)
   await expect(
     walks.cut('GRCh38#0#chr1', { start: 0, end: 600 }),
-  ).rejects.toThrow(/rebuild it with gfa-to-tabix 1.1/)
+  ).rejects.toThrow(/rebuild it with gfa-to-tabix 1.2/)
 })
 
-test.each([2, 4])(
+test.each([2, 3])(
   'a format %i walk file is refused, with what to rebuild it with',
   async format => {
     const walks = new WalkReader({
@@ -68,7 +68,7 @@ test.each([2, 4])(
       getReferenceSequenceNames: () => Promise.resolve([]),
     })
     await expect(walks.header()).rejects.toThrow(
-      `This walk file is format ${format}; @jbrowse/graph-walks reads format 3, so rebuild it with gfa-to-tabix 1.1 or later`,
+      `This walk file is format ${format}; @jbrowse/graph-walks reads format 4, so rebuild it with gfa-to-tabix 1.2 or later`,
     )
   },
 )
@@ -302,11 +302,12 @@ function inline(lines: string[], reversed = false) {
 //   W R  0 chr >1>2>3>4>5>6>7>8
 //   W H1 1 c   >1>2>6>3>4>5>6>7>8
 //   W H2 1 c   >5>6>2>7>8
-// Today's writer files each visit to the other chunk as a separate piece. A
-// writer that stays keeps the visit in its piece as a route interior, so chunk
-// 0's route steps on 6, which chunk 16's ref row places, and chunk 16's on 2.
+// `pieces` files each visit to the other chunk as a piece of its own. `stays`
+// keeps the visit in its piece as a route interior, as gfa-to-tabix's --stay
+// does on a reference that passes 2 and 6 twice, so chunk 0's route steps on
+// 6, which chunk 16's ref row places, and chunk 16's on 2.
 const tinyHeader = [
-  '#walks format:i:3 chunk:i:16 maxnode:i:4',
+  '#walks format:i:4 chunk:i:16 maxnode:i:4',
   '#reference R',
   '#haplotype H1#1',
   '#haplotype H2#1',
@@ -445,7 +446,7 @@ function rowsReader(lines: string[], served: number[] = []) {
 //   W R  0 chr >1>2>3>4>5>6>7>8>9>10>11>12
 //   W H  1 h   >5>6>7>11>6>7>8
 const copyJump = [
-  '#walks format:i:3 chunk:i:16 maxnode:i:4',
+  '#walks format:i:4 chunk:i:16 maxnode:i:4',
   '#reference R',
   '#haplotype H#1',
   'R#0#chr 0 1 ref R#0#chr 0 0 0 4 2,2,2,2 4,4,4,4 nx:i:16',
@@ -509,7 +510,7 @@ test('a contained cut reads on only to chunks under the window', async () => {
 
 // Eight chunks of four 4 bp reference nodes
 const eightChunks = [
-  '#walks format:i:3 chunk:i:16 maxnode:i:4',
+  '#walks format:i:4 chunk:i:16 maxnode:i:4',
   '#reference R',
   ...Array.from({ length: 8 }, (_, c) =>
     [

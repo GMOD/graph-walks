@@ -1,6 +1,6 @@
 import type { WalkChunk, WalkRow } from './walkRows.ts'
 
-// A chunk of gfa-to-tabix's walk format 3, one file per reference (that
+// A chunk of gfa-to-tabix's walk format 4, one file per reference (that
 // repo's docs/walks-format.md). A chunk lists its `ref` rows, which joined in
 // hapOffset order are the chunk's reference path R; a `nodes` row with the
 // lengths of the nodes its routes visit; `route` rows, each a way off R; and a
@@ -72,7 +72,7 @@ function chunkTag(tag: string, anchor: string): WalkChunk {
   }
 }
 
-// The neighbour tags pv/nx, and format 3's record tags pg/pr and ng/nr
+// The neighbour tags pv/nx, and the record tags pg/pr and ng/nr
 function tags(cols: string[], from: number, anchor: string) {
   const out: Pick<WalkRow, 'prev' | 'next' | 'prevRecord' | 'nextRecord'> = {}
   for (let k = from; k < cols.length; k++) {

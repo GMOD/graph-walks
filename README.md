@@ -9,7 +9,7 @@ Cuts a window out of a pangenome graph stored as
 - **Out:** from a walk file, the reference over the region, every haplotype's
   walk through it, and the nodes and links they visit, as typed arrays; from a
   segment index, the segments and links under the region as GFA text
-- Reads walk format 3, which gfa-to-tabix writes from 1.1. The reader refuses
+- Reads walk format 4, which gfa-to-tabix writes from 1.2. The reader refuses
   any other format with a `WalkFormatError` asking for a rebuild
 - Has no runtime dependencies: it reads through any object with
   [@gmod/tabix](https://github.com/GMOD/tabix-js)'s `TabixIndexedFile` methods

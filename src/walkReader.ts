@@ -56,7 +56,7 @@ export interface TabixSource {
   ): Promise<number>
 }
 
-// A walk file in a format other than 3, which the reader refuses
+// A walk file in a format other than 4, which the reader refuses
 export class WalkFormatError extends Error {
   override name = 'WalkFormatError'
 }
@@ -150,9 +150,9 @@ export class WalkReader {
     if (!this.headerRead) {
       const read = this.walks.getHeaderLines().then(lines => {
         const header = walkHeader(lines)
-        if (header.format !== 3) {
+        if (header.format !== 4) {
           throw new WalkFormatError(
-            `This walk file is format ${header.format ?? 1}; @jbrowse/graph-walks reads format 3, so rebuild it with gfa-to-tabix 1.1 or later`,
+            `This walk file is format ${header.format ?? 1}; @jbrowse/graph-walks reads format 4, so rebuild it with gfa-to-tabix 1.2 or later`,
           )
         }
         const chunk = header.chunk ?? 65536
