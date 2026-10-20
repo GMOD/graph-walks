@@ -573,12 +573,16 @@ export function placeAndLink(
       offR.add(id)
     }
   }
+  const linkCanonical = (a: number, b: number) => {
+    const [from, to] = canonicalLink(a, b)
+    link(from, to)
+  }
   const best = new Map<number, PlacedNode>()
   for (const { path, routes, walks, lengths } of chunks) {
     const handles = path.handles
     for (let k = 1; k < handles.length; k++) {
       if (kept.has(idOf(handles[k - 1]!)) && kept.has(idOf(handles[k]!))) {
-        link(...canonicalLink(handles[k - 1]!, handles[k]!))
+        linkCanonical(handles[k - 1]!, handles[k]!)
       }
     }
     // routes holding a node of the cut off R
@@ -591,7 +595,7 @@ export function placeAndLink(
         const inCut = kept.has(idOf(h))
         any ||= offR.has(idOf(h))
         if (inCut && from !== NONE && kept.has(idOf(from))) {
-          link(...canonicalLink(from, h))
+          linkCanonical(from, h)
         }
         from = h
       }
@@ -601,7 +605,7 @@ export function placeAndLink(
         kept.has(idOf(from)) &&
         kept.has(idOf(exit))
       ) {
-        link(...canonicalLink(from, exit))
+        linkCanonical(from, exit)
       }
       wanted[index] = any ? 1 : 0
     }
