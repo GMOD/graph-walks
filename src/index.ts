@@ -11,10 +11,12 @@ export {
   walkCut,
   walkHeader,
   walkNameFilter,
+  walkQueryStart,
   walksKept,
 } from './walkRows.ts'
 export type {
   BudgetNames,
+  LongPass,
   WalkChunk,
   WalkFragment,
   WalkGap,

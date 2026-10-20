@@ -9,6 +9,7 @@ import {
   walkCut,
   walkHeader,
   walkNameFilter,
+  walkQueryStart,
   walksKept,
 } from './walkRows.ts'
 
@@ -196,6 +197,7 @@ test("a walk file's header states its chunk, references and haplotypes", () => {
     chunk: 65_536,
     references: [],
     haplotypes: [],
+    long: [],
   })
   expect(walkHeader(['#walks']).chunk).toBeUndefined()
   expect(
@@ -210,6 +212,7 @@ test("a walk file's header states its chunk, references and haplotypes", () => {
     chunk: 1000,
     references: ['GRCh38', 'CHM13'],
     haplotypes: ['HG00097#1', 'HG002#1'],
+    long: [],
   })
 })
 
@@ -224,6 +227,7 @@ test("a 0.5.0 header's first line gives the longest node beside the chunk", () =
     maxNode: 1024,
     references: ['GRCh38'],
     haplotypes: [],
+    long: [],
   })
   expect(walkHeader(['#walks\tmaxnode:i:300000\tchunk:i:1000'])).toMatchObject({
     chunk: 1000,
@@ -240,6 +244,34 @@ test('a cut looks back as many chunks as the longest node spans', () => {
   expect(lookbackChunks(300_000, 65_536)).toBe(5)
   expect(chunkQueryStart(20_000_000, 65_536, 5)).toBe(19_660_800)
   expect(chunkQueryStart(200_000, 65_536, 5)).toBe(0)
+})
+
+// GRCh38#0#chr22 has a 1 Mb N run at 10,510,000; a window reads past the
+// chunk before its own only where it overlaps that run
+test('a cut reads back to a long node only where the window overlaps it', () => {
+  const header = {
+    ...walkHeader([
+      '#walks\tformat:i:4\tchunk:i:65536\tmaxnode:i:1000000',
+      '#long\tGRCh38#0#chr22\t10510000\t11510000',
+    ]),
+    chunk: 65_536,
+  }
+  expect(header.long).toEqual([
+    { refName: 'GRCh38#0#chr22', start: 10_510_000, end: 11_510_000 },
+  ])
+  const at = (refName: string, start: number) =>
+    walkQueryStart(header, refName, start, start + 1000)
+  expect(at('GRCh38#0#chr22', 20_000_000)).toBe(19_922_944)
+  expect(at('GRCh38#0#chr22', 11_000_000)).toBe(10_420_224)
+  expect(at('GRCh38#0#chr21', 11_000_000)).toBe(10_878_976)
+  expect(
+    walkQueryStart(
+      { ...walkHeader(['#walks\tmaxnode:i:1000000']), chunk: 65_536 },
+      'GRCh38#0#chr22',
+      20_000_000,
+      20_001_000,
+    ),
+  ).toBe(18_939_904)
 })
 
 describe('the byte budget', () => {

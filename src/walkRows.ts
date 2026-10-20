@@ -77,6 +77,13 @@ export interface WalkWindow {
   sequences?: boolean
 }
 
+// A pass of the reference over a node longer than a chunk, from a `#long` line
+export interface LongPass {
+  refName: string
+  start: number
+  end: number
+}
+
 export interface WalkHeader {
   // format:i:4; the reader refuses any other, and format 1 states none
   format?: number
@@ -84,6 +91,7 @@ export interface WalkHeader {
   maxNode?: number
   references: string[]
   haplotypes: string[]
+  long: LongPass[]
 }
 
 function integerTag(line: string, tag: string) {
@@ -98,13 +106,15 @@ function integerTag(line: string, tag: string) {
  * `#haplotype\tHG002#1` line per other haplotype with rows
  */
 export function walkHeader(lines: string[]): WalkHeader {
-  const header: WalkHeader = { references: [], haplotypes: [] }
+  const header: WalkHeader = { references: [], haplotypes: [], long: [] }
   for (const line of lines) {
-    const [key, value = ''] = line.split('\t')
+    const [key, value = '', start = '', end = ''] = line.split('\t')
     if (key === '#reference') {
       header.references.push(value)
     } else if (key === '#haplotype') {
       header.haplotypes.push(value)
+    } else if (key === '#long') {
+      header.long.push({ refName: value, start: +start, end: +end })
     } else {
       header.format ??= integerTag(line, 'format')
       header.chunk ??= integerTag(line, 'chunk')
@@ -130,6 +140,32 @@ export function lookbackChunks(maxNode: number | undefined, chunk: number) {
 // before the one holding the window's start
 export function chunkQueryStart(start: number, chunk: number, lookback = 1) {
   return Math.max(0, (Math.floor(start / chunk) - lookback) * chunk)
+}
+
+/**
+ * The first base a cut of `refName` over `start`–`end` queries: the chunk
+ * before the window's first, or the chunk before a `#long` pass overlapping
+ * the window, whichever is earlier. A file with no `#long` lines reads
+ * lookbackChunks back, which is one chunk unless `maxnode` exceeds a chunk,
+ * as in a pggb file from gfa-to-tabix 1.2.
+ */
+export function walkQueryStart(
+  header: Pick<WalkHeader, 'maxNode' | 'long'> & { chunk: number },
+  refName: string,
+  start: number,
+  end: number,
+) {
+  const { chunk, long } = header
+  if (long.length === 0) {
+    return chunkQueryStart(start, chunk, lookbackChunks(header.maxNode, chunk))
+  }
+  let from = chunkQueryStart(start, chunk)
+  for (const pass of long) {
+    if (pass.refName === refName && pass.start < end && pass.end > start) {
+      from = Math.min(from, chunkQueryStart(pass.start, chunk))
+    }
+  }
+  return from
 }
 
 // Which walks a cut decodes: the reference's, and those `wanted` names by

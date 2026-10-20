@@ -3,15 +3,14 @@ import { decodeChunk, pieceLinks } from './walkChunk.ts'
 import {
   WalkGraph,
   byteBudgetError,
-  chunkQueryStart,
   joinPieces,
   keptNodesError,
   keptStepsError,
-  lookbackChunks,
   stepBudgetError,
   surelyKept,
   walkCut,
   walkHeader,
+  walkQueryStart,
   walksKept,
 } from './walkRows.ts'
 
@@ -124,7 +123,7 @@ export interface RegionCutOptions extends Omit<WalkCutOptions, 'keep'> {
   referenceSample?: string
 }
 
-export type WalkReaderHeader = WalkHeader & { chunk: number; lookback: number }
+export type WalkReaderHeader = WalkHeader & { chunk: number }
 
 /**
  * A `gfa-to-tabix --walks` file, `<prefix>.<sample>.walks.bed.gz`, read a
@@ -155,12 +154,7 @@ export class WalkReader {
             `This walk file is format ${header.format ?? 1}; @jbrowse/graph-walks reads format 4, so rebuild it with gfa-to-tabix 1.2 or later`,
           )
         }
-        const chunk = header.chunk ?? 65536
-        return {
-          ...header,
-          chunk,
-          lookback: lookbackChunks(header.maxNode, chunk),
-        }
+        return { ...header, chunk: header.chunk ?? 65536 }
       })
       read.catch(() => {
         if (this.headerRead === read) {
@@ -200,9 +194,14 @@ export class WalkReader {
     return resolveRefName(lookup, sample, refName)
   }
 
-  async queryStart(start: number, opts: { signal?: AbortSignal } = {}) {
-    const { chunk, lookback } = await this.header(opts)
-    return chunkQueryStart(start, chunk, lookback)
+  // The first base a cut over `start`, and `end` on `refName` when given,
+  // queries
+  async queryStart(
+    start: number,
+    opts: { signal?: AbortSignal; refName?: string; end?: number } = {},
+  ) {
+    const { refName = '', end = start + 1 } = opts
+    return walkQueryStart(await this.header(opts), refName, start, end)
   }
 
   async cut(
@@ -220,8 +219,9 @@ export class WalkReader {
       contained = false,
       nodeLimit = Infinity,
     } = opts
-    const { chunk, lookback } = await this.header({ signal })
-    const from = chunkQueryStart(region.start, chunk, lookback)
+    const header = await this.header({ signal })
+    const { chunk } = header
+    const from = walkQueryStart(header, refName, region.start, region.end)
     const bytesForRegions = this.walks.bytesForRegions?.bind(this.walks)
     const budgeted =
       Number.isFinite(byteBudget) && bytesForRegions !== undefined
