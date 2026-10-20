@@ -274,13 +274,17 @@ export class WalkReader {
       }
       decoded.add(cs)
       const chunkCut = decodeChunk(chunkRows, keep, opts.sequences)
-      rows.push(...chunkCut.rows)
+      for (const row of chunkCut.rows) {
+        rows.push(row)
+      }
       for (const [id, node] of chunkCut.nodes) {
         graph.placeNode(id, node)
       }
       graph.addSequences(chunkCut.sequences)
       graph.addChunk(chunkCut.chunk)
-      ends.push(...chunkCut.ends)
+      for (const end of chunkCut.ends) {
+        ends.push(end)
+      }
       if (Number.isFinite(nodeLimit)) {
         surelyKept(chunkCut, graph.nodes, contained, surely)
         if (surely.size > nodeLimit) {
@@ -364,12 +368,17 @@ export class WalkReader {
       cut = cutRows()
       let spent = await bytesFor([{ start: from, end: region.end }])
       for (let round = 0; round < FOLLOW_ROUNDS; round++) {
-        const starts = cut.open
-          .filter(c => c.refName === refName && c.start >= lo && c.start <= hi)
-          .map(c => c.start)
+        let reachFirst = first
+        let reachLast = last
+        for (const c of cut.open) {
+          if (c.refName === refName && c.start >= lo && c.start <= hi) {
+            reachFirst = Math.min(reachFirst, c.start)
+            reachLast = Math.max(reachLast, c.start)
+          }
+        }
         const spans = [
-          { start: Math.min(first, ...starts), end: first },
-          { start: last + chunk, end: Math.max(last, ...starts) + 1 },
+          { start: reachFirst, end: first },
+          { start: last + chunk, end: reachLast + 1 },
         ].filter(span => span.end > span.start)
         if (spans.length === 0) {
           break
@@ -378,8 +387,8 @@ export class WalkReader {
         if (spent > byteBudget) {
           break
         }
-        first = Math.min(first, ...starts)
-        last = Math.max(last, ...starts)
+        first = reachFirst
+        last = reachLast
         await Promise.all(spans.map(({ start, end }) => readChunks(start, end)))
         cut = cutRows()
       }
