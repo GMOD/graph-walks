@@ -934,14 +934,20 @@ export async function byteBudgetError(
     fitsBp = cs + chunk - window.start
   }
   const windowBp = window.end - window.start
-  return new RegionTooLargeError(
-    fitsBp > 0
-      ? `Zoom in to about ${bpString(fitsBp)} to see the graph`
-      : `Too much graph here to fetch (${megabytes(least ?? bytes)} against ${names.bytes} ${megabytes(budget)})`,
-    budget,
-    windowBp,
-    Math.max(fitsBp, 1),
-  )
+  return fitsBp > 0
+    ? new RegionTooLargeError(
+        `Zoom in to about ${bpString(fitsBp)} to see the graph`,
+        budget,
+        windowBp,
+        fitsBp,
+      )
+    : new RegionTooLargeError(
+        `Too much graph here to fetch, even zoomed in (${megabytes(least ?? bytes)} against ${names.bytes} ${megabytes(budget)}). A satellite or rDNA array usually causes this: the graph folds the repeat into a few nodes that each haplotype loops through many times`,
+        budget,
+        windowBp,
+        1,
+        { bytes },
+      )
 }
 
 const megabytes = (bytes: number) => `${(bytes / 1e6).toFixed(1)} MB`

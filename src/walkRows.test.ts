@@ -142,6 +142,8 @@ describe('the step budget', () => {
     expect(error.name).toBe('NodeLimitError')
     expect(error.regionTooLarge).toBe(true)
     expect(error.fitsBp).toBe(150)
+    expect(error.zoomHelps).toBe(true)
+    expect(error.bytes).toBeUndefined()
     expect(error.message).toBe('Zoom in to about 150bp to see the graph')
   })
 
@@ -302,6 +304,8 @@ describe('the byte budget', () => {
     expect(error.name).toBe('NodeLimitError')
     expect(error.regionTooLarge).toBe(true)
     expect(error.fitsBp).toBe(150)
+    expect(error.zoomHelps).toBe(true)
+    expect(error.bytes).toBeUndefined()
     expect(error.message).toBe('Zoom in to about 150bp to see the graph')
   })
 
@@ -312,9 +316,11 @@ describe('the byte budget', () => {
       { start: 310, end: 320 },
       chunk,
     ))!
-    expect(error.message).toBe(
-      'Too much graph here to fetch (11.0 MB against a byte budget of 5.0 MB)',
+    expect(error.message).toMatch(
+      /^Too much graph here to fetch, even zoomed in \(11\.0 MB against a byte budget of 5\.0 MB\)\. A satellite or rDNA array/,
     )
+    expect(error.zoomHelps).toBe(false)
+    expect(error.bytes).toBe(11_000_000)
   })
 })
 
