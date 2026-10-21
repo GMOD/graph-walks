@@ -415,6 +415,20 @@ test('foldRareForms: false keeps a form under minCarriers apart', () => {
   )
   expect(memberCounts(result)).toEqual([6, 3, 3, 1])
   expect(result.rareCarriers).toEqual([])
+  const rareState = forms(
+    [
+      ...haps('R', 10),
+      ...haps('D', 5, [dep(1000, 21_000, 0)]),
+      hap('X#1', [dep(1000, 19_800, 0)]),
+    ],
+    { minCarriers: 3, foldRareForms: false },
+  )
+  expect(rareState.forms.map(f => [f.key, f.members.length])).toEqual([
+    ['0', 10],
+    ['-20000', 5],
+    ['-19000', 1],
+  ])
+  expect(rareState.rareCarriers).toEqual([])
 })
 
 test('a rare call where most haplotypes have no call stays apart', () => {

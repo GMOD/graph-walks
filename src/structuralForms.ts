@@ -93,7 +93,9 @@ export interface FormsOptions {
   // samples or `sample#haplotype`s to leave out, such as a second reference
   // carried as a haplotype
   exclude?: string[]
-  // fold forms under minCarriers into the nearest common form; true by default
+  // fold states and forms under minCarriers into the nearest common one; true
+  // by default. Off, a rare state at a site that tells forms apart keeps its
+  // own key, so every member's marks are its own there
   foldRareForms?: boolean
 }
 
@@ -583,7 +585,7 @@ export function structuralForms(
     const common = siteStates.filter(s => s.carriers.length >= minCarriers)
     const fold = states.map((state, j) => {
       const n = carriers.get(state)?.length ?? 0
-      if (n >= minCarriers || !isPlaced[j]) {
+      if (n >= minCarriers || !isPlaced[j] || (keepRare && tells)) {
         return state
       }
       if (state !== majority) {

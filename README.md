@@ -189,7 +189,7 @@ result.forms.map(f => formTag(f, result))
 | `minCarriers`   | The fewest haplotypes a state or form needs; 1% of them, at least one, by default        |
 | `joinBp`        | Departures of one haplotype nearer than this on the reference join; default 50           |
 | `exclude`       | Samples to leave out, such as a second reference carried as a haplotype; none by default |
-| `foldRareForms` | Fold forms under `minCarriers` into the nearest common form; on by default               |
+| `foldRareForms` | Fold states and forms under `minCarriers` into the nearest common one; on by default     |
 
 ## Contained cuts
 
