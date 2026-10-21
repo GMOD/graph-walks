@@ -35,6 +35,17 @@ export {
 } from './walkReader.ts'
 export { refNameLookup, resolveRefName } from './refNames.ts'
 export { referenceNodes } from './walkChunk.ts'
+export {
+  FORMS_STEP_BUDGET,
+  formsCut,
+  walkDepartures,
+} from './walkDepartures.ts'
+export type {
+  Departure,
+  DepartureSource,
+  FormsCutOptions,
+  HaplotypeDepartures,
+} from './walkDepartures.ts'
 export type {
   RegionCutOptions,
   TabixSource,
