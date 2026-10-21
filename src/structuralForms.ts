@@ -155,24 +155,37 @@ export function changeKind(refLength: number, altLength: number) {
       : 'replacement'
 }
 
+// The second significant figure's place value: 1,000 for 10-99 kb
+const figureUnit = (n: number) => 10 ** (Math.floor(Math.log10(n)) - 1)
+
 const twoFigures = (n: number) => {
-  const unit = 10 ** (Math.floor(Math.log10(n)) - 1)
+  const unit = figureUnit(n)
   return Math.round(Math.round(n / unit) * unit)
 }
+
+// Whether a shift's net change says more than its two-figure size can: at
+// least the floor, and at least that size's last figure
+const shiftChanges = (m: Mark, floorBp = 0) =>
+  Math.abs(m.delta) >= Math.max(floorBp, figureUnit(m.shiftedBp!))
 
 /**
  * A mark's state, its size change to two significant figures: one repeat
  * unit is one state wherever the walk's boundaries fall (22,201 and 22,204 bp
  * are both `+22000`), and two units another. An inversion keys on its span,
- * a shift on its size, and a net change apart from a placed one.
+ * and a net change apart from a placed one. A shift keys on its size, and on
+ * its net change where that reaches `floorBp` and the size's last figure:
+ * `s94000` rounds to 1 kb, so a 94 kb shift 62 bp short is `s94000` and one
+ * 2.8 kb longer `s94000+2800`.
  */
-export function stateKey(m: Mark) {
+export function stateKey(m: Mark, floorBp = STRUCTURAL_BP) {
   const sign = m.delta > 0 ? '+' : '-'
   switch (m.kind) {
     case 'inversion':
       return `v${twoFigures(Math.max(Math.abs(m.delta), m.refEnd - m.refStart, 1))}`
     case 'shift':
-      return `s${twoFigures(m.shiftedBp!)}`
+      return shiftChanges(m, floorBp)
+        ? `s${twoFigures(m.shiftedBp!)}${sign}${twoFigures(Math.abs(m.delta))}`
+        : `s${twoFigures(m.shiftedBp!)}`
     case 'net':
       return `n${sign}${twoFigures(Math.abs(m.delta))}`
     default:
@@ -397,7 +410,7 @@ export function structuralForms(
     }
     return new Map(
       [...at].map(([site, ms]) => {
-        const state = ms.map(stateKey).join(';')
+        const state = ms.map(m => stateKey(m, floorBp)).join(';')
         return [site, ms.map((m): SiteMark => ({ ...m, site, state }))]
       }),
     )
@@ -618,7 +631,9 @@ export function changeName(m: Mark) {
     case 'inversion':
       return `${bp(span)} inversion`
     case 'shift':
-      return `${bp(m.shiftedBp!)} shifted, same length`
+      return shiftChanges(m)
+        ? `${bp(m.shiftedBp!)} shifted, ${bp(Math.abs(m.delta))} ${m.delta > 0 ? 'longer' : 'shorter'}`
+        : `${bp(m.shiftedBp!)} shifted, same length`
     case 'duplication':
       return `${bp(m.delta)} tandem duplication`
     case 'net':

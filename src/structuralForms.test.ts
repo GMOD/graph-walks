@@ -4,6 +4,7 @@ import {
   REFERENCE_STATE,
   autoFloor,
   changeKind,
+  changeName,
   describeForm,
   formStateAt,
   formTag,
@@ -223,6 +224,20 @@ test('a deletion and an insertion of one size pair into a shift', () => {
       mark('insertion', 9000, 9000, 8000),
     ]).map(m => m.kind),
   ).toEqual(['replacement', 'insertion'])
+})
+
+test("a shift keys on its net change where that passes the floor and the size's last figure", () => {
+  const shift = (delta: number, shiftedBp = 94_000): Mark => ({
+    ...mark('shift', 0, 112_000, delta),
+    shiftedBp,
+  })
+  expect(stateKey(shift(-62))).toBe('s94000')
+  expect(stateKey(shift(900))).toBe('s94000')
+  expect(stateKey(shift(2800))).toBe('s94000+2800')
+  expect(stateKey(shift(2800), 5000)).toBe('s94000')
+  expect(stateKey(shift(-150, 2000))).toBe('s2000-150')
+  expect(changeName(shift(-62))).toBe('94 kb shifted, same length')
+  expect(changeName(shift(2800))).toBe('94 kb shifted, 2.8 kb longer')
 })
 
 test('a step back along R is a duplication, which shifts like an insertion', () => {
