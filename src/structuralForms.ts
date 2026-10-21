@@ -723,10 +723,20 @@ const tagSize = (m: Mark) =>
 /**
  * A form for a row label of about 20 characters: its largest change as
  * markTag gives it, then "+N" counting the rest describeForm names, as in
- * "18 kb del" or "+78 kb +1"; "reference" where it makes no change
+ * "18 kb del" or "+78 kb +1"; "reference" where it makes no change. Given
+ * the form's result, the tag leaves out the marks every form shares, so a
+ * form with no other change is "shared change": naming the change there
+ * would read as if the other rows lacked it.
  */
-export function formTag(form: { marks: Mark[]; states: string[] }) {
-  const [largest] = form.marks.toSorted((a, b) => tagSize(b) - tagSize(a))
+export function formTag(
+  form: { marks: (Mark | SiteMark)[]; states: string[] },
+  result?: Pick<StructuralForms, 'sites'>,
+) {
+  const isShared = (m: Mark | SiteMark) =>
+    'site' in m && result?.sites[m.site]?.shared === true
+  const own = form.marks.filter(m => !isShared(m))
+  const [largest] = own.toSorted((a, b) => tagSize(b) - tagSize(a))
+  const shared = form.marks.length - own.length
   const rarer = form.states.filter(s => s === RARER_STATE).length
   const uncalled = form.states.filter(s => s === NO_CALL_STATE).length
   const head = largest
@@ -735,7 +745,11 @@ export function formTag(form: { marks: Mark[]; states: string[] }) {
       ? 'rarer change'
       : uncalled > 0
         ? 'not aligned'
-        : 'reference'
-  const rest = form.marks.length + rarer + uncalled - 1
+        : shared > 1
+          ? 'shared changes'
+          : shared === 1
+            ? 'shared change'
+            : 'reference'
+  const rest = own.length + rarer + uncalled - 1
   return rest > 0 ? `${head} +${rest}` : head
 }

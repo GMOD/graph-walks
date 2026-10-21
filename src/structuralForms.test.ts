@@ -503,6 +503,28 @@ test('formTag names the largest change of a form and counts the rest', () => {
   expect(formTag({ states: [NO_CALL_STATE], marks: [] })).toBe('not aligned')
 })
 
+test('formTag given the result leaves out the marks every form shares', () => {
+  const shared = dep(1000, 3000, 0)
+  const result = forms(
+    [
+      ...haps('R', 4, [shared]),
+      ...haps('D', 4, [shared, dep(60_000, 70_000, 0)]),
+    ],
+    { minCarriers: 2 },
+  )
+  expect(result.sites.map(s => s.shared)).toEqual([true, false])
+  expect(result.forms.map(f => formTag(f))).toEqual([
+    '2 kb del',
+    '10 kb del +1',
+  ])
+  expect(result.forms.map(f => formTag(f, result))).toEqual([
+    'shared change',
+    '10 kb del',
+  ])
+  const uncalled = { ...result.forms[0]!, states: [NO_CALL_STATE] }
+  expect(formTag(uncalled, result)).toBe('not aligned')
+})
+
 test('a site most walks do not reach is an edge, left out of the key', () => {
   const result = forms(
     [

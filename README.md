@@ -146,10 +146,10 @@ import {
 
 const region = { refName: 'chr1', start: 109_680_000, end: 109_715_000 }
 const haplotypes = await formsCut(reader, region)
-const { forms } = structuralForms(haplotypes, { window: region })
-forms.map(f => `${f.members.length} ${describeForm(f)}`)
+const result = structuralForms(haplotypes, { window: region })
+result.forms.map(f => `${f.members.length} ${describeForm(f)}`)
 // ['306 18 kb deletion', '156 as the reference']
-forms.map(formTag)
+result.forms.map(f => formTag(f, result))
 // ['18 kb del', 'reference']
 ```
 
@@ -173,7 +173,8 @@ forms.map(formTag)
 - `placed` counts the haplotypes in a form, so a form's share is its members
   over `placed`
 - `describeForm` describes a form in words, and `formTag` names it in about 12
-  characters for a row label: its largest change, then `+N` counting the rest
+  characters for a row label: its largest change, then `+N` counting the rest.
+  Given the result, `formTag` leaves out the changes every form shares
 - Every result holds plain data, so a worker can post it, and regrouping at
   another floor needs no new cut
 - [docs/structural-forms.md](docs/structural-forms.md) gives the grouping rules
