@@ -4,8 +4,10 @@ import { TabixIndexedFile } from '@gmod/tabix'
 
 import { graphTablesGFA } from './testing.ts'
 import { RegionTooLargeError, panSNHaplotype } from './util.ts'
-import { WalkFormatError, WalkReader } from './walkReader.ts'
+import { WalkFormatError, WalkReader, readInOrder } from './walkReader.ts'
 import { walkNameFilter } from './walkRows.ts'
+
+import type { TabixSource } from './walkReader.ts'
 
 const DATA = new URL('../test_data/', import.meta.url).pathname
 
@@ -574,4 +576,115 @@ test('an expanded walk is read from its detail records as the unabridged file cu
 
 test('the reference sequences leave out detail records', async () => {
   expect(await reader('abridged.R').referenceSequences()).toEqual(['R#0#chr'])
+})
+
+// abridged.R, each detail read made through `around`
+function heldDetails(
+  around: (
+    read: () => Promise<void>,
+    detail: { start: number; signal?: AbortSignal },
+  ) => Promise<void>,
+) {
+  const path = `${DATA}abridged.R.walks.bed.gz`
+  const file = new TabixIndexedFile({ path, tbiPath: `${path}.tbi` })
+  const source: TabixSource = {
+    getHeaderLines: opts => file.getHeaderLines(opts),
+    getReferenceSequenceNames: opts => file.getReferenceSequenceNames(opts),
+    getLines: (refName, start, end, opts) => {
+      const read = () => file.getLines(refName, start, end, opts)
+      return refName.includes('~')
+        ? around(read, { start, signal: opts.signal })
+        : read()
+    },
+  }
+  return new WalkReader(source)
+}
+
+async function expandedCut(walks: WalkReader, signal?: AbortSignal) {
+  const { graph, kept, fragments } = await walks.cut(
+    'R#0#chr',
+    { start: 0, end: 30 },
+    { expand: () => true, signal },
+  )
+  return { gfa: graphTablesGFA(graph.tables(kept, fragments)), fragments }
+}
+
+test('detail records read at once, finishing in reverse, cut as reads one at a time do', async () => {
+  let queue = Promise.resolve()
+  let reading = 0
+  let most = 0
+  const serial = await expandedCut(
+    heldDetails(read => {
+      queue = queue.then(async () => {
+        most = Math.max(most, ++reading)
+        await read()
+        reading--
+      })
+      return queue
+    }),
+  )
+  expect(most).toBe(1)
+  const waiting: (() => void)[] = []
+  const finished: number[] = []
+  const concurrent = await expandedCut(
+    heldDetails(async (read, { start }) => {
+      await read()
+      await new Promise<void>(resolve => {
+        waiting.push(() => {
+          finished.push(start)
+          resolve()
+        })
+        if (waiting.length === 12) {
+          for (const release of waiting.toReversed()) {
+            release()
+          }
+        }
+      })
+    }),
+  )
+  expect(finished).toHaveLength(12)
+  expect(finished).not.toEqual(finished.toSorted((a, b) => a - b))
+  expect(concurrent).toEqual(serial)
+})
+
+test('aborting an expanding cut stops its detail reads', async () => {
+  const controller = new AbortController()
+  const signals: AbortSignal[] = []
+  const walks = heldDetails(
+    (_read, { signal }) =>
+      new Promise((_resolve, reject) => {
+        signals.push(signal!)
+        signal!.addEventListener('abort', () => {
+          reject(signal!.reason as Error)
+        })
+        if (signals.length === 3) {
+          controller.abort(new Error('panned away'))
+        }
+      }),
+  )
+  await expect(expandedCut(walks, controller.signal)).rejects.toThrow(
+    'panned away',
+  )
+  expect(signals).toHaveLength(3)
+  expect(signals.every(signal => signal.aborted)).toBe(true)
+})
+
+test('readInOrder keeps at most its limit reading, and uses results in order', async () => {
+  let reading = 0
+  let most = 0
+  const used: number[] = []
+  await readInOrder(
+    [5, 1, 4, 2, 3, 0],
+    3,
+    new AbortController().signal,
+    async (ms: number) => {
+      most = Math.max(most, ++reading)
+      await new Promise(resolve => setTimeout(resolve, ms))
+      reading--
+      return ms * 10
+    },
+    (_ms, result) => used.push(result),
+  )
+  expect(most).toBe(3)
+  expect(used).toEqual([50, 10, 40, 20, 30, 0])
 })

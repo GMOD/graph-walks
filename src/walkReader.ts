@@ -1,5 +1,5 @@
 import { refNameLookup, resolveRefName } from './refNames.ts'
-import { decodeChunk, pieceLinks } from './walkChunk.ts'
+import { chunkRef, decodeChunk, pieceLinks } from './walkChunk.ts'
 import {
   WalkGraph,
   byteBudgetError,
@@ -14,7 +14,7 @@ import {
   walksKept,
 } from './walkRows.ts'
 
-import type { DecodedChunk } from './walkChunk.ts'
+import type { ChunkRef, DecodedChunk } from './walkChunk.ts'
 import type { BudgetNames, WalkHeader, WalkRow } from './walkRows.ts'
 
 // A window reads whole chunks and keeps the steps on it, so a narrow window
@@ -31,6 +31,9 @@ const FOLLOW_CHUNKS = 4
 
 // bp of reference a cut keeps past each end of the window
 const WALK_CONTEXT = 1000
+
+// detail records an expanding cut reads at once
+const DETAIL_READS = 16
 
 // The budgets the JBrowse graph plugin and BandageJS cut a browser's window by
 export const WALK_BUDGETS = { stepBudget: 4_000_000, byteBudget: 8_000_000 }
@@ -73,6 +76,32 @@ export function checkRange(refName: string, start: number, end: number) {
 // A detail record's sequence is its chunk's, `~` and the chunk's start
 function withoutDetails(names: string[]) {
   return names.filter(name => !name.includes('~'))
+}
+
+// Reads `items`, at most `limit` at once and none once `signal` aborts, and
+// hands each to `use` in order
+export async function readInOrder<T, R>(
+  items: T[],
+  limit: number,
+  signal: AbortSignal,
+  read: (item: T) => Promise<R>,
+  use: (item: T, result: R) => void,
+) {
+  const reads: Promise<R>[] = []
+  const next = () => {
+    if (reads.length < items.length && !signal.aborted) {
+      const started = read(items[reads.length]!)
+      reads.push(started)
+      started.then(next, () => {})
+    }
+  }
+  for (let k = 0; k < limit; k++) {
+    next()
+  }
+  for (let i = 0; i < items.length; i++) {
+    signal.throwIfAborted()
+    use(items[i]!, await reads[i]!)
+  }
 }
 
 // Settles like `promise` unless `signal` aborts first
@@ -278,8 +307,8 @@ export class WalkReader {
     const ends: DecodedChunk['ends'] = []
     const surely = new Set<number>()
     const filtered = keep !== undefined
-    // the detail records of expanded walks, with their chunk's ref rows
-    let details: { refRows: string[][]; row: WalkRow }[] = []
+    // the expanded walks' rows, with the R of their chunk
+    let details: { ref: ChunkRef; row: WalkRow }[] = []
     // each chunk read is decoded once, into its rows, nodes and the links
     // between pieces, and a cut over its node limit stops there
     const decode = (cs: number, chunkRows: string[][]) => {
@@ -288,25 +317,18 @@ export class WalkReader {
       }
       decoded.add(cs)
       const chunkCut = decodeChunk(chunkRows, keep, opts.sequences)
-      let refRows: string[][] | undefined
+      let ref: ChunkRef | undefined
       for (const row of chunkCut.rows) {
         if (row.abridged && expand?.(row.name)) {
-          refRows ??= chunkRows.filter(cols => cols[3] === 'ref')
-          details.push({ refRows, row })
+          ref ??= chunkRef(chunkRows)
+          details.push({ ref, row })
         } else {
           rows.push(row)
         }
       }
       place(chunkCut, cs)
     }
-    // A detail record's rows, decoded against the R of the chunk it came from
-    const decodeDetail = async ({
-      refRows,
-      row,
-    }: {
-      refRows: string[][]
-      row: WalkRow
-    }) => {
+    const readDetail = async ({ row }: { row: WalkRow }) => {
       const { refName: sequence, start } = row.abridged!.detail
       checkRange(sequence, start, start + 1)
       const held: string[][] = []
@@ -319,10 +341,17 @@ export class WalkReader {
           held.push(cols)
         },
       })
+      return held
+    }
+    const decodeDetail = (
+      { ref, row }: { ref: ChunkRef; row: WalkRow },
+      held: string[][],
+    ) => {
       const chunkCut = decodeChunk(
-        [...refRows, ...held],
+        held,
         name => name === row.name,
         opts.sequences,
+        ref,
       )
       for (const decodedRow of chunkCut.rows) {
         if (decodedRow.name === row.name) {
@@ -388,9 +417,13 @@ export class WalkReader {
       }
       const pending = details
       details = []
-      for (const detail of pending) {
-        await decodeDetail(detail)
-      }
+      await readInOrder(
+        pending,
+        DETAIL_READS,
+        reads.signal,
+        readDetail,
+        decodeDetail,
+      )
       if (links) {
         for (const [a, b] of pieceLinks(ends)) {
           graph.addLinkEnds(a, b)

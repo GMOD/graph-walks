@@ -369,6 +369,8 @@ export interface Chunk {
   // walk rows in path-name order, choices parsed
   walks: { cols: string[]; choices: number[] }[]
   lengths: Map<number, number>
+  // for a detail record, the node lengths of its chunk's R, which it shares
+  refLengths?: Map<number, number>
 }
 
 export interface DecodedChunk {
@@ -447,16 +449,42 @@ function abridgedRow(cols: string[]): WalkRow {
   }
 }
 
+const refRows = (rows: string[][]) =>
+  rows.filter(c => c[3] === 'ref').sort((a, b) => +a[6]! - +b[6]!)
+
+// A chunk's R and its nodes' lengths, which its detail records share
+export interface ChunkRef {
+  path: RefPath
+  lengths: Map<number, number>
+}
+
+export function chunkRef(rows: string[][]): ChunkRef {
+  const path = new RefPath()
+  const lengths = new Map<number, number>()
+  for (const cols of refRows(rows)) {
+    const handles = tokens(cols[9]!, { id: 0 }, [])
+    const nodeLengths = numbers(cols[10]!)
+    path.add(handles, nodeLengths)
+    for (let k = 0; k < handles.length; k++) {
+      lengths.set(idOf(handles[k]!), nodeLengths[k]!)
+    }
+  }
+  return { path, lengths }
+}
+
 /**
  * Decodes one chunk's rows, each split on tabs. `keep` names the walk rows
- * whose steps a cut wants, undefined for every one.
+ * whose steps a cut wants, undefined for every one. Given `ref`, the rows are
+ * a detail record decoded against that chunk's R, and the result leaves out
+ * R's rows, nodes, ends and bases, which the chunk's own decode gave.
  */
 export function decodeChunk(
   rows: string[][],
   keep: ((name: string) => boolean) | undefined,
   withSequences = false,
+  ref?: ChunkRef,
 ): DecodedChunk {
-  const path = new RefPath()
+  const path = ref?.path ?? new RefPath()
   const lengths = new Map<number, number>()
   const routes: Route[] = []
   const out: DecodedChunk = {
@@ -464,11 +492,12 @@ export function decodeChunk(
     rows: [],
     nodes: new Map(),
     ends: [],
-    chunk: { path, routes, walks: [], lengths },
+    chunk: { path, routes, walks: [], lengths, refLengths: ref?.lengths },
   }
+  const placed = (id: number) =>
+    out.nodes.has(id) || ref?.lengths.has(id) === true
   const previous = { id: 0 }
-  const refs = rows.filter(c => c[3] === 'ref').sort((a, b) => +a[6]! - +b[6]!)
-  for (const cols of refs) {
+  for (const cols of ref ? [] : refRows(rows)) {
     const anchor = cols[0]!
     const handles = tokens(cols[9]!, { id: 0 }, [])
     const nodeLengths = numbers(cols[10]!)
@@ -589,7 +618,7 @@ export function decodeChunk(
         interior += routeOf(choices[k]!).interior.length
         for (const h of routeOf(choices[k]!).interior) {
           const id = idOf(h)
-          if (!out.nodes.has(id)) {
+          if (!placed(id)) {
             const length = lengths.get(id) ?? 0
             out.nodes.set(id, { refName: name, start: 0, end: length, rank: 1 })
           }
@@ -637,7 +666,7 @@ export function placeAndLink(
     link(from, to)
   }
   const best = new Map<number, PlacedNode>()
-  for (const { path, routes, walks, lengths } of chunks) {
+  for (const { path, routes, walks, lengths, refLengths } of chunks) {
     const handles = path.handles
     for (let k = 1; k < handles.length; k++) {
       if (kept.has(idOf(handles[k - 1]!)) && kept.has(idOf(handles[k]!))) {
@@ -668,7 +697,8 @@ export function placeAndLink(
       }
       wanted[index] = any ? 1 : 0
     }
-    const lengthOf = (h: number) => lengths.get(idOf(h)) ?? 0
+    const lengthOf = (h: number) =>
+      lengths.get(idOf(h)) ?? refLengths?.get(idOf(h)) ?? 0
     const bp = new Float64Array(routes.length).fill(-1)
     const routeBp = (index: number) => {
       if (bp[index]! < 0) {
