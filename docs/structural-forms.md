@@ -95,6 +95,12 @@ can differ by one KIV-2 copy: LPA 395 → 385, MHC 407 → 406. At 1 kb, the flo
 | `shift`                                | A paired deletion and insertion or duplication; `shiftedBp` gives the size |
 | `net`                                  | An abridged walk left unexpanded: its net change somewhere in its span     |
 
+A replacement whose smaller side is under 5% of its larger one
+(`LOPSIDED_RATIO`) keeps kind `replacement`, its REF span, ALT length and delta,
+so a scorer sees the exact change. It gains `lopsided: 'deletion'` or
+`'insertion'`, which a caller can colour as a loss or gain, and `markTag` writes
+it as one: `del 6.46kb->94bp` for C4's 6,460 bp to 94 bp.
+
 Duplication is a kind of its own because core JBrowse already has the term
 (`DUP:TANDEM` folds to `DUP`, and VcfFeature maps it to `tandem_duplication`),
 so the plugin can colour them as a gain. AMY1 has 231 back-steps of 50 bp or
@@ -103,6 +109,34 @@ since their extra copies show as insertions. Whether a copy reads as a back-step
 depends on how the graph collapsed the repeat, so the key treats a duplication
 like an insertion of its size. Moving its REF onto the copied span instead would
 join neighbouring sites: AMY1 goes from 18 to 23 forms (ARI 0.915).
+
+## Labels
+
+`markTag` writes a mark as a short token, `formTag` a form as its largest token
+with ` +N` for the rest, and `describeForm` every token, largest first; the
+README's table lists them. `sizeTag` writes 3 significant figures, so
+`del 6.46kb->94bp` gives both sides of C4's change. The earlier net label read
+"−6.4 kb" and dropped the 94 bp left over.
+
+Row labels at the `auto` floor, 462 haplotypes once CHM13 is left out:
+
+| Window | Haplotypes | `formTag`                  | Note                                                      |
+| ------ | ---------- | -------------------------- | --------------------------------------------------------- |
+| C4     | 217        | `del 6.46kb->94bp`         | Lopsided: 94 bp left of 6,460                             |
+| C4     | 95         | `shift 32.7kb`             | `onlyShifts`                                              |
+| C4     | 20         | `repl 6.46kb->26.5kb`      | Over 5% on both sides                                     |
+| CYP2D6 | 42         | `ins 178bp->13.9kb`        | Lopsided: 178 bp replaced                                 |
+| MHC    | 26         | `del 87.5kb->920bp +2`     | Lopsided                                                  |
+| MHC    | 31         | `repl 8.95kb->50.9kb +10`  | `describeForm` lists all 11 tokens                        |
+| AMY1   | 175        | `shift 94.2kb`             | H3r, `onlyShifts`                                         |
+| AMY1   | 16         | `shift 94.2kb net +2.81kb` | `onlyShifts`; the net passes 1 kb, the size's last figure |
+| AMY1   | 61         | `dup 94.1kb`               |                                                           |
+
+`onlyShifts` marks a form whose changes outside the shared sites are all shifts,
+with a call at every site: R's length, with a stretch aligned elsewhere. AMY1's
+two such forms hold 191 of 460 placed haplotypes, so a display can set them
+beside the reference row. A form with a no call or a rarer state is not one,
+since its walks leave part of the window unread.
 
 ## Display floor
 
@@ -137,10 +171,24 @@ rule gives that 5 kb window 50 bp and the five windows above 1 kb.
   has its own budget
 - Expansion costs a second cut over the same chunks, since only the first lists
   the abridged walks and their steps
-- A gfa-to-tabix `dp` tag listing departures of 50 bp or more on abridged rows
-  would remove the expansion. Readers skip unknown tags (`walkChunk.ts`), so it
-  needs no format bump, but the HPRC files would need a rebuild: 39 min and 13
-  GB on 24 cores, plus the 64 GB base-level GFA
+- `partial: false` reads every abridged walk or none. Where reading them all
+  would take the cut past `stepBudget`, `formsCut` throws
+  `ExpansionTooLargeError` after the plain cut, before the second. Partial
+  expansion is a poor middle: MHC at a 4 M budget costs 3.5 s and still leaves
+  191 haplotypes net-only, worse than the sidecar
+- A gfa-to-tabix `dp` tag listing departures on abridged rows would remove the
+  expansion. Readers skip unknown tags (`walkChunk.ts`), so it needs no format
+  bump, but the HPRC files would need a rebuild: 39 min and 13 GB on 24 cores,
+  plus the 64 GB base-level GFA
+
+`expand` false against true, measured by jb2hubs, wall time:
+
+| Window | Plain cut | All expanded | RSS               |
+| ------ | --------- | ------------ | ----------------- |
+| MHC    | 1.7-2.4 s | 9.5 s        | 0.41 → 1.5-1.7 GB |
+| KIR    | 3.6 s     | 7.3 s        |                   |
+| LPA    | 1.9 s     | 4.8 s        |                   |
+| AMY1   | 1.7 s     | 3.1 s        |                   |
 
 Expanded cuts before parallel detail reads, and `formsCut` with 16 at once
 (graph-walks after 4.0.0), cold / warm:
@@ -154,6 +202,20 @@ Expanded cuts before parallel detail reads, and `formsCut` with 16 at once
 
 `structuralForms` takes under 0.1 s in every window, so the cut dominates.
 `formsCut` spends about 1 s over a single expanded cut on its first, plain cut.
+
+### What a `dp` tag must list
+
+structuralForms reads more than the 50 bp departures, so a `dp` tag of those
+alone would change the forms:
+
+- Departures already joined at `joinBp` (50 bp), as `join` joins them, so each
+  entry is one change with its exact net
+- The nonzero pieces under 50 bp inside each change of 50 bp or more. At a site
+  up to `SUMMED_SITE_BP` (1 kb) wide, structuralForms sums a haplotype's plain
+  pieces, which lifts rand29's VNTR from 235 haplotypes matching the assembly to
+  408 of 408
+- Gate it on forms from `dp` equalling the expanded forms at MHC, KIR, LPA, AMY1
+  and the jb2hubs gate windows
 
 ## Validation
 

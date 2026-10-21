@@ -148,15 +148,19 @@ const region = { refName: 'chr1', start: 109_680_000, end: 109_715_000 }
 const haplotypes = await formsCut(reader, region)
 const result = structuralForms(haplotypes, { window: region })
 result.forms.map(f => `${f.members.length} ${describeForm(f)}`)
-// ['306 18 kb deletion', '156 as the reference']
+// ['306 del 18.4kb', '156 ref']
 result.forms.map(f => formTag(f, result))
-// ['18 kb del', 'reference']
+// ['del 18.4kb', 'ref']
 ```
 
 - `formsCut` cuts the region uncontained and without links, reads abridged walks
   in full while the cut stays under `FORMS_STEP_BUDGET` steps, and returns each
   haplotype's departures from the reference: exact REF span and ALT length,
   inverted bp, and bp walked again by a step back along the reference
+- `formsCut` with `partial: false` reads every abridged walk or none: where
+  reading them all would take the cut past `stepBudget`, it throws
+  `ExpansionTooLargeError`, a `RegionTooLargeError` with the step count, before
+  the second cut
 - `formsCut` takes `byteBudget`, and a region the index estimates past it throws
   `RegionTooLargeError` before any read. The budget covers the region's chunks,
   not the detail records an expanded cut reads, which only the step budget
@@ -174,9 +178,11 @@ result.forms.map(f => formTag(f, result))
   change, no call and a rare change among no-calls
 - `placed` counts the haplotypes in a form, so a form's share is its members
   over `placed`
-- `describeForm` describes a form in words, and `formTag` names it in about 12
-  characters for a row label: its largest change, then `+N` counting the rest.
-  Given the result, `formTag` leaves out the changes every form shares
+- `form.onlyShifts` is true where every change outside the shared sites is a
+  shift and every site has a call: the reference's length with a stretch aligned
+  elsewhere, as in AMY1's H3r
+- `markTag`, `formTag` and `describeForm` label marks and forms, as
+  [Labels](#labels) shows
 - Every result holds plain data, so a worker can post it, and regrouping at
   another floor needs no new cut
 - [docs/structural-forms.md](docs/structural-forms.md) gives the grouping rules
@@ -190,6 +196,33 @@ result.forms.map(f => formTag(f, result))
 | `joinBp`        | Departures of one haplotype nearer than this on the reference join; default 50           |
 | `exclude`       | Samples to leave out, such as a second reference carried as a haplotype; none by default |
 | `foldRareForms` | Fold states and forms under `minCarriers` into the nearest common one; on by default     |
+
+### Labels
+
+- `markTag(mark)` is the per-mark label and takes a `Mark` or a `SiteMark`. C4's
+  common change gives `del 6.46kb->94bp`
+- `formTag` names a form in about 20 characters for a row label: its largest
+  change's `markTag`, then ` +N` counting the rest. Given the result, it leaves
+  out the changes every form shares
+- `describeForm` lists every change's `markTag`, largest first, comma-separated
+- Sizes take 3 significant figures with the unit attached (`94bp`, `6.46kb`,
+  `1.2Mb`), as `sizeTag` writes them
+- A replacement whose smaller side is under 5% (`LOPSIDED_RATIO`) of its larger
+  side stays `kind: 'replacement'` with its exact REF span and ALT length, and
+  gains `lopsided: 'deletion' | 'insertion'`, so a caller can colour it as a
+  loss or gain. Its label reads as one
+
+| Change                         | Token                                   |
+| ------------------------------ | --------------------------------------- |
+| deletion, insertion            | `del 18.4kb`, `ins 22kb`                |
+| lopsided replacement           | `del 6.46kb->94bp`, `ins 178bp->13.9kb` |
+| other replacement              | `repl 32.7kb->58.7kb`                   |
+| shift, inversion, duplication  | `shift 94.2kb`, `inv 12kb`, `dup 49kb`  |
+| shift that changes length      | `shift 94.2kb net +2.81kb`              |
+| abridged walk left unexpanded  | `net +78kb`, `net -94kb`                |
+| no change, only shared changes | `ref`, `shared`                         |
+| rare change, no call           | `rarer`, `no call`                      |
+| more changes, in `formTag`     | `del 32.7kb +1`                         |
 
 ## Contained cuts
 
