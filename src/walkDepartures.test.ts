@@ -1,5 +1,6 @@
 import { TabixIndexedFile } from '@gmod/tabix'
 
+import { RegionTooLargeError } from './util.ts'
 import { formsCut, walkDepartures } from './walkDepartures.ts'
 import { WalkReader } from './walkReader.ts'
 
@@ -307,5 +308,14 @@ describe('a forms cut', () => {
       )
       expect(net(abridged[h.haplotype]!)).toBe(net(h))
     }
+  })
+
+  test('throws RegionTooLargeError past its byte budget', async () => {
+    await expect(
+      formsCut(reader('abridged.R'), region, { byteBudget: 1 }),
+    ).rejects.toBeInstanceOf(RegionTooLargeError)
+    expect(
+      await formsCut(reader('abridged.R'), region, { byteBudget: 1e9 }),
+    ).toEqual(await formsCut(reader('abridged.R'), region))
   })
 })

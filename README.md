@@ -137,25 +137,43 @@ not keep, then:
 ## Structural forms
 
 ```ts
-import { describeForm, formsCut, structuralForms } from '@jbrowse/graph-walks'
+import {
+  describeForm,
+  formTag,
+  formsCut,
+  structuralForms,
+} from '@jbrowse/graph-walks'
 
 const region = { refName: 'chr1', start: 109_680_000, end: 109_715_000 }
 const haplotypes = await formsCut(reader, region)
 const { forms } = structuralForms(haplotypes, { window: region })
 forms.map(f => `${f.members.length} ${describeForm(f)}`)
 // ['306 18 kb deletion', '156 as the reference']
+forms.map(formTag)
+// ['18 kb del', 'reference']
 ```
 
 - `formsCut` cuts the region uncontained and without links, reads abridged walks
   in full while the cut stays under `FORMS_STEP_BUDGET` steps, and returns each
   haplotype's departures from the reference: exact REF span and ALT length,
   inverted bp, and bp walked again by a step back along the reference
+- `formsCut` takes `byteBudget`, and a region the index estimates past it throws
+  `RegionTooLargeError` before any read
 - `walkDepartures` reads the same departures off any cut's fragments and
   `graph.nodes`, or off its tables
 - `structuralForms` groups the haplotypes that make the same changes at every
   informative site. Each change is a `Mark`: an insertion, deletion,
   replacement, inversion, shift, duplication or `net`, the last for an abridged
   walk left unexpanded
+- Each mark in a result names its `site` in `sites` and its `state` key there. A
+  site is `edge`, `shared` (no form differs there) or informative, and
+  `formStateAt(result, form, site)` gives a form's state key at any of them.
+  `REFERENCE_STATE`, `NO_CALL_STATE` and `RARER_STATE` are the keys for no
+  change, no call and a rare change among no-calls
+- `placed` counts the haplotypes in a form, so a form's share is its members
+  over `placed`
+- `describeForm` describes a form in words, and `formTag` names it in about 12
+  characters for a row label: its largest change, then `+N` counting the rest
 - Every result holds plain data, so a worker can post it, and regrouping at
   another floor needs no new cut
 - [docs/structural-forms.md](docs/structural-forms.md) gives the grouping rules

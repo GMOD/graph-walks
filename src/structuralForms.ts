@@ -30,6 +30,13 @@ export interface Mark {
   shiftedBp?: number
 }
 
+// A mark in a structuralForms result: `site` indexes its `sites`, and `state`
+// is the key of the haplotype's state there
+export interface SiteMark extends Mark {
+  site: number
+  state: string
+}
+
 /**
  * One state of a site: its key, the median net change of its carriers, and
  * the marks of the carrier with that change. `carriers` are the haplotypes
@@ -38,7 +45,7 @@ export interface Mark {
 export interface SiteState {
   key: string
   delta: number
-  marks: Mark[]
+  marks: SiteMark[]
   carriers: string[]
 }
 
@@ -46,29 +53,32 @@ export interface SiteState {
  * Overlapping marks make one site. `covered` counts the placed haplotypes
  * with a call there: a mark, or walks spanning the site's part inside the
  * window. An `edge` site is one most haplotypes in the window have no call
- * at, which no form key holds.
+ * at, which no form key holds. A `shared` site tells no forms apart, since no
+ * second state there reaches minCarriers, and every form carries its majority
+ * state's marks. Every other site is informative.
  */
 export interface Site {
   refStart: number
   refEnd: number
   edge: boolean
+  shared: boolean
   covered: number
   states: SiteState[]
 }
 
 /**
  * Haplotypes with one state at every informative site. `states` holds a
- * SiteState key per informative site, `.` where the form's walks do not span
- * it, and `~` for a rare change where most haplotypes have no call; `key`
- * joins them. `marks` are its states' marks in R order, with those of the
- * state every form shares at a site that tells none apart, and `net` sums
- * them.
+ * SiteState key per informative site, `.` (NO_CALL_STATE) where the form's
+ * walks do not span it, and `~` (RARER_STATE) for a rare change where most
+ * haplotypes have no call; `key` joins them. `marks` are its states' marks in
+ * R order, with those of the state every form shares at a site that tells
+ * none apart, and `net` sums them.
  */
 export interface Form {
   members: string[]
   key: string
   states: string[]
-  marks: Mark[]
+  marks: SiteMark[]
   net: number
 }
 
@@ -89,15 +99,16 @@ export interface FormsOptions {
 
 /**
  * The forms a window's haplotypes fall into. `informative` indexes the sites
- * where a second state has minCarriers. `unplaced` haplotypes have no call in
- * the window and no form. `rareCarriers` carry a state or a form too rare to
- * stand alone, folded into the nearest common one, and `abridged` have a `net`
- * mark.
+ * where a second state has minCarriers. `placed` counts the haplotypes in a
+ * form, and `unplaced` lists those with no call in the window and no form.
+ * `rareCarriers` carry a state or a form too rare to stand alone, folded into
+ * the nearest common one, and `abridged` have a `net` mark.
  */
 export interface StructuralForms {
   sites: Site[]
   informative: number[]
   forms: Form[]
+  placed: number
   unplaced: string[]
   rareCarriers: string[]
   abridged: string[]
@@ -113,9 +124,13 @@ export const FLOOR_PRESETS = [50, 1000, 10_000] as const
 
 const SHIFT_MIN_BP = 1000
 const SHIFT_TOLERANCE = 0.1
-const NO_CALL = '.'
-const REFERENCE = '0'
-const RARER = '~'
+
+// A form's state at a site where it keeps R's structure, where its walks have
+// no call, and where it makes a change too rare to stand alone while most
+// haplotypes have no call
+export const REFERENCE_STATE = '0'
+export const NO_CALL_STATE = '.'
+export const RARER_STATE = '~'
 
 /**
  * The floor for a window `widthBp` wide: about 10 px at 1,000 px, snapped to a
@@ -380,30 +395,35 @@ export function structuralForms(
       const i = siteIndex(spans, m)
       at.set(i, [...(at.get(i) ?? []), m])
     }
-    return at
+    return new Map(
+      [...at].map(([site, ms]) => {
+        const state = ms.map(stateKey).join(';')
+        return [site, ms.map((m): SiteMark => ({ ...m, site, state }))]
+      }),
+    )
   })
   const raw = spans.map(([start, end], i) =>
     haplotypes.map((h, j) => {
       const marks = marksAt[j]!.get(i)
       return marks
-        ? marks.map(stateKey).join(';')
+        ? marks[0]!.state
         : covers(h, Math.max(start, window.start), Math.min(end, window.end))
-          ? REFERENCE
-          : NO_CALL
+          ? REFERENCE_STATE
+          : NO_CALL_STATE
     }),
   )
   const inWindow = haplotypes.map(h => overlaps(h, window.start, window.end))
   const windowCount = inWindow.filter(Boolean).length
   const edge = raw.map(
     states =>
-      2 * states.filter((s, j) => inWindow[j] && s !== NO_CALL).length <
+      2 * states.filter((s, j) => inWindow[j] && s !== NO_CALL_STATE).length <
       windowCount,
   )
   const isPlaced = haplotypes.map(
     (_, j) =>
       inWindow[j]! &&
       (edge.every(Boolean) ||
-        raw.some((states, i) => !edge[i] && states[j] !== NO_CALL)),
+        raw.some((states, i) => !edge[i] && states[j] !== NO_CALL_STATE)),
   )
   const placed = haplotypes.flatMap((_, j) => (isPlaced[j] ? [j] : []))
   const rare = new Set<string>()
@@ -412,7 +432,7 @@ export function structuralForms(
   const folded: string[][] = []
   // the marks of every placed haplotype's state at a site that tells none
   // apart
-  const shared: Mark[] = []
+  const shared: SiteMark[] = []
   spans.forEach(([refStart, refEnd], i) => {
     const states = raw[i]!
     const carriers = new Map<string, number[]>()
@@ -428,7 +448,7 @@ export function structuralForms(
       (a, b) => b[1].length - a[1].length || (a[0] < b[0] ? -1 : 1),
     )
     const siteStates = ranked.flatMap(([key, js]) => {
-      if (key === NO_CALL) {
+      if (key === NO_CALL_STATE) {
         return []
       }
       const byDelta = js
@@ -445,17 +465,20 @@ export function structuralForms(
         },
       ]
     })
+    const tells =
+      !edge[i] && ranked.length > 1 && ranked[1]![1].length >= minCarriers
     sites.push({
       refStart,
       refEnd,
       edge: edge[i]!,
-      covered: placed.length - (carriers.get(NO_CALL)?.length ?? 0),
+      shared: !edge[i] && !tells,
+      covered: placed.length - (carriers.get(NO_CALL_STATE)?.length ?? 0),
       states: siteStates,
     })
     if (edge[i]) {
       return
     }
-    const majority = ranked[0]?.[0] ?? REFERENCE
+    const majority = ranked[0]?.[0] ?? REFERENCE_STATE
     const common = siteStates.filter(s => s.carriers.length >= minCarriers)
     const fold = states.map((state, j) => {
       const n = carriers.get(state)?.length ?? 0
@@ -465,16 +488,16 @@ export function structuralForms(
       if (state !== majority) {
         rare.add(haplotypes[j]!.haplotype)
       }
-      if (state !== NO_CALL && majority === NO_CALL) {
-        return RARER
+      if (state !== NO_CALL_STATE && majority === NO_CALL_STATE) {
+        return RARER_STATE
       }
-      if (state !== NO_CALL && common.length > 0) {
+      if (state !== NO_CALL_STATE && common.length > 0) {
         const delta = sumDelta(marksAt[j]!.get(i) ?? [])
         return nearest(common, s => s.delta, delta).key
       }
       return majority
     })
-    if (ranked.length > 1 && ranked[1]![1].length >= minCarriers) {
+    if (tells) {
       informative.push(i)
       folded.push(fold)
     } else {
@@ -523,6 +546,7 @@ export function structuralForms(
     sites,
     informative,
     forms: sortForms(kept),
+    placed: placed.length,
     unplaced: haplotypes.flatMap((h, j) => (isPlaced[j] ? [] : [h.haplotype])),
     rareCarriers: haplotypes
       .filter(h => rare.has(h.haplotype))
@@ -620,13 +644,13 @@ const sites = (n: number) => `${n} site${n === 1 ? '' : 's'}`
  * first; more are counted with the largest named, since a list of sizes says
  * nothing.
  */
-export function describeForm(form: Pick<Form, 'marks' | 'states'>) {
+export function describeForm(form: { marks: Mark[]; states: string[] }) {
   const sized = form.marks
     .filter(m => m.kind !== 'inversion')
     .sort((a, b) => sizeOf(b) - sizeOf(a))
   const inversions = form.marks.length - sized.length
-  const rarer = form.states.filter(s => s === RARER).length
-  const uncalled = form.states.filter(s => s === NO_CALL).length
+  const rarer = form.states.filter(s => s === RARER_STATE).length
+  const uncalled = form.states.filter(s => s === NO_CALL_STATE).length
   const changes = [
     ...(sized.length > LISTED_CHANGES
       ? [`${sized.length} size changes, largest a ${changeName(sized[0]!)}`]
@@ -646,4 +670,75 @@ export function describeForm(form: Pick<Form, 'marks' | 'states'>) {
     ...(uncalled > 0 ? [`not aligned at ${sites(uncalled)}`] : []),
   ]
   return changes.length > 0 ? changes.join(', ') : 'as the reference'
+}
+
+/**
+ * The state key `form` has at `site`, an index into `result.sites`: its key
+ * there at an informative site, the state every form carries at a shared one,
+ * and undefined at an edge site, which no form key holds
+ */
+export function formStateAt(
+  result: Pick<StructuralForms, 'sites' | 'informative'>,
+  form: Pick<Form, 'states' | 'marks'>,
+  site: number,
+) {
+  const k = result.informative.indexOf(site)
+  if (k >= 0) {
+    return form.states[k]
+  }
+  return result.sites[site]?.shared
+    ? (form.marks.find(m => m.site === site)?.state ?? REFERENCE_STATE)
+    : undefined
+}
+
+const signed = (n: number) => `${n < 0 ? '\u2212' : '+'}${bp(Math.abs(n))}`
+
+/**
+ * A mark in a few characters: "+78 kb", "18 kb del", "49 kb dup", "2 kb
+ * shift", "3 kb inv". An abridged walk gives its net change, "−94 kb", and so
+ * does a replacement, unless one spanning 10 kb or less keeps most of its
+ * length: "6 kb repl".
+ */
+export function markTag(m: Mark) {
+  const span = m.refEnd - m.refStart
+  switch (m.kind) {
+    case 'insertion':
+    case 'net':
+      return signed(m.delta)
+    case 'deletion':
+      return `${bp(-m.delta)} del`
+    case 'duplication':
+      return `${bp(m.delta)} dup`
+    case 'inversion':
+      return `${bp(span)} inv`
+    case 'shift':
+      return `${bp(m.shiftedBp!)} shift`
+    case 'replacement':
+      return 2 * Math.abs(m.delta) < span && span <= DIFFUSE_MIN_SPAN
+        ? `${bp(span)} repl`
+        : signed(m.delta)
+  }
+}
+
+const tagSize = (m: Mark) =>
+  m.kind === 'inversion' ? m.refEnd - m.refStart : sizeOf(m)
+
+/**
+ * A form for a row label of about 20 characters: its largest change as
+ * markTag gives it, then "+N" counting the rest describeForm names, as in
+ * "18 kb del" or "+78 kb +1"; "reference" where it makes no change
+ */
+export function formTag(form: { marks: Mark[]; states: string[] }) {
+  const [largest] = form.marks.toSorted((a, b) => tagSize(b) - tagSize(a))
+  const rarer = form.states.filter(s => s === RARER_STATE).length
+  const uncalled = form.states.filter(s => s === NO_CALL_STATE).length
+  const head = largest
+    ? markTag(largest)
+    : rarer > 0
+      ? 'rarer change'
+      : uncalled > 0
+        ? 'not aligned'
+        : 'reference'
+  const rest = form.marks.length + rarer + uncalled - 1
+  return rest > 0 ? `${head} +${rest}` : head
 }

@@ -37,12 +37,18 @@ export { refNameLookup, resolveRefName } from './refNames.ts'
 export { referenceNodes } from './walkChunk.ts'
 export {
   FLOOR_PRESETS,
+  NO_CALL_STATE,
+  RARER_STATE,
+  REFERENCE_STATE,
   STRUCTURAL_BP,
   autoFloor,
   changeKind,
   changeName,
   describeForm,
+  formStateAt,
+  formTag,
   haplotypeMarks,
+  markTag,
   minCarriersFor,
   pairShifts,
   stateKey,
@@ -54,6 +60,7 @@ export type {
   Mark,
   MarkKind,
   Site,
+  SiteMark,
   SiteState,
   StructuralForms,
 } from './structuralForms.ts'

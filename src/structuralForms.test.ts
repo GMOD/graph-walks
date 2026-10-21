@@ -1,8 +1,14 @@
 import {
+  NO_CALL_STATE,
+  RARER_STATE,
+  REFERENCE_STATE,
   autoFloor,
   changeKind,
   describeForm,
+  formStateAt,
+  formTag,
   haplotypeMarks,
+  markTag,
   minCarriersFor,
   pairShifts,
   stateKey,
@@ -153,8 +159,8 @@ test('a form marks its changes in R order and says them largest first', () => {
   )
   const a2 = result.forms.find(f => f.members.includes('A#2'))!
   expect(a2.marks).toEqual([
-    mark('deletion', 100, 1800, -1700),
-    mark('insertion', 3000, 3000, 6400),
+    { ...mark('deletion', 100, 1800, -1700), site: 0, state: '-1700' },
+    { ...mark('insertion', 3000, 3000, 6400), site: 1, state: '+6400' },
   ])
   expect(describeForm(a2)).toBe('6.4 kb insertion, 1.7 kb deletion')
   expect(describeForm(result.forms.find(f => f.members.includes('B#2'))!)).toBe(
@@ -248,7 +254,9 @@ test('an abridged departure is a net mark, and its haplotype is listed', () => {
     hap('A#1', [dep(10_000, 75_000, 60_000, { abridged: true })]),
     hap('B#1'),
   ])
-  expect(result.forms[1]!.marks).toEqual([mark('net', 10_000, 75_000, -5000)])
+  expect(result.forms[1]!.marks).toEqual([
+    { ...mark('net', 10_000, 75_000, -5000), site: 0, state: 'n-5000' },
+  ])
   expect(describeForm(result.forms[1]!)).toBe('5 kb shorter in 65 kb')
   expect(result.abridged).toEqual(['A#1'])
 })
@@ -326,6 +334,7 @@ test('a form under minCarriers folds into the form nearest in net', () => {
     { minCarriers: 2 },
   )
   expect(memberCounts(result)).toEqual([6, 4, 3])
+  expect(result.placed).toBe(13)
   expect(result.forms[1]!.members).toContain('X#1')
   expect(result.rareCarriers).toEqual(['X#1'])
 })
@@ -363,6 +372,7 @@ test('a rare call where most haplotypes have no call stays apart', () => {
     ['-300|0', 3],
     ['0|~', 2],
   ])
+  expect(result.forms[2]!.states).toEqual([REFERENCE_STATE, RARER_STATE])
   expect(describeForm(result.forms[2]!)).toBe('a rarer change at 1 site')
   expect(describeForm(result.forms[0]!)).toBe('not aligned at 1 site')
 })
@@ -388,7 +398,81 @@ test('a haplotype placed somewhere is in a form, one placed nowhere is not', () 
   expect(describeForm(result.forms[2]!)).toBe(
     '2 kb deletion, not aligned at 1 site',
   )
+  expect(result.placed).toBe(10)
   expect(result.unplaced).toEqual(['Z#1'])
+})
+
+test('each mark names its site and state, and formStateAt reads a form at any site', () => {
+  const result = forms(
+    [
+      ...haps('R', 4, [dep(1000, 3000, 0)]),
+      ...haps('D', 4, [dep(1000, 3000, 0), dep(60_000, 70_000, 0)]),
+      ...Array.from({ length: 2 }, (_, i) =>
+        hap(`L${i}#1`, [dep(1000, 3000, 0)], [[0, 30_000]]),
+      ),
+    ],
+    { minCarriers: 2 },
+  )
+  expect(result.sites.map(s => [s.edge, s.shared])).toEqual([
+    [false, true],
+    [false, false],
+  ])
+  expect(result.informative).toEqual([1])
+  expect(result.forms[1]!.marks.map(m => [m.site, m.state])).toEqual([
+    [0, '-2000'],
+    [1, '-10000'],
+  ])
+  expect(
+    result.forms.map(f =>
+      result.sites.map((_, s) => formStateAt(result, f, s)),
+    ),
+  ).toEqual([
+    ['-2000', REFERENCE_STATE],
+    ['-2000', '-10000'],
+    ['-2000', NO_CALL_STATE],
+  ])
+  const edged = forms(
+    [
+      ...Array.from({ length: 6 }, (_, i) => hap(`S${i}#1`, [], [[0, 90_000]])),
+      ...haps('E', 3, [dep(95_000, 99_000, 0)]),
+    ],
+    { minCarriers: 2 },
+  )
+  expect(edged.sites[0]!.shared).toBe(false)
+  expect(formStateAt(edged, edged.forms[0]!, 0)).toBeUndefined()
+})
+
+test('markTag says a change in a few characters', () => {
+  expect(markTag(mark('insertion', 0, 0, 78_000))).toBe('+78 kb')
+  expect(markTag(mark('deletion', 0, 18_445, -18_445))).toBe('18 kb del')
+  expect(markTag(mark('net', 0, 160_000, -94_000))).toBe('\u221294 kb')
+  expect(markTag(mark('replacement', 0, 25_900, 78_100))).toBe('+78 kb')
+  expect(markTag(mark('replacement', 0, 6460, -6366))).toBe('\u22126.4 kb')
+  expect(markTag(mark('replacement', 0, 6000, 2000))).toBe('6 kb repl')
+  expect(markTag(mark('replacement', 0, 176_000, 2800))).toBe('+2.8 kb')
+  expect(markTag(mark('inversion', 0, 3000, 0))).toBe('3 kb inv')
+  expect(
+    markTag({ ...mark('duplication', 0, 0, 49_000), repeatedBp: 49_000 }),
+  ).toBe('49 kb dup')
+  expect(markTag({ ...mark('shift', 0, 5000, 0), shiftedBp: 2000 })).toBe(
+    '2 kb shift',
+  )
+})
+
+test('formTag names the largest change of a form and counts the rest', () => {
+  expect(formTag({ states: [], marks: [] })).toBe('reference')
+  expect(
+    formTag({
+      states: [NO_CALL_STATE, RARER_STATE],
+      marks: [
+        mark('deletion', 0, 2000, -2000),
+        mark('deletion', 3000, 21_445, -18_445),
+        mark('insertion', 30_000, 30_000, 300),
+      ],
+    }),
+  ).toBe('18 kb del +4')
+  expect(formTag({ states: [RARER_STATE], marks: [] })).toBe('rarer change')
+  expect(formTag({ states: [NO_CALL_STATE], marks: [] })).toBe('not aligned')
 })
 
 test('a site most walks do not reach is an edge, left out of the key', () => {
@@ -500,6 +584,6 @@ test('a GSTM1-like window is two forms', () => {
   })
   expect(at50.rareCarriers).toEqual(['HG400#1', 'HG401#1'])
   expect(at50.forms[0]!.marks).toEqual([
-    mark('deletion', 7001, 25_447, -18_445),
+    { ...mark('deletion', 7001, 25_447, -18_445), site: 0, state: '-18000' },
   ])
 })

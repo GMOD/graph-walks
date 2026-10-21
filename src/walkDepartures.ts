@@ -301,6 +301,9 @@ export interface FormsCutOptions {
   // default
   expand?: boolean
   stepBudget?: number
+  // the most compressed bytes either cut fetches, past which the cut throws
+  // RegionTooLargeError; no limit by default
+  byteBudget?: number
   signal?: AbortSignal
 }
 
@@ -310,20 +313,26 @@ export interface FormsCutOptions {
  * rejoins, and lists no links. Abridged walks are read in full, those with
  * the fewest steps first, while the cut stays under `stepBudget`; any left
  * keep their net change only. A haplotype the header names with no walk in
- * the cut is listed with nothing covered.
+ * the cut is listed with nothing covered. A region the index estimates past
+ * `byteBudget` throws the reader's RegionTooLargeError before any read.
  */
 export async function formsCut(
   reader: Pick<WalkReader, 'header' | 'sequenceFor' | 'cut'>,
   region: { refName: string; start: number; end: number },
   opts: FormsCutOptions = {},
 ) {
-  const { expand = true, stepBudget = FORMS_STEP_BUDGET, signal } = opts
+  const {
+    expand = true,
+    stepBudget = FORMS_STEP_BUDGET,
+    byteBudget,
+    signal,
+  } = opts
   const header: WalkReaderHeader = await reader.header({ signal })
   const sample = header.references[0] ?? ''
   const refName =
     (await reader.sequenceFor(sample, region.refName, { signal })) ??
     region.refName
-  const cutOpts = { links: false, signal }
+  const cutOpts = { links: false, byteBudget, signal }
   let cut = await reader.cut(refName, region, cutOpts)
   if (expand) {
     const expanded = expandedWalks(cut.fragments, stepBudget)
