@@ -131,8 +131,9 @@ export interface WalkCutOptions {
   keep?: (name: string) => boolean
   // the most steps a cut keeps; Infinity, the default, has no limit
   stepBudget?: number
-  // the most compressed bytes a cut fetches; Infinity, the default, has no
-  // limit
+  // the most compressed bytes a cut fetches from the windows' chunks;
+  // Infinity, the default, has no limit. The detail records `expand` reads
+  // count only against stepBudget
   byteBudget?: number
   context?: number
   // false lists no links, for a caller that draws no edges

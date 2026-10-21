@@ -158,7 +158,9 @@ result.forms.map(f => formTag(f, result))
   haplotype's departures from the reference: exact REF span and ALT length,
   inverted bp, and bp walked again by a step back along the reference
 - `formsCut` takes `byteBudget`, and a region the index estimates past it throws
-  `RegionTooLargeError` before any read
+  `RegionTooLargeError` before any read. The budget covers the region's chunks,
+  not the detail records an expanded cut reads, which only the step budget
+  bounds
 - `walkDepartures` reads the same departures off any cut's fragments and
   `graph.nodes`, or off its tables
 - `structuralForms` groups the haplotypes that make the same changes at every

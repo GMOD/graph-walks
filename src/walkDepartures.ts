@@ -333,8 +333,9 @@ export interface FormsCutOptions {
   // default
   expand?: boolean
   stepBudget?: number
-  // the most compressed bytes either cut fetches, past which the cut throws
-  // RegionTooLargeError; no limit by default
+  // the most compressed bytes either cut fetches from the region's chunks,
+  // past which the cut throws RegionTooLargeError; no limit by default. Only
+  // stepBudget bounds the detail records expansion reads
   byteBudget?: number
   signal?: AbortSignal
 }
