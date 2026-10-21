@@ -1,7 +1,11 @@
 import { TabixIndexedFile } from '@gmod/tabix'
 
 import { RegionTooLargeError } from './util.ts'
-import { formsCut, walkDepartures } from './walkDepartures.ts'
+import {
+  ExpansionTooLargeError,
+  formsCut,
+  walkDepartures,
+} from './walkDepartures.ts'
 import { WalkReader } from './walkReader.ts'
 
 import type { GraphTables } from './util.ts'
@@ -325,6 +329,33 @@ describe('a forms cut', () => {
       )
       expect(net(abridged[h.haplotype]!)).toBe(net(h))
     }
+  })
+
+  test('with partial: false reads every abridged walk, or throws before reading any', async () => {
+    const whole = byHaplotype(await formsCut(reader('unabridged.R'), region))
+    expect(
+      byHaplotype(
+        await formsCut(reader('abridged.R'), region, { partial: false }),
+      ),
+    ).toEqual(whole)
+    const error: unknown = await formsCut(reader('abridged.R'), region, {
+      partial: false,
+      stepBudget: 3,
+    }).catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(ExpansionTooLargeError)
+    expect(error).toBeInstanceOf(RegionTooLargeError)
+    const { steps, limit, fitsBp } = error as ExpansionTooLargeError
+    expect(limit).toBe(3)
+    expect(steps).toBeGreaterThan(3)
+    expect(fitsBp).toBe(Math.max(1, Math.floor((30 * 3) / steps)))
+    expect(
+      byHaplotype(
+        await formsCut(reader('unabridged.R'), region, {
+          partial: false,
+          stepBudget: 0,
+        }),
+      ),
+    ).toEqual(whole)
   })
 
   test("keeps an abridged walk's net exact when a piece of it lies in another chunk", async () => {

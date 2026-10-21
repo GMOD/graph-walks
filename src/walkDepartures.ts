@@ -1,4 +1,9 @@
-import { panSNHaplotype, panSNSample } from './util.ts'
+import {
+  RegionTooLargeError,
+  bpString,
+  panSNHaplotype,
+  panSNSample,
+} from './util.ts'
 
 import type { GraphTables } from './util.ts'
 import type { WalkReader, WalkReaderHeader } from './walkReader.ts'
@@ -347,6 +352,10 @@ export interface FormsCutOptions {
   // read abridged walks in full, as far as the step budget allows; true by
   // default
   expand?: boolean
+  // false reads every abridged walk in full, or throws ExpansionTooLargeError
+  // before the second cut where that takes the cut past stepBudget; true by
+  // default, which reads them fewest steps first while the budget lasts
+  partial?: boolean
   stepBudget?: number
   // the most compressed bytes either cut fetches from the region's chunks,
   // past which the cut throws RegionTooLargeError; no limit by default. Only
@@ -356,11 +365,32 @@ export interface FormsCutOptions {
 }
 
 /**
+ * A forms cut with `partial: false` whose abridged walks, read in full, would
+ * keep `steps` past `limit`, the step budget. `fitsBp` scales the region by
+ * how far over it is.
+ */
+export class ExpansionTooLargeError extends RegionTooLargeError {
+  readonly steps: number
+
+  constructor(steps: number, limit: number, windowBp: number) {
+    const fitsBp = Math.max(1, Math.floor((windowBp * limit) / steps))
+    super(
+      `Zoom in to about ${bpString(fitsBp)} to read every walk in full`,
+      limit,
+      windowBp,
+      fitsBp,
+    )
+    this.steps = steps
+  }
+}
+
+/**
  * Every haplotype's departures over a region, for structuralForms. The cut is
  * uncontained, so a departure crossing an edge is followed to where it
  * rejoins, and lists no links. Abridged walks are read in full, those with
  * the fewest steps first, while the cut stays under `stepBudget`; any left
- * keep their net change only. A haplotype the header names with no walk in
+ * keep their net change only. `partial: false` reads every abridged walk or
+ * throws ExpansionTooLargeError. A haplotype the header names with no walk in
  * the cut is listed with nothing covered. A region the index estimates past
  * `byteBudget` throws the reader's RegionTooLargeError before any read.
  */
@@ -371,6 +401,7 @@ export async function formsCut(
 ) {
   const {
     expand = true,
+    partial = true,
     stepBudget = FORMS_STEP_BUDGET,
     byteBudget,
     signal,
@@ -383,7 +414,7 @@ export async function formsCut(
   const cutOpts = { links: false, byteBudget, signal }
   let cut = await reader.cut(refName, region, cutOpts)
   if (expand) {
-    const expanded = expandedWalks(cut.fragments, stepBudget)
+    const expanded = expandedWalks(cut.fragments, stepBudget, partial, region)
     if (expanded.size > 0) {
       cut = await reader.cut(refName, region, {
         ...cutOpts,
@@ -405,8 +436,13 @@ export async function formsCut(
 }
 
 // The abridged walks a cut can read in full within `stepBudget`, fewest
-// steps first
-function expandedWalks(fragments: WalkFragment[], stepBudget: number) {
+// steps first, or all of them where `partial` is false
+function expandedWalks(
+  fragments: WalkFragment[],
+  stepBudget: number,
+  partial: boolean,
+  region: { start: number; end: number },
+) {
   let kept = 0
   const abridged = new Map<string, number>()
   for (const f of fragments) {
@@ -415,6 +451,17 @@ function expandedWalks(fragments: WalkFragment[], stepBudget: number) {
     } else {
       kept += f.ids.length
     }
+  }
+  if (!partial) {
+    const steps = [...abridged.values()].reduce((sum, n) => sum + n, kept)
+    if (abridged.size > 0 && steps > stepBudget) {
+      throw new ExpansionTooLargeError(
+        steps,
+        stepBudget,
+        region.end - region.start,
+      )
+    }
+    return new Set(abridged.keys())
   }
   const expanded = new Set<string>()
   for (const [name, steps] of [...abridged].sort((a, b) => a[1] - b[1])) {

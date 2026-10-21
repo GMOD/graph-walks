@@ -68,6 +68,7 @@ export type {
   StructuralForms,
 } from './structuralForms.ts'
 export {
+  ExpansionTooLargeError,
   FORMS_STEP_BUDGET,
   formsCut,
   walkDepartures,
