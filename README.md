@@ -134,6 +134,41 @@ not keep, then:
   full, as a file without abridging would
 - `referenceSequences()` leaves out the detail records' sequences, `seq~cs`
 
+## Structural forms
+
+```ts
+import { describeForm, formsCut, structuralForms } from '@jbrowse/graph-walks'
+
+const region = { refName: 'chr1', start: 109_680_000, end: 109_715_000 }
+const haplotypes = await formsCut(reader, region)
+const { forms } = structuralForms(haplotypes, { window: region })
+forms.map(f => `${f.members.length} ${describeForm(f)}`)
+// ['306 18 kb deletion', '156 as the reference']
+```
+
+- `formsCut` cuts the region uncontained and without links, reads abridged walks
+  in full while the cut stays under `FORMS_STEP_BUDGET` steps, and returns each
+  haplotype's departures from the reference: exact REF span and ALT length,
+  inverted bp, and bp walked again by a step back along the reference
+- `walkDepartures` reads the same departures off any cut's fragments and
+  `graph.nodes`, or off its tables
+- `structuralForms` groups the haplotypes that make the same changes at every
+  informative site. Each change is a `Mark`: an insertion, deletion,
+  replacement, inversion, shift, duplication or `net`, the last for an abridged
+  walk left unexpanded
+- Every result holds plain data, so a worker can post it, and regrouping at
+  another floor needs no new cut
+- [docs/structural-forms.md](docs/structural-forms.md) gives the grouping rules
+  and the measurements behind them
+
+| Option        | Effect                                                                             |
+| ------------- | ---------------------------------------------------------------------------------- |
+| `window`      | The region; marks must touch it, and `auto` reads its width                        |
+| `floorBp`     | The smallest change a form tells apart; `auto` gives 50 bp, 1 kb or 10 kb by width |
+| `minCarriers` | The fewest haplotypes a state or form needs; 1% of them, at least one, by default  |
+| `joinBp`      | Departures of one haplotype nearer than this on the reference join; default 50     |
+| `exclude`     | Samples to leave out; `CHM13` and `GRCh38` by default                              |
+
 ## Contained cuts
 
 - By default a cut follows each haplotype that leaves the region near it until

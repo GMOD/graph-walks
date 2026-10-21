@@ -36,6 +36,29 @@ export {
 export { refNameLookup, resolveRefName } from './refNames.ts'
 export { referenceNodes } from './walkChunk.ts'
 export {
+  DEFAULT_EXCLUDE,
+  FLOOR_PRESETS,
+  STRUCTURAL_BP,
+  autoFloor,
+  changeKind,
+  changeName,
+  describeForm,
+  haplotypeMarks,
+  minCarriersFor,
+  pairShifts,
+  stateKey,
+  structuralForms,
+} from './structuralForms.ts'
+export type {
+  Form,
+  FormsOptions,
+  Mark,
+  MarkKind,
+  Site,
+  SiteState,
+  StructuralForms,
+} from './structuralForms.ts'
+export {
   FORMS_STEP_BUDGET,
   formsCut,
   walkDepartures,
