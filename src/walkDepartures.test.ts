@@ -203,6 +203,23 @@ test("a haplotype's fragments join into one list, the reference's are left out",
   ])
 })
 
+test('R that two walks of a haplotype cover, or a junction between them, has no call', () => {
+  const [overlapping, abutting] = departuresOf(
+    fragment('A#1#c1', '+1 +2 +3 +4'),
+    fragment('A#1#c2', '+3 +4 +5'),
+    fragment('A#2#c1', '+1 +2'),
+    fragment('A#2#c2', '+3 +4'),
+  )
+  expect(overlapping!.covered).toEqual([
+    [0, 600],
+    [1700, 1800],
+  ])
+  expect(abutting!.covered).toEqual([
+    [0, 600],
+    [600, 1700],
+  ])
+})
+
 test('tables give the same departures as fragments', () => {
   const names = ['1', '2', '3', '50']
   const tables: GraphTables = {

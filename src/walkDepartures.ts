@@ -24,9 +24,10 @@ export interface Departure {
 }
 
 /**
- * A `sample#haplotype`'s departures, by refStart. `covered` spans the R its
- * walks reach, and `open` says one of them leaves R and never rejoins in the
- * cut, so it has no call past that end.
+ * A `sample#haplotype`'s departures, by refStart. `covered` spans the R
+ * exactly one of its walks reaches, each span within one walk, and `open`
+ * says one of them leaves R and never rejoins in the cut, so it has no call
+ * past that end.
  */
 export interface HaplotypeDepartures {
   haplotype: string
@@ -188,7 +189,7 @@ export function walkDepartures(source: DepartureSource, refName: string) {
   const out = [...byHaplotype.values()]
   for (const h of out) {
     h.departures.sort((a, b) => a.refStart - b.refStart || a.refEnd - b.refEnd)
-    h.covered = mergeSpans(h.covered)
+    h.covered = coveredOnce(h.covered)
   }
   return out
 }
@@ -310,18 +311,32 @@ function readChain(
   }
 }
 
-function mergeSpans(spans: [number, number][]) {
-  const sorted = spans.toSorted((a, b) => a[0] - b[0])
-  const merged: [number, number][] = []
-  for (const [start, end] of sorted) {
-    const last = merged.at(-1)
-    if (last && start <= last[1]) {
-      last[1] = Math.max(last[1], end)
+/**
+ * The stretches of R that exactly one of a haplotype's walks covers, each
+ * within one walk. Where two walks overlap, such as a second contig over the
+ * same locus, the haplotype holds two copies of that stretch and no call;
+ * where one walk ends and the next starts, as across a record break whose
+ * bases the graph lacks, no call crosses the junction.
+ */
+function coveredOnce(spans: [number, number][]) {
+  const points = [...new Set(spans.flat())].sort((a, b) => a - b)
+  const out: [number, number][] = []
+  let lastWalk = -1
+  for (let k = 0; k + 1 < points.length; k++) {
+    const a = points[k]!
+    const b = points[k + 1]!
+    const walks = spans.flatMap(([s, e], i) => (s <= a && e >= b ? [i] : []))
+    const last = out.at(-1)
+    if (walks.length !== 1) {
+      lastWalk = -1
+    } else if (last && walks[0] === lastWalk && last[1] === a) {
+      last[1] = b
     } else {
-      merged.push([start, end])
+      out.push([a, b])
+      lastWalk = walks[0]!
     }
   }
-  return merged
+  return out
 }
 
 // The most steps a forms cut keeps, expanded abridged walks included; an
