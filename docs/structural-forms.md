@@ -49,7 +49,9 @@ alternatives fall short:
 Walks give exact lengths. Each haplotype's summed departures across the truth
 table's span match its assembly in 2,779 of 2,780 scored cases, median gap 0 bp;
 the HPRC sidecar's equivalent is 99% with a median of 36 bp. The one miss,
-NA19909#1 at AMY1 (walk −94,529 bp, assembly −101 bp), has no explanation yet.
+NA19909#1 at AMY1 (walk −94,529 bp, assembly −101 bp), came from a second contig
+over the AMY copies whose departures added to the first's; R that two walks of
+one haplotype cover is now no call.
 
 ## Grouping rules
 
@@ -65,7 +67,7 @@ NA19909#1 at AMY1 (walk −94,529 bp, assembly −101 bp), has no explanation ye
 | Rare states     | Fold to the common state nearest in net change. The sidecar's restored parents are dropped. `foldRareForms: false` keeps them apart at a site that tells forms apart, as a scorer wants every member's own sizes                                                                                                                                                                                                                                    |
 | Rare forms      | A form under `minCarriers` folds into the form nearest in net. Without it LPA at 50 bp has 48 single-haplotype rows                                                                                                                                                                                                                                                                                                                                 |
 | Edge sites      | A site that most haplotypes in the window have no call at is `edge` and left out of the key. A haplotype's call reads its coverage over the site's part inside the window, so a departure followed past the edge does not make the others no-calls                                                                                                                                                                                                  |
-| No calls        | A haplotype whose walks leave a gap in a site's part inside the window has no call there, even with a mark at the site, as an open walk at AMY1's insertion junction has                                                                                                                                                                                                                                                                            |
+| No calls        | A haplotype whose walks leave a gap in a site's part inside the window has no call there, even with a mark at the site, as an open walk at AMY1's insertion junction has. R that two of its walks cover, such as a second contig, and a junction between two walks, such as a record break whose bases the graph lacks, are gaps too                                                                                                                |
 | Shared sites    | A site where no second state reaches `minCarriers` is not in the key, and every form carries its majority state's marks                                                                                                                                                                                                                                                                                                                             |
 
 ### Folding to the nearest state
@@ -168,6 +170,18 @@ scored against the assemblies (`truth.tsv`) and the sidecar (`forms-v3.jsonl`):
 MHC's net is scored on a cut widened to the truth table's span,
 chr6:32,476,308-32,610,000. The ARI is low where the sidecar splits LPA into 179
 forms and MHC into 120, most of them single haplotypes.
+
+The jb2hubs gate (`printWalkForms.ts`, `scoreForms.py --complete-claims`) over
+19 loci and 40 random 50 kb windows, at 50 bp with `foldRareForms: false`:
+
+- Claims within 10% or 500 bp of the assembly: 6,910 of 6,931 at the loci and
+  12,946 of 12,946 in the random windows. The sidecar sizes 5,528 and 12,860
+- Per site, 50 bp to 1 kb, members both score: walks 78.8% against the sidecar's
+  69.9% at the loci, 96.1% against 92.7% in the random windows
+- Of the 21 misses, 20 are at KIR, where a walk and the assembly's flanks put a
+  16 kb or 31 kb stretch on opposite sides of a span's edge among the KIR
+  paralogs. The other, NA18508#1 at FCGR, walks one contig 82 kb longer than the
+  flanks measure
 
 ## Consumers
 
