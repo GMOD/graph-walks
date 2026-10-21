@@ -37,6 +37,14 @@ alternatives fall short:
 - Fragments of one path that abut on the haplotype read as one walk. An abridged
   fragment's bp then lie between the R steps either side of it, so the departure
   holding it is exact in net, and only placement inside it is lost
+- An abridged row's pieces need not be consecutive. Where the path steps onto
+  another chunk's R and back, the pieces between lie in that chunk, and their bp
+  join the abridged departure's. Leaving them out put AMY1's unexpanded
+  HG03710#1 29 kb short: +167,764 bp against +196,894 expanded
+- An abridged fragment at either end of a walk has no R step beyond it, so its
+  departure stops at its anchors, which is exact only where the walk enters or
+  leaves R there. At AMY1, 129 of 132 unexpanded abridged haplotypes match their
+  expanded net and coverage exactly
 
 Walks give exact lengths. Each haplotype's summed departures across the truth
 table's span match its assembly in 2,779 of 2,780 scored cases, median gap 0 bp;

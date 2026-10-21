@@ -310,6 +310,24 @@ describe('a forms cut', () => {
     }
   })
 
+  test("keeps an abridged walk's net exact when a piece of it lies in another chunk", async () => {
+    // X#1's pieces 0 and 2 are abridged in chunk 0, and piece 1 between them
+    // walks R in chunk 10
+    const window = { refName: 'c', start: 0, end: 36 }
+    const [abridged, expanded] = await Promise.all(
+      [false, true].map(async expand =>
+        byHaplotype(
+          await formsCut(reader('interleaved.R'), window, { expand }),
+        ),
+      ),
+    )
+    const x = abridged!['X#1']!
+    expect(net(expanded!['X#1']!)).toBe(84)
+    expect(net(x)).toBe(84)
+    expect(x.open).toBe(false)
+    expect(x.covered).toEqual(expanded!['X#1']!.covered)
+  })
+
   test('throws RegionTooLargeError past its byte budget', async () => {
     await expect(
       formsCut(reader('abridged.R'), region, { byteBudget: 1 }),

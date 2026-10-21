@@ -46,6 +46,8 @@ interface Walk {
   id: (k: number) => number
   rev: (k: number) => boolean
   abridgedBp?: number
+  // the walk's bp a cut read but kept out of this one, before and after it
+  trimmed: [number, number]
 }
 
 interface Lookup {
@@ -69,6 +71,7 @@ function fromFragments(
       id: k => f.ids[k]!,
       rev: k => f.rev[k] === 1,
       abridgedBp: f.abridged?.bp,
+      trimmed: [f.before.trimmed ?? 0, f.after.trimmed ?? 0],
     })),
     refStart: id => {
       const node = nodes.get(id)
@@ -95,6 +98,7 @@ function fromTables({ nodes, walks }: GraphTables, refName: string): Lookup {
         id: k => walks.steps[from + k]!,
         rev: k => walks.reversed[from + k] === 1,
         abridgedBp: bp === undefined || Number.isNaN(bp) ? undefined : bp,
+        trimmed: [0, 0],
       }
     }),
     refStart: id =>
@@ -105,20 +109,46 @@ function fromTables({ nodes, walks }: GraphTables, refName: string): Lookup {
 
 const onR = (start: number) => !Number.isNaN(start)
 
-// A path's walks in order, those that abut on the haplotype joined
+/**
+ * A path's walks in order, those that abut on the haplotype joined. An
+ * abridged walk's pieces need not be consecutive: where the path steps onto
+ * another chunk's R and back, the pieces between lie in that chunk. A walk
+ * starting before the abridged pieces' bp run out is one of those, so its
+ * whole run, trimmed bp included, joins the abridged walk's bp.
+ */
 function chains(walks: Walk[]) {
   const sorted = walks.toSorted((a, b) =>
     a.name < b.name ? -1 : a.name > b.name ? 1 : a.hapStart - b.hapStart,
   )
   const out: Walk[][] = []
+  let end = NaN
+  let runEnd = -Infinity
   for (const walk of sorted) {
     const chain = out.at(-1)
     const last = chain?.at(-1)
-    if (chain && last?.name === walk.name && last.hapEnd === walk.hapStart) {
-      chain.push(walk)
-    } else {
-      out.push([walk])
+    if (chain && last?.name === walk.name) {
+      if (last.abridgedBp !== undefined && walk.hapStart < end) {
+        const start = walk.hapStart - walk.trimmed[0]
+        const stop = walk.hapEnd + walk.trimmed[1]
+        const added = Math.max(0, stop - Math.max(start, runEnd))
+        runEnd = Math.max(runEnd, stop)
+        end += added
+        chain[chain.length - 1] = {
+          ...last,
+          abridgedBp: last.abridgedBp + added,
+        }
+        continue
+      }
+      if (walk.hapStart === end) {
+        chain.push(walk)
+        end = walk.hapEnd
+        runEnd = -Infinity
+        continue
+      }
     }
+    out.push([walk])
+    end = walk.hapEnd
+    runEnd = -Infinity
   }
   return out
 }
@@ -128,10 +158,12 @@ function chains(walks: Walk[]) {
  * and `graph.nodes`, or off its tables. Fragments of a path that abut on the
  * haplotype read as one walk, and one that steps along R mostly reversed
  * reads reversed. Steps off R before a walk's first forward step on R or
- * after its last leave it open there. An abridged fragment's bp lie between
- * the R steps either side of it, or its anchors where it has none, so the
- * departure holding it is exact in net. The walks on R's own haplotype are
- * left out.
+ * after its last leave it open there. An abridged fragment's bp, with those
+ * of any pieces between its own that lie in other chunks, lie between the R
+ * steps either side of it, so the departure holding it is exact in net. At
+ * either end of a walk it has no R step beyond it and stops at its anchors,
+ * which is exact only where the walk enters or leaves R there. The walks on
+ * R's own haplotype are left out.
  */
 export function walkDepartures(source: DepartureSource, refName: string) {
   const { walks, refStart, length } =
