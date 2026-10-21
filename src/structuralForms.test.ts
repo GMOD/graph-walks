@@ -143,6 +143,41 @@ test('forms group the haplotypes that match at every informative site', () => {
   expect(result.rareCarriers).toEqual(['A#1'])
 })
 
+test("the floor applies to a haplotype's net change across a site, not to each piece", () => {
+  // a repeat 98 bp shorter, which some walks split into two 49 bp deletions
+  // 72 bp apart, more than joinBp
+  const split = [dep(1000, 1049, 0), dep(1121, 1170, 0)]
+  const result = forms(
+    [
+      ...haps('R', 4),
+      ...haps('D', 4, [dep(1000, 1170, 72)]),
+      ...haps('S', 4, split),
+    ],
+    { minCarriers: 2 },
+  )
+  expect(result.forms.map(f => [f.key, f.members.length])).toEqual([
+    ['-98', 8],
+    ['0', 4],
+  ])
+  // a 70 bp piece that two others shorten to 18 bp across a site the
+  // repeat's 100 bp deletion spans
+  const offset = [dep(2000, 2020, 0), dep(2100, 2100, 70), dep(2200, 2232, 0)]
+  const vntr = forms(
+    [
+      ...haps('R', 4),
+      ...haps('I', 4, [dep(2100, 2100, 130)]),
+      ...haps('W', 4, [dep(2000, 2232, 132)]),
+      ...haps('O', 4, offset),
+    ],
+    { minCarriers: 2 },
+  )
+  expect(vntr.forms.map(f => [f.key, f.members.length])).toEqual([
+    ['0', 8],
+    ['-100', 4],
+    ['+130', 4],
+  ])
+})
+
 test('a form marks its changes in R order and says them largest first', () => {
   const result = forms(
     [

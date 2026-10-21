@@ -313,9 +313,47 @@ export function pairShifts(marks: Mark[]) {
   )
 }
 
+const PLAIN_KINDS = new Set<MarkKind>(['insertion', 'deletion', 'replacement'])
+
+/**
+ * A haplotype's departures joined and kept where they touch the window, its
+ * marks, and its plain pieces: the joined departures that make no mark of
+ * their own kind, an inversion, duplication, shift or net change
+ */
+function haplotypePieces(
+  departures: Departure[],
+  floorBp: number,
+  joinBp: number,
+  window?: FormsOptions['window'],
+) {
+  const pieces = join(departures, joinBp).filter(
+    d => !window || (d.refEnd >= window.start && d.refStart <= window.end),
+  )
+  const pieceOf = new Map<Mark, Joined>()
+  for (const d of pieces) {
+    const mark = markOf(d, floorBp)
+    if (mark) {
+      pieceOf.set(mark, d)
+    }
+  }
+  const marks = pairShifts([...pieceOf.keys()])
+  const kept = new Set(marks)
+  const ownKind = new Set(
+    [...pieceOf].flatMap(([m, d]) =>
+      kept.has(m) && PLAIN_KINDS.has(m.kind) ? [] : [d],
+    ),
+  )
+  return {
+    marks,
+    plain: pieces.filter(d => !d.abridged && !ownKind.has(d)),
+  }
+}
+
 /**
  * A haplotype's marks of at least `floorBp`: its departures nearer than
- * `joinBp` on R joined, those touching the window kept, and shifts paired
+ * `joinBp` on R joined, those touching the window kept, and shifts paired.
+ * structuralForms then sums the plain changes at each site, so these are the
+ * marks the sites come from, not each haplotype's state.
  */
 export function haplotypeMarks(
   departures: Departure[],
@@ -325,17 +363,35 @@ export function haplotypeMarks(
     window,
   }: { floorBp?: number; joinBp?: number; window?: FormsOptions['window'] },
 ) {
-  const marks: Mark[] = []
-  for (const d of join(departures, joinBp)) {
-    if (window && (d.refEnd < window.start || d.refStart > window.end)) {
-      continue
-    }
-    const mark = markOf(d, floorBp)
-    if (mark) {
-      marks.push(mark)
-    }
+  return haplotypePieces(departures, floorBp, joinBp, window).marks
+}
+
+/**
+ * The plain pieces at one site as one mark, where their net change reaches
+ * `floorBp`. It spans the pieces that reach it alone, or all those that
+ * change length where none does.
+ */
+function siteChange(pieces: Joined[], floorBp: number): Mark | undefined {
+  const delta = pieces.reduce((s, d) => s + d.delta, 0)
+  if (Math.abs(delta) < floorBp) {
+    return undefined
   }
-  return pairShifts(marks)
+  const large = pieces.filter(d => Math.abs(d.delta) >= floorBp)
+  const spanned = large.length > 0 ? large : pieces.filter(d => d.delta !== 0)
+  let refStart = Infinity
+  let refEnd = -Infinity
+  for (const d of spanned) {
+    refStart = Math.min(refStart, d.refStart)
+    refEnd = Math.max(refEnd, d.refEnd)
+  }
+  const altLength = Math.max(0, refEnd - refStart + delta)
+  return {
+    kind: changeKind(refEnd - refStart, altLength),
+    refStart,
+    refEnd,
+    altLength,
+    delta,
+  }
 }
 
 const sumDelta = (marks: Mark[]) => marks.reduce((s, m) => s + m.delta, 0)
@@ -363,7 +419,7 @@ function siteSpans(marksBy: Mark[][]) {
   return sites
 }
 
-function siteIndex(sites: [number, number][], m: Mark) {
+function siteIndex(sites: [number, number][], m: Pick<Mark, 'refStart'>) {
   let lo = 0
   let hi = sites.length - 1
   while (lo < hi) {
@@ -398,23 +454,50 @@ export function structuralForms(
       ? autoFloor(window.end - window.start)
       : Math.max(STRUCTURAL_BP, opts.floorBp)
   const joinBp = opts.joinBp ?? STRUCTURAL_BP
-  const marksBy = haplotypes.map(h =>
-    haplotypeMarks(h.departures, { floorBp, joinBp, window: opts.window }),
+  const piecesBy = haplotypes.map(h =>
+    haplotypePieces(h.departures, floorBp, joinBp, opts.window),
   )
-  const spans = siteSpans(marksBy)
-  const marksAt = marksBy.map(marks => {
+  const spans = siteSpans(piecesBy.map(p => p.marks))
+  const marksAt = piecesBy.map(({ marks, plain }) => {
     const at = new Map<number, Mark[]>()
-    for (const m of marks) {
-      const i = siteIndex(spans, m)
+    const add = (i: number, m: Mark) => {
       at.set(i, [...(at.get(i) ?? []), m])
+    }
+    for (const m of marks) {
+      if (!PLAIN_KINDS.has(m.kind)) {
+        add(siteIndex(spans, m), m)
+      }
+    }
+    const plainAt = new Map<number, Joined[]>()
+    for (const d of plain) {
+      const i = siteIndex(spans, { refStart: d.refEnd })
+      if (spans[i] && spans[i][0] <= d.refEnd && spans[i][1] >= d.refStart) {
+        plainAt.set(i, [...(plainAt.get(i) ?? []), d])
+      }
+    }
+    for (const [i, pieces] of plainAt) {
+      const m = siteChange(pieces, floorBp)
+      if (m) {
+        add(i, m)
+      }
     }
     return new Map(
       [...at].map(([site, ms]) => {
+        ms.sort((a, b) => a.refStart - b.refStart || a.refEnd - b.refEnd)
         const state = ms.map(m => stateKey(m, floorBp)).join(';')
         return [site, ms.map((m): SiteMark => ({ ...m, site, state }))]
       }),
     )
   })
+  for (const at of marksAt) {
+    for (const [i, ms] of at) {
+      const span = spans[i]!
+      for (const m of ms) {
+        span[0] = Math.min(span[0], m.refStart)
+        span[1] = Math.max(span[1], m.refEnd)
+      }
+    }
+  }
   const raw = spans.map(([start, end], i) =>
     haplotypes.map((h, j) =>
       covers(h, Math.max(start, window.start), Math.min(end, window.end))
@@ -562,7 +645,7 @@ export function structuralForms(
       .filter(h => rare.has(h.haplotype))
       .map(h => h.haplotype),
     abridged: haplotypes
-      .filter((_, j) => marksBy[j]!.some(m => m.kind === 'net'))
+      .filter((_, j) => piecesBy[j]!.marks.some(m => m.kind === 'net'))
       .map(h => h.haplotype),
     minCarriers,
     floorBp,
