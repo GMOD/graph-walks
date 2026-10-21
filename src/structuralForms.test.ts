@@ -377,6 +377,34 @@ test('a rare call where most haplotypes have no call stays apart', () => {
   expect(describeForm(result.forms[0]!)).toBe('not aligned at 1 site')
 })
 
+test('a mark at a site the walks do not span whole is no call there', () => {
+  const insertion = dep(50_000, 50_000, 5000)
+  const result = forms(
+    [
+      ...haps('R', 4),
+      ...haps('D', 3, [dep(10_000, 12_000, 0)]),
+      ...haps('I', 4, [insertion]),
+      ...haps('W', 3, [dep(49_000, 52_000, 9000)]),
+      hap(
+        'X#1',
+        [insertion],
+        [
+          [0, 49_500],
+          [50_000, 100_000],
+        ],
+      ),
+    ],
+    { minCarriers: 1 },
+  )
+  expect(result.sites.map(s => [s.refStart, s.refEnd])).toEqual([
+    [10_000, 12_000],
+    [49_000, 52_000],
+  ])
+  const x = result.forms.find(f => f.members.includes('X#1'))!
+  expect(x.states).toEqual([REFERENCE_STATE, NO_CALL_STATE])
+  expect(x.marks).toEqual([])
+})
+
 // AMY1's 12 in the sidecar: no call at the array, called in the flank
 test('a haplotype placed somewhere is in a form, one placed nowhere is not', () => {
   const result = forms(

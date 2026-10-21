@@ -51,8 +51,8 @@ export interface SiteState {
 
 /**
  * Overlapping marks make one site. `covered` counts the placed haplotypes
- * with a call there: a mark, or walks spanning the site's part inside the
- * window. An `edge` site is one most haplotypes in the window have no call
+ * with a call there: walks spanning the site's part inside the window, so a
+ * mark beside a gap in them is no call. An `edge` site is one most haplotypes in the window have no call
  * at, which no form key holds. A `shared` site tells no forms apart, since no
  * second state there reaches minCarriers, and every form carries its majority
  * state's marks. Every other site is informative.
@@ -403,14 +403,11 @@ export function structuralForms(
     )
   })
   const raw = spans.map(([start, end], i) =>
-    haplotypes.map((h, j) => {
-      const marks = marksAt[j]!.get(i)
-      return marks
-        ? marks[0]!.state
-        : covers(h, Math.max(start, window.start), Math.min(end, window.end))
-          ? REFERENCE_STATE
-          : NO_CALL_STATE
-    }),
+    haplotypes.map((h, j) =>
+      covers(h, Math.max(start, window.start), Math.min(end, window.end))
+        ? (marksAt[j]!.get(i)?.[0]!.state ?? REFERENCE_STATE)
+        : NO_CALL_STATE,
+    ),
   )
   const inWindow = haplotypes.map(h => overlaps(h, window.start, window.end))
   const windowCount = inWindow.filter(Boolean).length
