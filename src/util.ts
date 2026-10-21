@@ -50,8 +50,8 @@ export interface WalkStopTable {
  * A window too large to cut. `regionTooLarge` and the name are what JBrowse
  * and @jbrowse/bandage-core read a zoom-in notice by; `fitsBp` is about how
  * wide a window would fit. `zoomHelps` is false where no narrower window
- * fits, and `bytes` is then what the window's read would fetch, the byte
- * budget that would load it.
+ * fits. Over a byte budget, `bytes` is what the window's read would fetch,
+ * the byte budget that would load it.
  */
 export class RegionTooLargeError extends Error {
   readonly regionTooLarge = true
@@ -68,15 +68,15 @@ export class RegionTooLargeError extends Error {
     limit: number,
     windowBp: number,
     fitsBp: number,
-    unzoomable?: { bytes: number },
+    overBytes?: { bytes: number; zoomHelps?: boolean },
   ) {
     super(message)
     this.limit = limit
     this.windowBp = windowBp
     this.fitsBp = fitsBp
-    this.zoomHelps = unzoomable === undefined
-    if (unzoomable) {
-      this.bytes = unzoomable.bytes
+    this.zoomHelps = overBytes === undefined || overBytes.zoomHelps === true
+    if (overBytes) {
+      this.bytes = overBytes.bytes
     }
   }
 }

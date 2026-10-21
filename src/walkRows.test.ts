@@ -323,7 +323,7 @@ describe('the byte budget', () => {
     expect(error.regionTooLarge).toBe(true)
     expect(error.fitsBp).toBe(150)
     expect(error.zoomHelps).toBe(true)
-    expect(error.bytes).toBeUndefined()
+    expect(error.bytes).toBe(120)
     expect(error.message).toBe('Zoom in to about 150bp to see the graph')
   })
 

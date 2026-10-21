@@ -91,9 +91,9 @@ const { tables, refName, sample } = await reader.cutRegion(
 - A cut over a budget or its node limit throws a `RegionTooLargeError`. The
   error's `fitsBp` holds about how wide a window would fit, and JBrowse shows it
   as a zoom-in notice
-- Where no narrower window fits under the byte budget, the error's `zoomHelps`
-  is false and its `bytes` is what the window would fetch, so a viewer can offer
-  to load it anyway with `byteBudget` raised to `bytes`
+- Over the byte budget, the error's `bytes` is what the window would fetch, so a
+  viewer with a fixed window can offer to load it anyway with `byteBudget`
+  raised to `bytes`. `zoomHelps` is false where no narrower window fits
 - The cut checks the node limit as it decodes each chunk, against the nodes it
   keeps whatever else it reads, and stops reading at the first chunk over it
 - `WALK_BUDGETS` holds the step and byte budgets the JBrowse plugin and

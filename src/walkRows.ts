@@ -1028,6 +1028,7 @@ export async function byteBudgetError(
         budget,
         windowBp,
         fitsBp,
+        { bytes, zoomHelps: true },
       )
     : new RegionTooLargeError(
         `Too much graph here to fetch, even zoomed in (${megabytes(least ?? bytes)} against ${names.bytes} ${megabytes(budget)}). A satellite or rDNA array usually causes this: the graph folds the repeat into a few nodes that each haplotype loops through many times`,
