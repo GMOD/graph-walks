@@ -315,6 +315,11 @@ export function pairShifts(marks: Mark[]) {
 
 const PLAIN_KINDS = new Set<MarkKind>(['insertion', 'deletion', 'replacement'])
 
+// The widest site whose plain changes sum into one per haplotype. The gate
+// windows' repeats that walks split run up to 600 bp, and the next wider
+// informative sites, 3.8 kb and up, hold separate changes
+const SUMMED_SITE_BP = 1000
+
 /**
  * A haplotype's departures joined and kept where they touch the window, its
  * marks, and its plain pieces: the joined departures that make no mark of
@@ -454,24 +459,27 @@ export function structuralForms(
       ? autoFloor(window.end - window.start)
       : Math.max(STRUCTURAL_BP, opts.floorBp)
   const joinBp = opts.joinBp ?? STRUCTURAL_BP
+  const keepRare = opts.foldRareForms === false
   const piecesBy = haplotypes.map(h =>
     haplotypePieces(h.departures, floorBp, joinBp, opts.window),
   )
   const spans = siteSpans(piecesBy.map(p => p.marks))
+  const summed = spans.map(([a, b]) => b - a <= SUMMED_SITE_BP)
   const marksAt = piecesBy.map(({ marks, plain }) => {
     const at = new Map<number, Mark[]>()
     const add = (i: number, m: Mark) => {
       at.set(i, [...(at.get(i) ?? []), m])
     }
     for (const m of marks) {
-      if (!PLAIN_KINDS.has(m.kind)) {
-        add(siteIndex(spans, m), m)
+      const i = siteIndex(spans, m)
+      if (!PLAIN_KINDS.has(m.kind) || !summed[i]) {
+        add(i, m)
       }
     }
     const plainAt = new Map<number, Joined[]>()
     for (const d of plain) {
       const i = siteIndex(spans, { refStart: d.refEnd })
-      if (spans[i] && spans[i][0] <= d.refEnd && spans[i][1] >= d.refStart) {
+      if (summed[i] && spans[i]![0] <= d.refEnd && spans[i]![1] >= d.refStart) {
         plainAt.set(i, [...(plainAt.get(i) ?? []), d])
       }
     }
@@ -619,10 +627,9 @@ export function structuralForms(
       .sort((a, b) => a.refStart - b.refStart)
     return { members, key, states, marks, net: sumDelta(marks) }
   })
-  const common =
-    opts.foldRareForms === false
-      ? forms
-      : forms.filter(f => f.members.length >= minCarriers)
+  const common = keepRare
+    ? forms
+    : forms.filter(f => f.members.length >= minCarriers)
   const kept = common.length > 0 ? common : forms
   if (common.length > 0 && common !== forms) {
     for (const form of sortForms(forms)) {

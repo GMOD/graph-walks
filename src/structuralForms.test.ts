@@ -178,6 +178,18 @@ test("the floor applies to a haplotype's net change across a site, not to each p
   ])
 })
 
+test('a site wider than 1 kb keeps its changes apart, unsummed', () => {
+  const small = [dep(20_000, 20_030, 0), dep(40_000, 40_030, 0)]
+  const result = forms(
+    [...haps('D', 4, [dep(10_000, 60_000, 0)]), ...haps('R', 4, small)],
+    { minCarriers: 2 },
+  )
+  expect(result.forms.map(f => [f.key, f.members.length])).toEqual([
+    ['0', 4],
+    ['-50000', 4],
+  ])
+})
+
 test('a form marks its changes in R order and says them largest first', () => {
   const result = forms(
     [
