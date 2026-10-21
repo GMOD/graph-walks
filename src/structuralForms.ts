@@ -80,8 +80,11 @@ export interface FormsOptions {
   joinBp?: number
   minCarriers?: number
   window?: { start: number; end: number }
-  // samples or `sample#haplotype`s to leave out
+  // samples or `sample#haplotype`s to leave out, such as a second reference
+  // carried as a haplotype
   exclude?: string[]
+  // fold forms under minCarriers into the nearest common form; true by default
+  foldRareForms?: boolean
 }
 
 /**
@@ -107,9 +110,6 @@ export interface StructuralForms {
 export const STRUCTURAL_BP = 50
 
 export const FLOOR_PRESETS = [50, 1000, 10_000] as const
-
-// The reference assemblies a human graph carries as haplotypes
-export const DEFAULT_EXCLUDE = ['CHM13', 'GRCh38']
 
 const SHIFT_MIN_BP = 1000
 const SHIFT_TOLERANCE = 0.1
@@ -359,7 +359,7 @@ export function structuralForms(
   input: HaplotypeDepartures[],
   opts: FormsOptions = {},
 ): StructuralForms {
-  const exclude = opts.exclude ?? DEFAULT_EXCLUDE
+  const exclude = opts.exclude ?? []
   const haplotypes = input.filter(
     h => !exclude.some(prefix => panSNMatchesPrefix(h.haplotype, prefix)),
   )
@@ -503,9 +503,12 @@ export function structuralForms(
       .sort((a, b) => a.refStart - b.refStart)
     return { members, key, states, marks, net: sumDelta(marks) }
   })
-  const common = forms.filter(f => f.members.length >= minCarriers)
+  const common =
+    opts.foldRareForms === false
+      ? forms
+      : forms.filter(f => f.members.length >= minCarriers)
   const kept = common.length > 0 ? common : forms
-  if (common.length > 0) {
+  if (common.length > 0 && common !== forms) {
     for (const form of sortForms(forms)) {
       if (form.members.length < minCarriers) {
         const into = nearest(common, f => f.net, form.net)

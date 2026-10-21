@@ -36,7 +36,6 @@ export {
 export { refNameLookup, resolveRefName } from './refNames.ts'
 export { referenceNodes } from './walkChunk.ts'
 export {
-  DEFAULT_EXCLUDE,
   FLOOR_PRESETS,
   STRUCTURAL_BP,
   autoFloor,

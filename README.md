@@ -161,13 +161,14 @@ forms.map(f => `${f.members.length} ${describeForm(f)}`)
 - [docs/structural-forms.md](docs/structural-forms.md) gives the grouping rules
   and the measurements behind them
 
-| Option        | Effect                                                                             |
-| ------------- | ---------------------------------------------------------------------------------- |
-| `window`      | The region; marks must touch it, and `auto` reads its width                        |
-| `floorBp`     | The smallest change a form tells apart; `auto` gives 50 bp, 1 kb or 10 kb by width |
-| `minCarriers` | The fewest haplotypes a state or form needs; 1% of them, at least one, by default  |
-| `joinBp`      | Departures of one haplotype nearer than this on the reference join; default 50     |
-| `exclude`     | Samples to leave out; `CHM13` and `GRCh38` by default                              |
+| Option          | Effect                                                                                   |
+| --------------- | ---------------------------------------------------------------------------------------- |
+| `window`        | The region; marks must touch it, and `auto` reads its width                              |
+| `floorBp`       | The smallest change a form tells apart; `auto` gives 50 bp, 1 kb or 10 kb by width       |
+| `minCarriers`   | The fewest haplotypes a state or form needs; 1% of them, at least one, by default        |
+| `joinBp`        | Departures of one haplotype nearer than this on the reference join; default 50           |
+| `exclude`       | Samples to leave out, such as a second reference carried as a haplotype; none by default |
+| `foldRareForms` | Fold forms under `minCarriers` into the nearest common form; on by default               |
 
 ## Contained cuts
 

@@ -330,6 +330,22 @@ test('a form under minCarriers folds into the form nearest in net', () => {
   expect(result.rareCarriers).toEqual(['X#1'])
 })
 
+test('foldRareForms: false keeps a form under minCarriers apart', () => {
+  const big = dep(1000, 21_000, 0)
+  const small = dep(40_000, 41_000, 0)
+  const result = forms(
+    [
+      ...haps('R', 6),
+      ...haps('B', 3, [big]),
+      ...haps('S', 3, [small]),
+      hap('X#1', [big, small]),
+    ],
+    { minCarriers: 2, foldRareForms: false },
+  )
+  expect(memberCounts(result)).toEqual([6, 3, 3, 1])
+  expect(result.rareCarriers).toEqual([])
+})
+
 test('a rare call where most haplotypes have no call stays apart', () => {
   const flank = dep(100, 400, 0)
   const del = (bp: number) => [dep(1000, 1000 + bp, 0)]
@@ -412,17 +428,19 @@ test('the auto floor is about 10 px of the window, snapped to a preset', () => {
   expect(structuralForms(input, { window: WINDOW }).forms).toHaveLength(1)
 })
 
-test('the reference assemblies and excluded samples have no form', () => {
-  const result = forms(
-    [
-      hap('CHM13#0', [dep(100, 1800, 0)]),
-      hap('GRCh38#0'),
-      hap('HG002#1'),
-      hap('HG002#2'),
-      hap('HG003#1'),
-    ],
-    { exclude: undefined },
-  )
+test('excluded samples have no form, and none are excluded by default', () => {
+  const input = [
+    hap('CHM13#0', [dep(100, 1800, 0)]),
+    hap('HG002#1'),
+    hap('HG002#2'),
+    hap('HG003#1'),
+  ]
+  expect(
+    forms(input, { exclude: undefined, minCarriers: 1 })
+      .forms.flatMap(f => f.members)
+      .sort(),
+  ).toEqual(['CHM13#0', 'HG002#1', 'HG002#2', 'HG003#1'])
+  const result = forms(input, { exclude: ['CHM13'] })
   expect(result.forms.map(f => f.members)).toEqual([
     ['HG002#1', 'HG002#2', 'HG003#1'],
   ])
