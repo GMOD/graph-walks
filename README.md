@@ -1,17 +1,18 @@
 # @jbrowse/graph-walks
 
-Cuts a window out of a pangenome graph stored as
-[gfa-to-tabix](https://github.com/GMOD/gfa-to-tabix) files, by range requests.
+@jbrowse/graph-walks reads a window of a pangenome graph from
+[gfa-to-tabix](https://github.com/GMOD/gfa-to-tabix) files by range requests.
 
 - **In:** a `gfa-to-tabix --walks` file, `<prefix>.<sample>.walks.bed.gz` with
   its `.tbi`, or a segment index, `<prefix>.segs.bed.gz` and
-  `<prefix>.links.bed.gz`, and a region on the reference
+  `<prefix>.links.bed.gz` with theirs, plus a reference region such as
+  `chr6:160,614,798-160,647,758`
 - **Out:** from a walk file, the reference over the region, every haplotype's
   walk through it, and the nodes and links they visit, as typed arrays; from a
   segment index, the segments and links under the region as GFA text
-- Reads walk format 5, which gfa-to-tabix writes from 1.4. The reader refuses
-  any other format with a `WalkFormatError` asking for a rebuild
-- Has no runtime dependencies: it reads through any object with
+- The reader reads walk format 5, which gfa-to-tabix 1.4 and later write, and
+  refuses any other format with a `WalkFormatError` asking for a rebuild
+- The package has no runtime dependencies, and reads through any object with
   [@gmod/tabix](https://github.com/GMOD/tabix-js)'s `TabixIndexedFile` methods
 
 The JBrowse graph plugin, BandageJS, ggbandage and the sequenceTubeMap fork read
@@ -73,18 +74,19 @@ const { tables, refName, sample } = await reader.cutRegion(
 
 ## Cut options
 
-| Option       | Effect                                                                              |
-| ------------ | ----------------------------------------------------------------------------------- |
-| `keep`       | Which walks to decode, by `sample#haplotype#contig`; every one by default           |
-| `context`    | bp of reference kept past each end of the region; default 1000                      |
-| `stepBudget` | The most steps a cut keeps; no limit by default                                     |
-| `byteBudget` | The most compressed bytes a cut fetches; no limit by default                        |
-| `nodeLimit`  | The most nodes a cut keeps; no limit by default                                     |
-| `contained`  | `true` keeps each walk within the window; see below                                 |
-| `links`      | `false` lists no links, for a caller that draws no edges                            |
-| `sequences`  | Keep each node's bases in `graph.sequences`, from a `--sequences` file              |
-| `signal`     | An `AbortSignal` that stops the reads                                               |
-| `expand`     | Which abridged walks to read in full, by `sample#haplotype#contig`; none by default |
+| Option        | Effect                                                                              |
+| ------------- | ----------------------------------------------------------------------------------- |
+| `keep`        | Which walks to decode, by `sample#haplotype#contig`; every one by default           |
+| `context`     | bp of reference kept past each end of the region; default 1000                      |
+| `stepBudget`  | The most steps a cut keeps; no limit by default                                     |
+| `byteBudget`  | The most compressed bytes a cut fetches; no limit by default                        |
+| `nodeLimit`   | The most nodes a cut keeps; no limit by default                                     |
+| `contained`   | `true` keeps each walk within the window; see below                                 |
+| `links`       | `false` lists no links, for a caller that draws no edges                            |
+| `sequences`   | Keep each node's bases in `graph.sequences`, from a `--sequences` file              |
+| `signal`      | An `AbortSignal` that stops the reads                                               |
+| `expand`      | Which abridged walks to read in full, by `sample#haplotype#contig`; none by default |
+| `budgetNames` | The words a `RegionTooLargeError` message uses for the step and byte budgets        |
 
 - A cut over a budget or its node limit throws a `RegionTooLargeError`. The
   error's `fitsBp` holds about how wide a window would fit, and JBrowse shows it
@@ -122,7 +124,7 @@ not keep, then:
 - In a chunk over its budget, gfa-to-tabix moves the costliest paths' rows to
   detail records and leaves one `abridged` row per path. A satellite array in a
   pggb graph is the usual case
-- The cut gives each such row a fragment of its own with an `abridged` field:
+- The cut makes a separate fragment for each such row, with an `abridged` field:
   its `steps` and `bp`, its `pieces`, and the `detail` record that holds them.
   The fragment's two steps are the handles on the reference where the walk
   leaves and rejoins, and `hapStart`/`hapEnd` span its `bp`
@@ -134,8 +136,9 @@ not keep, then:
 
 ## Contained cuts
 
-- By default a cut follows each haplotype that leaves the window until it
-  rejoins the reference, and keeps the reference out to there
+- By default a cut follows each haplotype that leaves the region near it until
+  it rejoins the reference, and keeps the reference out as far as those rejoins
+  reach
 - `contained: true` keeps the reference over the window and its context alone,
   and splits a walk wherever it steps onto the reference off that stretch. A
   detour that comes back to the window stays whole, and the cut keeps `context`
@@ -152,8 +155,9 @@ not keep, then:
 - `reader.sequenceFor(sample, refName)` gives the walk file's sequence for a
   contig on a sample: `chr6` on `GRCh38` is `GRCh38#0#chr6`, and a pggb file's
   `chm13#chr1` is `chr1` on `chm13`
-- `walksKept(haplotypes, refName)` is the `keep` filter for a cut on `refName`:
-  its own walk and those of the haplotypes named
+- `walksKept(haplotypes, refName)` returns the `keep` filter for a cut on
+  `refName`, which keeps the reference walk on `refName` and the walks of the
+  haplotypes named
 - `refNameLookup` and `resolveRefName` resolve a contig the same way against any
   tabix file's sequence names
 
@@ -187,13 +191,14 @@ const gfa = await rgfaCut(
   takes; gfa-to-tabix's
   [walks-format.md](https://github.com/GMOD/gfa-to-tabix/blob/main/docs/walks-format.md)
   describes the rows
-- A cut reads every chunk under the region, and the chunks before it as far as
-  the header's `maxnode` reaches, since a node is filed under the chunk holding
-  its start, and decodes each chunk once
-- A haplotype that leaves the reference near the region is followed to where it
-  rejoins, and the reference is cut out as far as those rejoins reach
+- A cut reads every chunk under the region, from the chunk before the region's
+  first, or the chunk before a `#long` pass that overlaps the region, whichever
+  is earlier. It decodes each chunk once
+- A file with no `#long` lines, from gfa-to-tabix 1.2, makes the cut read
+  further back when the header's `maxnode` exceeds a chunk
 - A walk the read cuts off goes on in the chunk its row names (`pv:`/`nx:`
-  tags); the cut reads on to that chunk, in up to three rounds
+  tags). The cut reads on to that chunk, in up to three rounds and at most four
+  chunks past what it read
 
 ## License
 
