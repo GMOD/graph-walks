@@ -9,6 +9,7 @@ import {
   formStateAt,
   formTag,
   haplotypeMarks,
+  lopsidedKind,
   markTag,
   minCarriersFor,
   pairShifts,
@@ -210,16 +211,16 @@ test('a form marks its changes in R order and says them largest first', () => {
     { ...mark('deletion', 100, 1800, -1700), site: 0, state: '-1700' },
     { ...mark('insertion', 3000, 3000, 6400), site: 1, state: '+6400' },
   ])
-  expect(describeForm(a2)).toBe('6.4 kb insertion, 1.7 kb deletion')
+  expect(describeForm(a2)).toBe('ins 6.4kb, del 1.7kb')
   expect(describeForm(result.forms.find(f => f.members.includes('B#2'))!)).toBe(
-    '6.4 kb insertion, 500 bp inversion',
+    'ins 6.4kb, inv 500bp',
   )
   expect(describeForm(result.forms.find(f => f.members.includes('C#2'))!)).toBe(
-    'as the reference',
+    'ref',
   )
 })
 
-test('more than two size changes are counted, the largest named', () => {
+test('describeForm lists every change, largest first', () => {
   expect(
     describeForm({
       states: [],
@@ -229,7 +230,7 @@ test('more than two size changes are counted, the largest named', () => {
         mark('deletion', 3000, 5000, -2000),
       ],
     }),
-  ).toBe('3 size changes, largest a 19 kb insertion')
+  ).toBe('ins 19kb, del 2kb, del 1kb')
 })
 
 // GSTM1: 77 haplotypes in the sidecar carry an 18 kb deletion over the gene
@@ -283,8 +284,8 @@ test("a shift keys on its net change where that passes the floor and the size's 
   expect(stateKey(shift(2800))).toBe('s94000+2800')
   expect(stateKey(shift(2800), 5000)).toBe('s94000')
   expect(stateKey(shift(-150, 2000))).toBe('s2000-150')
-  expect(changeName(shift(-62))).toBe('94 kb shifted, same length')
-  expect(changeName(shift(2800))).toBe('94 kb shifted, 2.8 kb longer')
+  expect(changeName(shift(-62))).toBe('shift 94kb')
+  expect(changeName(shift(2800))).toBe('shift 94kb net +2.8kb')
 })
 
 test('a step back along R is a duplication, which shifts like an insertion', () => {
@@ -304,7 +305,7 @@ test('a step back along R is a duplication, which shifts like an insertion', () 
     },
   ])
   expect(describeForm({ states: [], marks: haplotypeMarks([copy], {}) })).toBe(
-    '49 kb tandem duplication',
+    'dup 49kb',
   )
   expect(
     haplotypeMarks([copy, dep(60_000, 108_000, 0)], {}).map(m => m.kind),
@@ -319,7 +320,7 @@ test('an abridged departure is a net mark, and its haplotype is listed', () => {
   expect(result.forms[1]!.marks).toEqual([
     { ...mark('net', 10_000, 75_000, -5000), site: 0, state: 'n-5000' },
   ])
-  expect(describeForm(result.forms[1]!)).toBe('5 kb shorter in 65 kb')
+  expect(describeForm(result.forms[1]!)).toBe('net -5kb')
   expect(result.abridged).toEqual(['A#1'])
 })
 
@@ -330,9 +331,9 @@ test('a gain at a site wider than 50 bp replaces it', () => {
     ...haps('R', 8),
   ])
   expect(result.forms.map(f => describeForm(f))).toEqual([
-    'as the reference',
-    '30 kb replaced by 10 kb',
-    '30 kb replaced by 108 kb',
+    'ref',
+    'repl 30kb->10kb',
+    'repl 30kb->108kb',
   ])
 })
 
@@ -340,7 +341,14 @@ test('a window with no change is one form', () => {
   const result = forms([hap('A#1'), hap('A#2')])
   expect(result.sites).toEqual([])
   expect(result.forms).toEqual([
-    { key: '', states: [], members: ['A#1', 'A#2'], marks: [], net: 0 },
+    {
+      key: '',
+      states: [],
+      members: ['A#1', 'A#2'],
+      marks: [],
+      net: 0,
+      onlyShifts: false,
+    },
   ])
 })
 
@@ -348,7 +356,7 @@ test('a change every haplotype shares tells none apart, and every form carries i
   const result = forms(haps('A', 4, [dep(100, 1800, 0)]), { minCarriers: 3 })
   expect(result.informative).toEqual([])
   expect(result.forms).toHaveLength(1)
-  expect(describeForm(result.forms[0]!)).toBe('1.7 kb deletion')
+  expect(describeForm(result.forms[0]!)).toBe('del 1.7kb')
 })
 
 test('nested changes are one site, each haplotype stating only its own', () => {
@@ -449,8 +457,14 @@ test('a rare call where most haplotypes have no call stays apart', () => {
     ['0|~', 2],
   ])
   expect(result.forms[2]!.states).toEqual([REFERENCE_STATE, RARER_STATE])
-  expect(describeForm(result.forms[2]!)).toBe('a rarer change at 1 site')
-  expect(describeForm(result.forms[0]!)).toBe('not aligned at 1 site')
+  expect(describeForm(result.forms[2]!)).toBe('rarer')
+  expect(describeForm(result.forms[0]!)).toBe('no call')
+  expect(
+    describeForm({
+      states: [RARER_STATE, RARER_STATE, NO_CALL_STATE],
+      marks: [],
+    }),
+  ).toBe('rarer x2, no call')
 })
 
 test('a mark at a site the walks do not span whole is no call there', () => {
@@ -499,9 +513,7 @@ test('a haplotype placed somewhere is in a form, one placed nowhere is not', () 
     ['-10000', 4],
     ['.', 2],
   ])
-  expect(describeForm(result.forms[2]!)).toBe(
-    '2 kb deletion, not aligned at 1 site',
-  )
+  expect(describeForm(result.forms[2]!)).toBe('del 2kb, no call')
   expect(result.placed).toBe(10)
   expect(result.unplaced).toEqual(['Z#1'])
 })
@@ -546,25 +558,102 @@ test('each mark names its site and state, and formStateAt reads a form at any si
   expect(formStateAt(edged, edged.forms[0]!, 0)).toBeUndefined()
 })
 
-test('markTag says a change in a few characters', () => {
-  expect(markTag(mark('insertion', 0, 0, 78_000))).toBe('+78 kb')
-  expect(markTag(mark('deletion', 0, 18_445, -18_445))).toBe('18 kb del')
-  expect(markTag(mark('net', 0, 160_000, -94_000))).toBe('\u221294 kb')
-  expect(markTag(mark('replacement', 0, 25_900, 78_100))).toBe('+78 kb')
-  expect(markTag(mark('replacement', 0, 6460, -6366))).toBe('\u22126.4 kb')
-  expect(markTag(mark('replacement', 0, 6000, 2000))).toBe('6 kb repl')
-  expect(markTag(mark('replacement', 0, 176_000, 2800))).toBe('+2.8 kb')
-  expect(markTag(mark('inversion', 0, 3000, 0))).toBe('3 kb inv')
+test('markTag says a change in a short token', () => {
+  expect(markTag(mark('insertion', 0, 0, 78_000))).toBe('ins 78kb')
+  expect(markTag(mark('deletion', 0, 18_445, -18_445))).toBe('del 18.4kb')
+  expect(markTag(mark('net', 0, 160_000, -94_000))).toBe('net -94kb')
+  expect(markTag(mark('net', 0, 10_000, 78_000))).toBe('net +78kb')
+  expect(markTag(mark('replacement', 0, 32_700, 26_000))).toBe(
+    'repl 32.7kb->58.7kb',
+  )
+  expect(markTag(mark('replacement', 0, 176_000, 2800))).toBe(
+    'repl 176kb->179kb',
+  )
+  expect(markTag(mark('inversion', 0, 12_000, 0))).toBe('inv 12kb')
   expect(
     markTag({ ...mark('duplication', 0, 0, 49_000), repeatedBp: 49_000 }),
-  ).toBe('49 kb dup')
+  ).toBe('dup 49kb')
   expect(markTag({ ...mark('shift', 0, 5000, 0), shiftedBp: 2000 })).toBe(
-    '2 kb shift',
+    'shift 2kb',
   )
+  expect(markTag(mark('insertion', 0, 0, 1_234_567))).toBe('ins 1.23Mb')
+  expect(markTag(mark('deletion', 0, 999_600, -999_600))).toBe('del 1Mb')
+})
+
+// C4's 6.46 kb to 94 bp, CYP2D6's 178 bp to 13.9 kb and MHC's 87.5 kb to
+// 920 bp keep R's REF span and their ALT length, and read as a loss or gain
+test('a replacement under 5% on one side reads as a deletion or insertion', () => {
+  const lopsided = (refLength: number, altLength: number) =>
+    haplotypeMarks([dep(1000, 1000 + refLength, altLength)], {})[0]!
+  const c4 = lopsided(6460, 94)
+  expect(c4).toEqual({
+    ...mark('replacement', 1000, 7460, 94 - 6460),
+    lopsided: 'deletion',
+  })
+  expect(markTag(c4)).toBe('del 6.46kb->94bp')
+  expect(lopsided(178, 13_900).lopsided).toBe('insertion')
+  expect(markTag(lopsided(178, 13_900))).toBe('ins 178bp->13.9kb')
+  expect(markTag(lopsided(87_500, 920))).toBe('del 87.5kb->920bp')
+  expect(lopsided(32_700, 58_700).lopsided).toBeUndefined()
+  expect(lopsided(2000, 100).lopsided).toBeUndefined()
+  expect(lopsided(2000, 99).lopsided).toBe('deletion')
+  expect(lopsidedKind(2000, 100)).toBeUndefined()
+
+  const result = forms([
+    ...haps('C', 4, [dep(1000, 7460, 94)]),
+    ...haps('R', 4),
+  ])
+  const loss = result.forms.find(f => f.members.includes('C0#1'))!
+  expect(loss.marks[0]).toMatchObject({
+    kind: 'replacement',
+    lopsided: 'deletion',
+    site: 0,
+  })
+  expect(markTag(loss.marks[0]!)).toBe('del 6.46kb->94bp')
+  expect(formTag(loss, result)).toBe('del 6.46kb->94bp')
+  expect(describeForm(loss)).toBe('del 6.46kb->94bp')
+})
+
+// AMY1's H3r: R's length with 94 kb aligned elsewhere
+test('a form whose only own changes are shifts says so', () => {
+  const shift = [dep(10_000, 30_000, 0), dep(50_000, 50_000, 20_000)]
+  const shared = dep(80_000, 82_000, 0)
+  const result = forms(
+    [
+      ...haps('S', 4, [...shift, shared]),
+      ...haps('T', 4, [dep(10_000, 30_000, 0), shared]),
+      ...haps('R', 4, [shared]),
+    ],
+    { minCarriers: 2 },
+  )
+  expect(
+    result.forms.map(f => [f.members.length, f.onlyShifts, formTag(f, result)]),
+  ).toEqual([
+    [4, false, 'shared'],
+    [4, true, 'shift 20kb'],
+    [4, false, 'del 20kb'],
+  ])
+  const uncalled = forms(
+    [
+      ...haps('S', 4, shift),
+      ...haps('D', 4, [dep(70_000, 72_000, 0)]),
+      ...Array.from({ length: 2 }, (_, i) =>
+        hap(`N${i}#1`, shift, [[0, 60_000]]),
+      ),
+    ],
+    { minCarriers: 2 },
+  )
+  expect(
+    uncalled.forms.map(f => [f.members.length, f.onlyShifts, formTag(f)]),
+  ).toEqual([
+    [4, true, 'shift 20kb'],
+    [4, false, 'del 2kb'],
+    [2, false, 'shift 20kb +1'],
+  ])
 })
 
 test('formTag names the largest change of a form and counts the rest', () => {
-  expect(formTag({ states: [], marks: [] })).toBe('reference')
+  expect(formTag({ states: [], marks: [] })).toBe('ref')
   expect(
     formTag({
       states: [NO_CALL_STATE, RARER_STATE],
@@ -574,9 +663,9 @@ test('formTag names the largest change of a form and counts the rest', () => {
         mark('insertion', 30_000, 30_000, 300),
       ],
     }),
-  ).toBe('18 kb del +4')
-  expect(formTag({ states: [RARER_STATE], marks: [] })).toBe('rarer change')
-  expect(formTag({ states: [NO_CALL_STATE], marks: [] })).toBe('not aligned')
+  ).toBe('del 18.4kb +4')
+  expect(formTag({ states: [RARER_STATE], marks: [] })).toBe('rarer')
+  expect(formTag({ states: [NO_CALL_STATE], marks: [] })).toBe('no call')
 })
 
 test('formTag given the result leaves out the marks every form shares', () => {
@@ -589,16 +678,13 @@ test('formTag given the result leaves out the marks every form shares', () => {
     { minCarriers: 2 },
   )
   expect(result.sites.map(s => s.shared)).toEqual([true, false])
-  expect(result.forms.map(f => formTag(f))).toEqual([
-    '2 kb del',
-    '10 kb del +1',
-  ])
+  expect(result.forms.map(f => formTag(f))).toEqual(['del 2kb', 'del 10kb +1'])
   expect(result.forms.map(f => formTag(f, result))).toEqual([
-    'shared change',
-    '10 kb del',
+    'shared',
+    'del 10kb',
   ])
   const uncalled = { ...result.forms[0]!, states: [NO_CALL_STATE] }
-  expect(formTag(uncalled, result)).toBe('not aligned')
+  expect(formTag(uncalled, result)).toBe('no call')
 })
 
 test('a site most walks do not reach is an edge, left out of the key', () => {
@@ -699,8 +785,8 @@ test('a GSTM1-like window is two forms', () => {
       floorBp,
     })
     expect(result.forms.map(f => [f.members.length, describeForm(f)])).toEqual([
-      [306, '18 kb deletion'],
-      [156, 'as the reference'],
+      [306, 'del 18.4kb'],
+      [156, 'ref'],
     ])
     expect(result.minCarriers).toBe(5)
   }

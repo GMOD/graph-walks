@@ -18,7 +18,9 @@ export type MarkKind =
   | 'net'
 
 // `delta` is altLength minus the REF span. A duplication states the bp it
-// walks again and their span on R, and a shift the size of its deletion.
+// walks again and their span on R, and a shift the size of its deletion. A
+// replacement whose smaller side is under LOPSIDED_RATIO of its larger one
+// states which way it reads, as `lopsided`.
 export interface Mark {
   kind: MarkKind
   refStart: number
@@ -28,6 +30,7 @@ export interface Mark {
   repeatedBp?: number
   copied?: [number, number]
   shiftedBp?: number
+  lopsided?: 'deletion' | 'insertion'
 }
 
 // A mark in a structuralForms result: `site` indexes its `sites`, and `state`
@@ -72,7 +75,9 @@ export interface Site {
  * walks do not span it, and `~` (RARER_STATE) for a rare change where most
  * haplotypes have no call; `key` joins them. `marks` are its states' marks in
  * R order, with those of the state every form shares at a site that tells
- * none apart, and `net` sums them.
+ * none apart, and `net` sums them. `onlyShifts` is true where every mark
+ * outside those shared sites is a shift and every site has a call: R's
+ * length, with a stretch aligned elsewhere.
  */
 export interface Form {
   members: string[]
@@ -80,6 +85,7 @@ export interface Form {
   states: string[]
   marks: SiteMark[]
   net: number
+  onlyShifts: boolean
 }
 
 export interface FormsOptions {
@@ -124,6 +130,10 @@ export const STRUCTURAL_BP = 50
 
 export const FLOOR_PRESETS = [50, 1000, 10_000] as const
 
+// A replacement whose smaller side is under this share of its larger one
+// reads as a deletion or insertion: 6,460 bp to 94 bp
+export const LOPSIDED_RATIO = 0.05
+
 const SHIFT_MIN_BP = 1000
 const SHIFT_TOLERANCE = 0.1
 
@@ -155,6 +165,27 @@ export function changeKind(refLength: number, altLength: number) {
     : altLength < refLength && altLength < STRUCTURAL_BP
       ? 'deletion'
       : 'replacement'
+}
+
+export function lopsidedKind(
+  refLength: number,
+  altLength: number,
+): Mark['lopsided'] {
+  return altLength < LOPSIDED_RATIO * refLength
+    ? 'deletion'
+    : refLength < LOPSIDED_RATIO * altLength
+      ? 'insertion'
+      : undefined
+}
+
+const lopsidedField = (
+  kind: MarkKind,
+  refLength: number,
+  altLength: number,
+) => {
+  const lopsided =
+    kind === 'replacement' ? lopsidedKind(refLength, altLength) : undefined
+  return lopsided ? { lopsided } : {}
 }
 
 // The second significant figure's place value: 1,000 for 10-99 kb
@@ -269,6 +300,7 @@ function markOf(d: Joined, floorBp: number): Mark | undefined {
       delta: d.delta,
       ...(kind === 'duplication' ? { repeatedBp: d.repeatedBp } : {}),
       ...(kind === 'duplication' && d.copied ? { copied: d.copied } : {}),
+      ...lopsidedField(kind, refLength, altLength),
     }
   )
 }
@@ -391,13 +423,16 @@ function siteChange(pieces: Joined[], floorBp: number): Mark | undefined {
     refStart = Math.min(refStart, d.refStart)
     refEnd = Math.max(refEnd, d.refEnd)
   }
-  const altLength = Math.max(0, refEnd - refStart + delta)
+  const refLength = refEnd - refStart
+  const altLength = Math.max(0, refLength + delta)
+  const kind = changeKind(refLength, altLength)
   return {
-    kind: changeKind(refEnd - refStart, altLength),
+    kind,
     refStart,
     refEnd,
     altLength,
     delta,
+    ...lopsidedField(kind, refLength, altLength),
   }
 }
 
@@ -627,7 +662,12 @@ export function structuralForms(
       .flatMap((state, i) => stateOf(i, state)?.marks ?? [])
       .concat(shared)
       .sort((a, b) => a.refStart - b.refStart)
-    return { members, key, states, marks, net: sumDelta(marks) }
+    const own = marks.filter(m => !sites[m.site]!.shared)
+    const onlyShifts =
+      own.length > 0 &&
+      own.every(m => m.kind === 'shift') &&
+      !states.some(s => s === NO_CALL_STATE || s === RARER_STATE)
+    return { members, key, states, marks, net: sumDelta(marks), onlyShifts }
   })
   const common = keepRare
     ? forms
@@ -692,88 +732,80 @@ const sortForms = (forms: Form[]) =>
       (a.key < b.key ? -1 : 1),
   )
 
-export const bp = (n: number) =>
-  n >= 1_000_000
-    ? `${Number((n / 1_000_000).toPrecision(2))} Mb`
-    : n >= 1000
-      ? `${Number((n / 1000).toPrecision(2))} kb`
-      : `${n} bp`
+/**
+ * A length to three significant figures with its unit attached: "94bp",
+ * "6.46kb", "1.2Mb"
+ */
+export function sizeTag(n: number) {
+  const r = Number(n.toPrecision(3))
+  return r >= 1_000_000
+    ? `${Number((r / 1_000_000).toPrecision(3))}Mb`
+    : r >= 1000
+      ? `${Number((r / 1000).toPrecision(3))}kb`
+      : `${r}bp`
+}
 
-const bp3 = (n: number) =>
-  n >= 1_000_000
-    ? `${Number((n / 1_000_000).toPrecision(3))} Mb`
-    : n >= 1000
-      ? `${Number((n / 1000).toPrecision(3))} kb`
-      : `${n} bp`
+const signed = (n: number) => `${n < 0 ? '-' : '+'}${sizeTag(Math.abs(n))}`
 
-// A replacement far wider than its change says only how much longer or
-// shorter the haplotype is there: AMY1's 176 kb site 2.8 kb longer
-const DIFFUSE_MIN_SPAN = 10_000
-
-const sizeOf = (m: Mark) => m.shiftedBp ?? Math.abs(m.delta)
+const REPLACEMENT_VERB = {
+  deletion: 'del',
+  insertion: 'ins',
+  none: 'repl',
+} as const
 
 /**
- * A mark in words: "18 kb deletion", "30.7 kb replaced by 109 kb", "49 kb
- * tandem duplication", "18 kb shifted, same length"
+ * A mark as a short token: "del 18.4kb", "ins 22kb", "repl 32.7kb->58.7kb",
+ * "inv 12kb", "dup 49kb", "shift 94.2kb", "net -94kb". A replacement gives
+ * its REF span and ALT length, and one under LOPSIDED_RATIO on a side reads
+ * as a deletion or insertion: "del 6.46kb->94bp", "ins 178bp->13.9kb". A
+ * shift gives its net change where that says more than its size can:
+ * "shift 94.2kb net +2.8kb".
  */
-export function changeName(m: Mark) {
+export function markTag(m: Mark | SiteMark) {
   const span = m.refEnd - m.refStart
-  const net = `${bp(Math.abs(m.delta))} ${m.delta > 0 ? 'longer' : 'shorter'} in ${bp(span)}`
   switch (m.kind) {
+    case 'insertion':
+      return `ins ${sizeTag(m.delta)}`
+    case 'deletion':
+      return `del ${sizeTag(-m.delta)}`
+    case 'duplication':
+      return `dup ${sizeTag(m.delta)}`
     case 'inversion':
-      return `${bp(span)} inversion`
+      return `inv ${sizeTag(span)}`
+    case 'net':
+      return `net ${signed(m.delta)}`
     case 'shift':
       return shiftChanges(m)
-        ? `${bp(m.shiftedBp!)} shifted, ${bp(Math.abs(m.delta))} ${m.delta > 0 ? 'longer' : 'shorter'}`
-        : `${bp(m.shiftedBp!)} shifted, same length`
-    case 'duplication':
-      return `${bp(m.delta)} tandem duplication`
-    case 'net':
-      return net
+        ? `shift ${sizeTag(m.shiftedBp!)} net ${signed(m.delta)}`
+        : `shift ${sizeTag(m.shiftedBp!)}`
     case 'replacement':
-      return span > Math.max(2 * Math.abs(m.delta), DIFFUSE_MIN_SPAN)
-        ? net
-        : `${bp3(span)} replaced by ${bp3(m.altLength)}`
-    default:
-      return `${bp(Math.abs(m.delta))} ${m.kind}`
+      return `${REPLACEMENT_VERB[lopsidedKind(span, m.altLength) ?? 'none']} ${sizeTag(span)}->${sizeTag(m.altLength)}`
   }
 }
 
-const LISTED_CHANGES = 2
+// markTag under its earlier name
+export const changeName = markTag
 
-const sites = (n: number) => `${n} site${n === 1 ? '' : 's'}`
+const sizeOf = (m: Mark) =>
+  m.kind === 'inversion'
+    ? m.refEnd - m.refStart
+    : (m.shiftedBp ?? Math.abs(m.delta))
+
+const counted = (token: string, n: number) =>
+  n === 0 ? [] : [n === 1 ? token : `${token} x${n}`]
 
 /**
- * How a form differs from R. Up to two size changes are listed, largest
- * first; more are counted with the largest named, since a list of sizes says
- * nothing.
+ * How a form differs from R: each mark's markTag, largest first, then
+ * "rarer" and "no call" with their site counts, comma-separated:
+ * "ins 6.4kb, del 1.7kb", "del 2kb, no call". "ref" where it makes no change.
  */
 export function describeForm(form: { marks: Mark[]; states: string[] }) {
-  const sized = form.marks
-    .filter(m => m.kind !== 'inversion')
-    .sort((a, b) => sizeOf(b) - sizeOf(a))
-  const inversions = form.marks.length - sized.length
-  const rarer = form.states.filter(s => s === RARER_STATE).length
-  const uncalled = form.states.filter(s => s === NO_CALL_STATE).length
-  const changes = [
-    ...(sized.length > LISTED_CHANGES
-      ? [`${sized.length} size changes, largest a ${changeName(sized[0]!)}`]
-      : sized.map(changeName)),
-    ...(inversions === 1
-      ? [changeName(form.marks.find(m => m.kind === 'inversion')!)]
-      : inversions > 1
-        ? [`${inversions} inversions`]
-        : []),
-    ...(rarer > 0
-      ? [
-          rarer === 1
-            ? 'a rarer change at 1 site'
-            : `rarer changes at ${rarer} sites`,
-        ]
-      : []),
-    ...(uncalled > 0 ? [`not aligned at ${sites(uncalled)}`] : []),
+  const tokens = [
+    ...form.marks.toSorted((a, b) => sizeOf(b) - sizeOf(a)).map(markTag),
+    ...counted('rarer', form.states.filter(s => s === RARER_STATE).length),
+    ...counted('no call', form.states.filter(s => s === NO_CALL_STATE).length),
   ]
-  return changes.length > 0 ? changes.join(', ') : 'as the reference'
+  return tokens.length > 0 ? tokens.join(', ') : 'ref'
 }
 
 /**
@@ -795,45 +827,13 @@ export function formStateAt(
     : undefined
 }
 
-const signed = (n: number) => `${n < 0 ? '\u2212' : '+'}${bp(Math.abs(n))}`
-
-/**
- * A mark in a few characters: "+78 kb", "18 kb del", "49 kb dup", "2 kb
- * shift", "3 kb inv". An abridged walk gives its net change, "−94 kb", and so
- * does a replacement, unless one spanning 10 kb or less keeps most of its
- * length: "6 kb repl".
- */
-export function markTag(m: Mark) {
-  const span = m.refEnd - m.refStart
-  switch (m.kind) {
-    case 'insertion':
-    case 'net':
-      return signed(m.delta)
-    case 'deletion':
-      return `${bp(-m.delta)} del`
-    case 'duplication':
-      return `${bp(m.delta)} dup`
-    case 'inversion':
-      return `${bp(span)} inv`
-    case 'shift':
-      return `${bp(m.shiftedBp!)} shift`
-    case 'replacement':
-      return 2 * Math.abs(m.delta) < span && span <= DIFFUSE_MIN_SPAN
-        ? `${bp(span)} repl`
-        : signed(m.delta)
-  }
-}
-
-const tagSize = (m: Mark) =>
-  m.kind === 'inversion' ? m.refEnd - m.refStart : sizeOf(m)
-
 /**
  * A form for a row label of about 20 characters: its largest change as
- * markTag gives it, then "+N" counting the rest describeForm names, as in
- * "18 kb del" or "+78 kb +1"; "reference" where it makes no change. Given
- * the form's result, the tag leaves out the marks every form shares, so a
- * form with no other change is "shared change": naming the change there
- * would read as if the other rows lacked it.
+ * markTag gives it, then " +N" counting the rest describeForm names, as in
+ * "del 18.4kb" or "ins 78kb +1"; "ref" where it makes no change. Given the
+ * form's result, the tag leaves out the marks every form shares, so a form
+ * with no other change is "shared": naming the change there would read as if
+ * the other rows lacked it.
  */
 export function formTag(
   form: { marks: (Mark | SiteMark)[]; states: string[] },
@@ -842,21 +842,18 @@ export function formTag(
   const isShared = (m: Mark | SiteMark) =>
     'site' in m && result?.sites[m.site]?.shared === true
   const own = form.marks.filter(m => !isShared(m))
-  const [largest] = own.toSorted((a, b) => tagSize(b) - tagSize(a))
-  const shared = form.marks.length - own.length
+  const [largest] = own.toSorted((a, b) => sizeOf(b) - sizeOf(a))
   const rarer = form.states.filter(s => s === RARER_STATE).length
   const uncalled = form.states.filter(s => s === NO_CALL_STATE).length
   const head = largest
     ? markTag(largest)
     : rarer > 0
-      ? 'rarer change'
+      ? 'rarer'
       : uncalled > 0
-        ? 'not aligned'
-        : shared > 1
-          ? 'shared changes'
-          : shared === 1
-            ? 'shared change'
-            : 'reference'
+        ? 'no call'
+        : own.length < form.marks.length
+          ? 'shared'
+          : 'ref'
   const rest = own.length + rarer + uncalled - 1
   return rest > 0 ? `${head} +${rest}` : head
 }

@@ -37,6 +37,7 @@ export { refNameLookup, resolveRefName } from './refNames.ts'
 export { referenceNodes } from './walkChunk.ts'
 export {
   FLOOR_PRESETS,
+  LOPSIDED_RATIO,
   NO_CALL_STATE,
   RARER_STATE,
   REFERENCE_STATE,
@@ -48,9 +49,11 @@ export {
   formStateAt,
   formTag,
   haplotypeMarks,
+  lopsidedKind,
   markTag,
   minCarriersFor,
   pairShifts,
+  sizeTag,
   stateKey,
   structuralForms,
 } from './structuralForms.ts'
