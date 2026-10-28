@@ -390,6 +390,56 @@ export interface DecodedChunk {
     last: number
   }[]
   chunk: Chunk
+  // the kept paths' skip rows: each jump over this chunk
+  skips: WalkSkip[]
+}
+
+/**
+ * A jump a path makes over a stretch of the reference, from a `skip` row:
+ * `piece` is the piece before the jump, and refStart-refEnd the stretch it
+ * leaves out, as a deletion does
+ */
+export interface WalkSkip {
+  name: string
+  fragStart: number
+  piece: number
+  refStart: number
+  refEnd: number
+}
+
+/**
+ * The jumps over `region` of the paths the cut holds no walk of, each once, in
+ * name order: a path's skip rows repeat its jump in every chunk it skips. Skip
+ * rows hold no steps or nodes, so the step and node budgets leave them out,
+ * and a byte budget counts their bytes with the rest of their chunks.
+ */
+export function skipsOver(
+  jumps: WalkSkip[],
+  fragments: { name: string }[],
+  region: { start: number; end: number },
+) {
+  const walked = new Set(fragments.map(f => f.name))
+  const seen = new Set<string>()
+  const over: WalkSkip[] = []
+  for (const jump of jumps) {
+    const key = `${jump.name}\t${jump.fragStart}\t${jump.piece}`
+    if (
+      !walked.has(jump.name) &&
+      !seen.has(key) &&
+      jump.refStart < region.end &&
+      jump.refEnd > region.start
+    ) {
+      seen.add(key)
+      over.push(jump)
+    }
+  }
+  return over.sort((a, b) =>
+    a.name < b.name
+      ? -1
+      : a.name > b.name
+        ? 1
+        : a.fragStart - b.fragStart || a.piece - b.piece,
+  )
 }
 
 // The bases an SQ:Z: tag at or after column `from` joins, one node's per
@@ -493,6 +543,7 @@ export function decodeChunk(
     nodes: new Map(),
     ends: [],
     chunk: { path, routes, walks: [], lengths, refLengths: ref?.lengths },
+    skips: [],
   }
   const placed = (id: number) =>
     out.nodes.has(id) || ref?.lengths.has(id) === true
@@ -572,6 +623,18 @@ export function decodeChunk(
     return route
   }
   for (const cols of rows) {
+    if (cols[3] === 'skip') {
+      if (keep === undefined || keep(cols[4]!)) {
+        out.skips.push({
+          name: cols[4]!,
+          fragStart: +cols[5]!,
+          piece: +cols[6]!,
+          refStart: +cols[9]!,
+          refEnd: +cols[10]!,
+        })
+      }
+      continue
+    }
     if (cols[3] === 'abridged') {
       const name = cols[4]!
       if (keep === undefined || keep(name)) {

@@ -31,6 +31,13 @@ export interface GraphTables {
     abridgedSteps?: Float64Array
     abridgedBp?: Float64Array
   }
+  // the paths with no walk in the cut that jump over the window, each with
+  // the stretch of the reference it leaves out, from a walk file's skip rows
+  skips?: {
+    names: string[]
+    starts: Float64Array
+    ends: Float64Array
+  }
 }
 
 // A WalkStop per walk: `kinds` indexes `kindNames`, `bp` is NaN where the stop
