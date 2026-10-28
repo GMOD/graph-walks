@@ -1,9 +1,12 @@
 import {
+  MOVED_TAG,
+  anchoredCut,
   closingLinks,
   closingSpans,
   formatSubgraph,
   parseLinkLine,
   parseSegmentLine,
+  parseSegmentRow,
   segmentSamples,
 } from './rgfaBed.ts'
 
@@ -119,6 +122,59 @@ test('a valid tag beside a malformed one keeps only the valid one', () => {
       'S\ts1\t*\tLN:i:10\tSN:Z:c\tSO:i:0\tSR:i:1\tSM:Z:HG002.1',
     ].join('\n'),
   )
+})
+
+// gfa-to-tabix's tests/data/rgfa.gfa in the anchored layout: s1 and s2 on the
+// reference chr1, and s3 a one-node bubble on b#1#c between them.
+// `--max-component 0` moves s3's component, so its node row sits on b#1#c and
+// only the links reach a window on chr1.
+const tsv = (row: string) => row.split(' ').join('\t')
+const RGFA_LINKS = [
+  'chr1 0 13 s1+ s2+ chr1 0 8 0 chr1 8 13 0',
+  'chr1 0 13 s1+ s3- chr1 0 8 0 b#1#c 100 103 1',
+  'chr1 0 13 s3- s2+ b#1#c 100 103 1 chr1 8 13 0',
+].map(row => parseLinkLine(tsv(row)))
+const chr1 = { refName: 'chr1', start: 0, end: 13 }
+const under = (rows: string[]) =>
+  new Map(
+    rows.map(row => {
+      const { segment } = parseSegmentRow(tsv(row))
+      return [segment.id, segment]
+    }),
+  )
+
+test('a segment off the reference that only a link brought is marked moved', () => {
+  const { segments } = anchoredCut(
+    under(['chr1 0 8 s1 0 chr1 0 8', 'chr1 8 13 s2 0 chr1 8 13']),
+    RGFA_LINKS,
+    chr1,
+  )
+  expect(segments.get('s3')!.tags).toBe(MOVED_TAG)
+  expect(segments.get('s1')!.tags).toBe('')
+  expect(subgraphOf([segments.get('s3')!])).toContain('SR:i:1\tmv:i:1')
+})
+
+test('a bubble filed under the window is not marked moved', () => {
+  const { segments } = anchoredCut(
+    under([
+      'chr1 0 13 s3 1 b#1#c 100 103',
+      'chr1 0 8 s1 0 chr1 0 8',
+      'chr1 8 13 s2 0 chr1 8 13',
+    ]),
+    RGFA_LINKS,
+    chr1,
+  )
+  expect([...segments.values()].map(s => s.tags)).toEqual(['', '', ''])
+})
+
+// Backbone a link reaches past the window is rank 0, and stays unmarked
+test('a backbone segment past the window is not marked moved', () => {
+  const { segments } = anchoredCut(
+    under(['chr1 0 8 s1 0 chr1 0 8']),
+    RGFA_LINKS.slice(0, 1),
+    { refName: 'chr1', start: 0, end: 8 },
+  )
+  expect(segments.get('s2')!.tags).toBe('')
 })
 
 test('segmentSamples reads the samples off the tag column', () => {

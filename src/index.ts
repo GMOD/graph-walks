@@ -95,6 +95,7 @@ export {
 } from './util.ts'
 export type { GraphTables, WalkStopTable } from './util.ts'
 export {
+  MOVED_TAG,
   formatSubgraph,
   linkKey,
   parseLinkLine,
