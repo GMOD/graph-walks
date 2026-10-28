@@ -175,8 +175,23 @@ export function anchoredCut(
       links.set(linkKey(link), link)
     }
   }
+  // Every segment of a bubble under the window comes back from the segment
+  // file, so one of rank 1 or more that only a link brought belongs to a
+  // component gfa-to-tabix's --max-component left on its own coordinates
+  for (const [id, segment] of segments) {
+    if (!under.has(id) && segment.rank > 0) {
+      segments.set(id, {
+        ...segment,
+        tags: segment.tags ? `${segment.tags} ${MOVED_TAG}` : MOVED_TAG,
+      })
+    }
+  }
   return { segments, links }
 }
+
+// The tag anchoredCut puts on a segment of a moved component, whose other
+// segments the cut lacks, so a viewer can draw it as a stub
+export const MOVED_TAG = 'mv:i:1'
 
 export interface StableSpan {
   refName: string

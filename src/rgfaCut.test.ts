@@ -43,6 +43,20 @@ test('an anchored cut holds whole without hops what a contig cut hops to', async
   )
 })
 
+// gfa-to-tabix's tests/data/rgfa.gfa indexed with `--max-component 0`, which
+// leaves s3's one-node bubble on its own coordinates
+test('an anchored cut marks the segments of a moved component', async () => {
+  const gfa = await rgfaCut(files('rgfa_moved'), {
+    refName: 'chr1',
+    start: 0,
+    end: 13,
+  })
+  expect(gfa.split('\n').filter(l => l.includes('mv:i:1'))).toEqual([
+    'S\ts3\t*\tLN:i:3\tSN:Z:b#1#c\tSO:i:100\tSR:i:1\tmv:i:1',
+  ])
+  expect(gfa).toContain('L\ts1\t+\ts3\t-\t0M')
+})
+
 test('a cut is byte-identical across calls', async () => {
   const cut = () => rgfaCut(files('rgfa_ecoli'), window, { hops: 1 })
   expect(await cut()).toBe(await cut())
