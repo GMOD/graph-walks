@@ -7,7 +7,7 @@ import {
 import { placeAndLink } from './walkChunk.ts'
 
 import type { GraphTables, WalkStopTable } from './util.ts'
-import type { Chunk } from './walkChunk.ts'
+import type { Chunk, WalkSkip } from './walkChunk.ts'
 
 // A walk row of gfa-to-tabix's format 5, its steps decoded with its chunk
 // (walkChunk.ts). A haplotype path is cut into pieces, one per chunk it
@@ -733,7 +733,11 @@ export class WalkGraph {
    * name. graphTablesGFA writes them as the GFA they stand for, the same bytes
    * for the same rows.
    */
-  tables(kept: Set<number>, fragments: WalkFragment[]): GraphTables {
+  tables(
+    kept: Set<number>,
+    fragments: WalkFragment[],
+    skips: WalkSkip[] = [],
+  ): GraphTables {
     if (this.chunks.length > 0) {
       placeAndLink(
         this.chunks,
@@ -850,6 +854,11 @@ export class WalkGraph {
         after: stopTable(walks.map(f => f.after)),
         abridgedSteps: Float64Array.from(walks, f => f.abridged?.steps ?? NaN),
         abridgedBp: Float64Array.from(walks, f => f.abridged?.bp ?? NaN),
+      },
+      skips: {
+        names: skips.map(s => s.name),
+        starts: Float64Array.from(skips, s => s.refStart),
+        ends: Float64Array.from(skips, s => s.refEnd),
       },
     }
   }

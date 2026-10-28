@@ -688,3 +688,38 @@ test('readInOrder keeps at most its limit reading, and uses results in order', a
   expect(most).toBe(3)
   expect(used).toEqual([50, 10, 40, 20, 30, 0])
 })
+
+// gfa-to-tabix --walks --chunk 10 of >1>2>9>10 against a reference >1 to >10
+// of 10 bp nodes: HG002#1#ctg leaves the reference after 20 and rejoins at 80,
+// so the chunks between hold only its skip rows
+test('a cut names the haplotypes that jump over the window', async () => {
+  const walks = reader('skip.GRCh38')
+  const { fragments, skips } = await walks.cut('GRCh38#0#chr1', {
+    start: 31,
+    end: 60,
+  })
+  expect(fragments.map(f => f.name)).toEqual(['GRCh38#0#chr1'])
+  expect(skips).toEqual([
+    { name: 'HG002#1#ctg', fragStart: 0, piece: 1, refStart: 20, refEnd: 80 },
+  ])
+  const { tables } = await walks.cutRegion({
+    refName: 'GRCh38#0#chr1',
+    start: 31,
+    end: 60,
+  })
+  expect(tables.skips!.names).toEqual(['HG002#1#ctg'])
+  expect([...tables.skips!.starts, ...tables.skips!.ends]).toEqual([20, 80])
+})
+
+test('a haplotype with a walk in the cut, or filtered out, is not named as jumping', async () => {
+  const walks = reader('skip.GRCh38')
+  const over = await walks.cut('GRCh38#0#chr1', { start: 15, end: 60 })
+  expect(over.fragments.map(f => f.name)).toContain('HG002#1#ctg')
+  expect(over.skips).toEqual([])
+  const filtered = await walks.cut(
+    'GRCh38#0#chr1',
+    { start: 31, end: 60 },
+    { keep: name => name === 'GRCh38#0#chr1' },
+  )
+  expect(filtered.skips).toEqual([])
+})

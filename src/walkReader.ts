@@ -1,5 +1,5 @@
 import { refNameLookup, resolveRefName } from './refNames.ts'
-import { chunkRef, decodeChunk, pieceLinks } from './walkChunk.ts'
+import { chunkRef, decodeChunk, pieceLinks, skipsOver } from './walkChunk.ts'
 import {
   WalkGraph,
   byteBudgetError,
@@ -14,7 +14,7 @@ import {
   walksKept,
 } from './walkRows.ts'
 
-import type { ChunkRef, DecodedChunk } from './walkChunk.ts'
+import type { ChunkRef, DecodedChunk, WalkSkip } from './walkChunk.ts'
 import type { BudgetNames, WalkHeader, WalkRow } from './walkRows.ts'
 
 // A window reads whole chunks and keeps the steps on it, so a narrow window
@@ -306,6 +306,7 @@ export class WalkReader {
     })
     const decoded = new Set<number>()
     const ends: DecodedChunk['ends'] = []
+    const jumps: WalkSkip[] = []
     const surely = new Set<number>()
     const filtered = keep !== undefined
     // the expanded walks' rows, with the R of their chunk
@@ -318,6 +319,9 @@ export class WalkReader {
       }
       decoded.add(cs)
       const chunkCut = decodeChunk(chunkRows, keep, opts.sequences)
+      for (const jump of chunkCut.skips) {
+        jumps.push(jump)
+      }
       let ref: ChunkRef | undefined
       for (const row of chunkCut.rows) {
         if (row.abridged && expand?.(row.name)) {
@@ -498,7 +502,7 @@ export class WalkReader {
     if (tooMany) {
       throw tooMany
     }
-    return { graph, ...cut }
+    return { graph, ...cut, skips: skipsOver(jumps, cut.fragments, region) }
   }
 
   /**
@@ -522,10 +526,10 @@ export class WalkReader {
         `The walk file has no sequence ${region.refName} on ${sample}; it holds ${names.slice(0, 5).join(', ')}${names.length > 5 ? ', …' : ''}`,
       )
     }
-    const { graph, kept, fragments } = await this.cut(refName, region, {
+    const { graph, kept, fragments, skips } = await this.cut(refName, region, {
       ...rest,
       keep: walksKept(haplotypes, refName),
     })
-    return { tables: graph.tables(kept, fragments), refName, sample }
+    return { tables: graph.tables(kept, fragments, skips), refName, sample }
   }
 }

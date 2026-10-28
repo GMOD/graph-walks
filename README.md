@@ -134,6 +134,26 @@ not keep, then:
   full, as a file without abridging would
 - `referenceSequences()` leaves out the detail records' sequences, `seq~cs`
 
+## Haplotypes that jump over the window
+
+- A haplotype whose deletion spans the window has no walk row in its chunks.
+  gfa-to-tabix 1.5 writes a `skip` row there instead, naming the path and the
+  stretch of the reference it leaves out
+- `cut` returns them as `skips`: one per jump, `name`, `fragStart`, `piece`,
+  `refStart` and `refEnd`, for each path that has no fragment in the cut and
+  that `keep` keeps
+- `graph.tables(kept, fragments, skips)` keeps them as a `skips` table of
+  `names`, `starts` and `ends`, which `cutRegion` fills in
+- Skip rows hold no steps or nodes, so only the byte budget counts them, with
+  the rest of their chunk
+
+## Moved components
+
+- gfa-to-tabix 1.5's `--max-component` leaves a component over the limit on its
+  own coordinates, so an anchored cut reaches it only through the links into it
+- `rgfaCut` tags each segment of such a component that it holds `mv:i:1`
+  (`MOVED_TAG`), for a viewer to draw as a stub
+
 ## Structural forms
 
 ```ts

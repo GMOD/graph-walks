@@ -35,6 +35,7 @@ export {
 } from './walkReader.ts'
 export { refNameLookup, resolveRefName } from './refNames.ts'
 export { referenceNodes } from './walkChunk.ts'
+export type { WalkSkip } from './walkChunk.ts'
 export {
   FLOOR_PRESETS,
   LOPSIDED_RATIO,
