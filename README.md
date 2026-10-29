@@ -5,8 +5,8 @@
 
 - **In:** a `gfa-to-tabix --walks` file, `<prefix>.<sample>.walks.bed.gz` with
   its `.tbi`, or a segment index, `<prefix>.segs.bed.gz` and
-  `<prefix>.links.bed.gz` with theirs, plus a reference region such as
-  `chr6:160,614,798-160,647,758`
+  `<prefix>.links.bed.gz` with theirs or format 2's `<prefix>.graph.bed.gz`,
+  plus a reference region such as `chr6:160,614,798-160,647,758`
 - **Out:** from a walk file, the reference over the region, every haplotype's
   walk through it, and the nodes and links they visit, as typed arrays; from a
   segment index, the segments and links under the region as GFA text
@@ -285,6 +285,12 @@ const gfa = await rgfaCut(
 
 - `segsFile` and `linksFile` are `TabixIndexedFile`s, or any object with its
   `getLines`
+- For gfa-to-tabix's format 2, pass `{ graph: graphFile }`, the one
+  `<prefix>.graph.bed.gz`, with `getLines` and `getHeaderLines`. `rgfaCut` reads
+  its layout from the header, refuses a format other than 2, and writes each
+  node's `SB:H:` bits as the `SM:Z:` names format 1 states, in `#samples` order.
+  A link end its row gives no carriers takes them from its node row in the same
+  query, so a cut of either format gives the same segments and links
 - gfa-to-tabix's default, anchored layout files every allele under the reference
   interval its bubble hangs from, so one read of each file holds the whole cut
 - Its contig layout files each segment under the segment's own sequence. Each of
@@ -292,7 +298,8 @@ const gfa = await rgfaCut(
   allele reached
 - `rgfaCut` writes each segment as `*` with LN/SN/SO/SR tags and the tag
   column's tags, sorted, so one region always gives the same text
-- `parseSegmentRow`, `parseLinkLine` and `segmentSamples` read single rows
+- `parseSegmentRow`, `parseLinkLine` and `segmentSamples` read single rows;
+  `parseGraphHeader`, `parseGraphRow` and `carrierNames` read format 2's
 
 ## How a cut works
 

@@ -39,7 +39,10 @@ export function parseSegmentLine(line: string): RgfaSegment {
 // and `anchored` tells a cut it has nothing left to follow.
 export function parseSegmentRow(line: string) {
   const cols = line.split('\t')
-  const anchored = cols.length >= 8
+  return segmentFromColumns(cols, cols.length >= 8)
+}
+
+function segmentFromColumns(cols: string[], anchored: boolean) {
   const own = anchored ? 5 : 0
   return {
     anchored,
@@ -89,7 +92,10 @@ function parseEndpoint(field: string) {
 }
 
 export function parseLinkLine(line: string): RgfaLink {
-  const cols = line.split('\t')
+  return linkFromColumns(line.split('\t'))
+}
+
+function linkFromColumns(cols: string[]): RgfaLink {
   const source = parseEndpoint(cols[3]!)
   const target = parseEndpoint(cols[4]!)
   return {
@@ -114,6 +120,84 @@ export function parseLinkLine(line: string): RgfaLink {
       tags: cols[14] ?? '',
     },
   }
+}
+
+// gfa-to-tabix's format 2 (its docs/adr/0007-node-link-format-2.md) holds
+// nodes and links in one file, each row's kind, `N` or `L`, after its interval
+// and format 1's columns after that. Its header names the layout, and for a
+// plain GFA lists the assemblies that a node row's `SB:H:` bits number.
+export interface GraphHeader {
+  anchored: boolean
+  samples: string[]
+}
+
+export function parseGraphHeader(lines: string[]): GraphHeader {
+  const first = lines.find(l => l.startsWith('#gfa-to-tabix\t'))
+  if (first === undefined) {
+    throw new Error('not a gfa-to-tabix graph file: no #gfa-to-tabix header')
+  }
+  const tags = new Map(
+    first
+      .split('\t')
+      .slice(1)
+      .map(tag => [
+        tag.slice(0, tag.indexOf(':')),
+        tag.slice(tag.indexOf(':') + 3),
+      ]),
+  )
+  const format = tags.get('format')
+  if (format !== '2') {
+    throw new Error(
+      `gfa-to-tabix format ${format}: this graph-walks reads format 2`,
+    )
+  }
+  const samples = lines.find(l => l.startsWith('#samples\t'))
+  return {
+    anchored: tags.get('layout') === 'anchored',
+    samples: samples ? samples.slice('#samples\t'.length).split(',') : [],
+  }
+}
+
+// `SB:H:` hex digit i / 4, counted from the left, holds sample i as bit i % 4
+export function carrierNames(hex: string, samples: string[]) {
+  const names: string[] = []
+  for (let digit = 0; digit < hex.length; digit++) {
+    const bits = Number.parseInt(hex[digit]!, 16)
+    for (let bit = 0; bit < 4; bit++) {
+      if (bits & (1 << bit)) {
+        names.push(samples[digit * 4 + bit]!)
+      }
+    }
+  }
+  return names
+}
+
+// A format-2 row as format 1 states it: `SB:H:` becomes the `SM:Z:` list of
+// names that segmentSamples and bandage-core read, in `#samples` order, on a
+// node row and on either end of a link row that states one. Undefined for a
+// row kind this reader doesn't know.
+export function parseGraphRow(line: string, header: GraphHeader) {
+  const cols = line.split('\t')
+  const [kind] = cols.splice(3, 1)
+  const named = (i: number) => {
+    if (cols[i]?.startsWith('SB:H:')) {
+      cols[i] =
+        `SM:Z:${carrierNames(cols[i].slice(5), header.samples).join(',')}`
+    }
+  }
+  if (kind === 'N') {
+    named(header.anchored ? 8 : 5)
+    return {
+      kind: 'N' as const,
+      segment: segmentFromColumns(cols, header.anchored).segment,
+    }
+  }
+  if (kind === 'L') {
+    named(13)
+    named(14)
+    return { kind: 'L' as const, link: linkFromColumns(cols) }
+  }
+  return undefined
 }
 
 export function linkKey(link: RgfaLink) {

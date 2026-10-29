@@ -4,12 +4,19 @@ import {
   closingLinks,
   closingSpans,
   formatSubgraph,
+  parseGraphHeader,
+  parseGraphRow,
   parseLinkLine,
   parseSegmentRow,
 } from './rgfaBed.ts'
 import { checkRange } from './walkReader.ts'
 
-import type { RgfaLink, RgfaSegment, StableSpan } from './rgfaBed.ts'
+import type {
+  GraphHeader,
+  RgfaLink,
+  RgfaSegment,
+  StableSpan,
+} from './rgfaBed.ts'
 import type { TabixSource } from './walkReader.ts'
 
 // What a hop follows: alleles, never the backbone. A rank-0 segment reached
@@ -48,11 +55,29 @@ function offReference(segments: RgfaSegment[]) {
   return segments.filter(segment => segment.rank > 0)
 }
 
-// A gfa-to-tabix index's two files, read as @gmod/tabix's TabixIndexedFile
-// reads them. Why there are two: gfa-to-tabix docs/adr/0002-two-index-files.md
-export interface RgfaFiles {
-  segments: Pick<TabixSource, 'getLines'>
-  links: Pick<TabixSource, 'getLines'>
+// A gfa-to-tabix index, read as @gmod/tabix's TabixIndexedFile reads it:
+// format 1's two files (gfa-to-tabix docs/adr/0002-two-index-files.md), or
+// format 2's one (docs/adr/0007-node-link-format-2.md)
+export type RgfaFiles =
+  | {
+      segments: Pick<TabixSource, 'getLines'>
+      links: Pick<TabixSource, 'getLines'>
+    }
+  | { graph: Pick<TabixSource, 'getLines' | 'getHeaderLines'> }
+
+const headers = new WeakMap<object, Promise<GraphHeader>>()
+
+function graphHeader(
+  file: Pick<TabixSource, 'getHeaderLines'>,
+  signal?: AbortSignal,
+) {
+  let header = headers.get(file)
+  if (!header) {
+    header = file.getHeaderLines({ signal }).then(parseGraphHeader)
+    header.catch(() => headers.delete(file))
+    headers.set(file, header)
+  }
+  return header
 }
 
 function getLines(
@@ -66,19 +91,58 @@ function getLines(
   return file.getLines(refName, start, end, opts)
 }
 
-async function linksOver(
-  file: Pick<TabixSource, 'getLines'>,
+// The segments and links filed over `span`, and whether the index is
+// anchored. Format 1 reads the segment file only when asked, as a hop needs
+// only links. Format 2's one query returns both kinds, and a link end its row
+// gives no carriers takes the tags of its node row in the same query; an end
+// past the span has none.
+async function readSpan(
+  files: RgfaFiles,
   span: StableSpan,
+  withSegments: boolean,
   signal?: AbortSignal,
 ) {
-  const found: RgfaLink[] = []
-  await getLines(file, span.refName, span.start, span.end, {
-    signal,
-    lineCallback: line => {
-      found.push(parseLinkLine(line))
-    },
-  })
-  return found
+  const segments: RgfaSegment[] = []
+  const links: RgfaLink[] = []
+  const read = (
+    file: Pick<TabixSource, 'getLines'>,
+    lineCallback: (line: string) => void,
+  ) =>
+    getLines(file, span.refName, span.start, span.end, { signal, lineCallback })
+  if ('graph' in files) {
+    const header = await graphHeader(files.graph, signal)
+    await read(files.graph, line => {
+      const row = parseGraphRow(line, header)
+      if (row?.kind === 'N') {
+        segments.push(row.segment)
+      } else if (row?.kind === 'L') {
+        links.push(row.link)
+      }
+    })
+    const tags = new Map(segments.map(s => [s.id, s.tags]))
+    for (const link of links) {
+      link.sourceSegment.tags ||= tags.get(link.source) ?? ''
+      link.targetSegment.tags ||= tags.get(link.target) ?? ''
+    }
+    return {
+      segments: withSegments ? segments : [],
+      links,
+      anchored: header.anchored,
+    }
+  }
+  let anchored = false
+  await Promise.all([
+    withSegments &&
+      read(files.segments, line => {
+        const row = parseSegmentRow(line)
+        anchored ||= row.anchored
+        segments.push(row.segment)
+      }),
+    read(files.links, line => {
+      links.push(parseLinkLine(line))
+    }),
+  ])
+  return { segments, links, anchored }
 }
 
 /**
@@ -103,31 +167,24 @@ export async function rgfaCut(
 ) {
   const segments = new Map<string, RgfaSegment>()
   const links = new Map<string, RgfaLink>()
-  const layout = { anchored: false }
   // Both layouts read the links over the window, so that read goes out
   // beside the segment read rather than after it.
-  const [, windowLinks] = await Promise.all([
-    getLines(files.segments, window.refName, window.start, window.end, {
-      signal,
-      lineCallback: line => {
-        const row = parseSegmentRow(line)
-        layout.anchored ||= row.anchored
-        segments.set(row.segment.id, row.segment)
-      },
-    }),
-    linksOver(files.links, window, signal),
-  ])
+  const first = await readSpan(files, window, true, signal)
+  for (const segment of first.segments) {
+    segments.set(segment.id, segment)
+  }
+  const windowLinks = first.links
   // An anchored index files every allele and every link under the reference
   // interval its bubble hangs from, so one read of each file holds the whole
   // graph under the window and there is nothing to hop to or close.
-  if (layout.anchored) {
+  if (first.anchored) {
     const cut = anchoredCut(segments, windowLinks, window)
     return formatSubgraph(cut.segments, cut.links)
   }
+  const linksOver = async (span: StableSpan) =>
+    (await readSpan(files, span, false, signal)).links
   const addLinksOver = async (span: StableSpan) =>
-    (await linksOver(files.links, span, signal)).flatMap(link =>
-      addLink(segments, links, link),
-    )
+    (await linksOver(span)).flatMap(link => addLink(segments, links, link))
   let frontier = offReference(
     windowLinks.flatMap(link => addLink(segments, links, link)),
   )
@@ -144,9 +201,7 @@ export async function rgfaCut(
       new Set(frontier.map(segment => segment.id)),
       window,
     )
-    const found = await Promise.all(
-      spans.map(span => linksOver(files.links, span, signal)),
-    )
+    const found = await Promise.all(spans.map(span => linksOver(span)))
     for (const link of closingLinks(found.flat(), segments, spans)) {
       addLink(segments, links, link)
     }
