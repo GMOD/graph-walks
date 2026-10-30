@@ -12,8 +12,8 @@ importers:
         specifier: ^10.0.1
         version: 10.0.1(eslint@10.12.0)
       '@gmod/tabix':
-        specifier: ^3.10.1
-        version: 3.10.1
+        specifier: ^3.13.1
+        version: 3.13.1
       '@types/node':
         specifier: ^26.6.5
         version: 26.6.5
@@ -95,14 +95,14 @@ packages:
     resolution: {integrity: sha512-IkO+/KEUvwbVpiURZg+P7zF74z5Jxe0UgJxVni+RtoHQ6IZieXaO02kmadomap/q+l6bc/jdPGGqTjhuZnuz1Q==}
     engines: {node: ^20.19.0 || ^22.13.0 || >=24}
 
-  '@gmod/bgzf-filehandle@6.7.0':
-    resolution: {integrity: sha512-ThtHVneb+tASyGFACVL/rMu6d5AY0vWK6poeOJwIIAaJpXYpptrmwvhdk2xk5eoNzL+iN40B3bXytMvQ+e+80Q==}
+  '@gmod/bgzf-filehandle@6.8.2':
+    resolution: {integrity: sha512-idzdZgoGvgkCgshoibhmeH795wQAm7JXnEvETEMPPdrq4yBCDD6S+LkN1JC6V+wdaRc0LZSKP7A50LqNaJC6sg==}
 
-  '@gmod/shared-read-cache@2.0.0':
-    resolution: {integrity: sha512-nU4HPB+DlvZqRVJZvtIbJ3zS+kSKfOhibCu3Y7Sia9D4GwA1MotdBNH19hM8/gP/tYuHGaSdvpGhZ0FfJbw/Hg==}
+  '@gmod/shared-read-cache@2.1.0':
+    resolution: {integrity: sha512-AyiUt0hiEGl7lWc1fuigbXR/RToIw3h72dalaRoSNau9WL9ux9rEfkcsXDYTgSDudehfAEQac1jTvn2zrfnELQ==}
 
-  '@gmod/tabix@3.10.1':
-    resolution: {integrity: sha512-bynf5MGr50O6Re2asEbt3kEfULUhXb2J87dqFK/78xXfJIWWrKfuQCA+ADSp3QJtdODvTf7ftWiTnc8yLQ0Yrw==}
+  '@gmod/tabix@3.13.1':
+    resolution: {integrity: sha512-usyBxD1EQ/wfIzeT/wQsqJBT6aGZwgaIFG94lBYFhWdK+csHjQU7t9i/iIjDSCIcZFTFiQ1TFp3McCMf4aH/4A==}
 
   '@humanfs/core@0.19.2':
     resolution: {integrity: sha512-UhXNm+CFMWcbChXywFwkmhqjs3PRCmcSa/hfBgLIb7oQ5HNb1wS0icWsGtSAUNgefHeI+eBrA8I1fxmbHsGdvA==}
@@ -643,6 +643,9 @@ packages:
   generic-filehandle2@2.5.0:
     resolution: {integrity: sha512-qrzjvxfFTswagFQRW7Gc8m5Fy+ra538mrXg4Ggtn+05PpeGYQ9QPkvQQ2O4poa2eGdUN/jAR49M5Y31Wvrr/xA==}
 
+  generic-filehandle2@2.5.1:
+    resolution: {integrity: sha512-+0F0k0xH4erZEB3xOVBdrlJi0hyURYb/CygF8QyqAjLsitmoZYl86pMfTZ91/w2Z1CPK610mBy93bxyiby1CHA==}
+
   get-tsconfig@4.14.3:
     resolution: {integrity: sha512-++QEw4DIY7WGoukz+/+A/8dGYPT9l9yIadnmSgZ8Rjr3YVSVDipQSO9CdnJo9ePqFqUUqh+wk9uIaoiAwsiPkA==}
 
@@ -1096,19 +1099,19 @@ snapshots:
       '@eslint/core': 1.2.1
       levn: 0.4.1
 
-  '@gmod/bgzf-filehandle@6.7.0':
+  '@gmod/bgzf-filehandle@6.8.2':
     dependencies:
       generic-filehandle2: 2.5.0
       pako-esm2: 2.0.2
 
-  '@gmod/shared-read-cache@2.0.0': {}
+  '@gmod/shared-read-cache@2.1.0': {}
 
-  '@gmod/tabix@3.10.1':
+  '@gmod/tabix@3.13.1':
     dependencies:
-      '@gmod/bgzf-filehandle': 6.7.0
-      '@gmod/shared-read-cache': 2.0.0
+      '@gmod/bgzf-filehandle': 6.8.2
+      '@gmod/shared-read-cache': 2.1.0
       '@jbrowse/quick-lru': 8.0.0
-      generic-filehandle2: 2.5.0
+      generic-filehandle2: 2.5.1
 
   '@humanfs/core@0.19.2':
     dependencies:
@@ -1571,6 +1574,8 @@ snapshots:
     optional: true
 
   generic-filehandle2@2.5.0: {}
+
+  generic-filehandle2@2.5.1: {}
 
   get-tsconfig@4.14.3:
     dependencies:
