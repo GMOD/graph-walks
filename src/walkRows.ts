@@ -215,6 +215,8 @@ export interface WalkRun {
   fragStart: number
   hapOffset: number
   firstPiece: number
+  // where each row after the first starts in `ids`
+  pieceStarts?: number[]
   ids: Int32Array
   rev: Uint8Array
   // where each step lies on the reference, NaN off R or unknown
@@ -263,8 +265,12 @@ function decodeRun(pieces: WalkRow[]): WalkRun {
   const ids = new Int32Array(n)
   const rev = new Uint8Array(n)
   const refStarts = new Float64Array(n).fill(Number.NaN)
+  const pieceStarts: number[] = []
   let at = 0
   for (const p of pieces) {
+    if (at > 0) {
+      pieceStarts.push(at)
+    }
     ids.set(p.steps.ids, at)
     rev.set(p.steps.rev, at)
     if (p.steps.refStarts) {
@@ -279,6 +285,7 @@ function decodeRun(pieces: WalkRow[]): WalkRun {
     fragStart: first.fragStart,
     hapOffset: first.hapOffset,
     firstPiece: first.piece,
+    pieceStarts,
     ids,
     rev,
     refStarts,
@@ -326,6 +333,15 @@ export interface WalkFragment {
  * `context` bp of the walk past either end. At AMY1 haplotypes go from a 4 kb
  * window to the other copies and back: the cut above keeps 9,928 nodes there,
  * the contained cut 182.
+ *
+ * A haplotype with no step on the window can still cross it, between
+ * consecutive reference steps either side. The cut keeps the steps off the
+ * reference between them, and names a jump straight across as a skip, as
+ * gfa-to-tabix's skip rows do in chunks where the path has no piece. At
+ * 22q11 four HPRC haplotypes jump over a 54 kb stretch of GRCh38 from pieces
+ * in the chunks either side, so the file holds no skip row for them. A run
+ * that ends off the window with its path going on across it lists the chunk
+ * it goes on in as `across`, which the reader reads even in a contained cut.
  *
  * Each fragment says what lies past either end (WalkStop).
  */
@@ -464,6 +480,137 @@ export function walkCut(
       spans.push({ run, first, last })
     }
   }
+  // the chunks holding the far side of walks that cross the window
+  const across = new Map<string, WalkChunk>()
+  const goesAcross = (chunk: WalkChunk) => {
+    across.set(`${chunk.refName}:${chunk.start}`, chunk)
+  }
+  // each run's neighbours in its record, by piece index
+  const byRecord = new Map<string, WalkRun[]>()
+  for (const run of runs) {
+    const key = `${run.name}\t${run.fragStart}`
+    const list = byRecord.get(key)
+    if (list) {
+      list.push(run)
+    } else {
+      byRecord.set(key, [run])
+    }
+  }
+  const neighbours = new Map<WalkRun, [WalkRun?, WalkRun?]>()
+  for (const list of byRecord.values()) {
+    list.sort((a, b) => a.firstPiece - b.firstPiece)
+    list.forEach((run, i) => {
+      neighbours.set(run, [list[i - 1], list[i + 1]])
+    })
+  }
+  const skips: WalkSkip[] = []
+  // -1 where step `i` passes the reference before the window, 1 after it,
+  // else 0
+  const side = (run: WalkRun, i: number) => {
+    const node = reference(run.ids[i]!)
+    if (node?.refName !== refName) {
+      return 0
+    }
+    const start = passStart(run, i, node)
+    return start + node.end - node.start <= windowStart
+      ? -1
+      : start >= windowEnd
+        ? 1
+        : 0
+  }
+  const chunkSide = (chunk: WalkChunk | undefined) =>
+    chunk?.refName !== refName
+      ? 0
+      : chunk.start >= windowEnd
+        ? 1
+        : chunk.start < windowStart
+          ? -1
+          : 0
+  const pieceOf = (run: WalkRun, i: number) =>
+    run.abridged
+      ? i === 0
+        ? run.firstPiece
+        : run.abridged.pieces.at(-1)!
+      : run.firstPiece + (run.pieceStarts ?? []).filter(s => s <= i).length
+  // a deletion from step `a` to step `b`, a step later along the path
+  const jump = (a: [WalkRun, number], b: [WalkRun, number]): WalkSkip => {
+    const [x, y] = [a, b].map(([run, i]) => {
+      const node = reference(run.ids[i]!)!
+      const start = passStart(run, i, node)
+      return [start, start + node.end - node.start] as const
+    })
+    const [run, i] = a
+    return {
+      name: run.name,
+      fragStart: run.fragStart,
+      piece: pieceOf(run, i),
+      refStart: Math.min(x![1], y![1]),
+      refEnd: Math.max(x![0], y![0]),
+    }
+  }
+  // the step on R an abridged row holding piece `piece` stands at, at its
+  // end `i`
+  const abridgedAt = (
+    other: WalkRun | undefined,
+    piece: number,
+    i: number,
+  ): [WalkRun, number] | undefined =>
+    other?.abridged && pieceOf(other, i) === piece ? [other, i] : undefined
+  // A run with no step on the window can still cross it between consecutive
+  // reference steps either side, keeping the steps off the reference between
+  // them, or jumping straight across as a deletion. A run that ends off the
+  // window with its path going on across it keeps its steps off the reference
+  // past its last reference step, and reads on to the far side, or takes it
+  // from the abridged row of the next piece
+  const crossings = (run: WalkRun) => {
+    const { ids } = run
+    const last = ids.length - 1
+    const [before, after] = neighbours.get(run) ?? []
+    let at = -1
+    for (let i = 0; i <= last; i++) {
+      if (reference(ids[i]!) === undefined) {
+        continue
+      }
+      if (at >= 0) {
+        if (side(run, at) * side(run, i) < 0) {
+          if (i > at + 1) {
+            spans.push({ run, first: at + 1, last: i - 1 })
+          } else {
+            skips.push(jump([run, at], [run, i]))
+          }
+        }
+      } else {
+        if (side(run, i) * chunkSide(run.prev) < 0) {
+          goesAcross(run.prev!)
+          if (i > 0) {
+            spans.push({ run, first: 0, last: i - 1 })
+          }
+        }
+        const far =
+          i === 0 ? abridgedAt(before, run.firstPiece - 1, 1) : undefined
+        if (far && side(far[0], far[1]) * side(run, 0) < 0) {
+          skips.push(jump(far, [run, 0]))
+        }
+      }
+      at = i
+    }
+    if (at < 0) {
+      return
+    }
+    if (side(run, at) * chunkSide(run.next) < 0) {
+      goesAcross(run.next!)
+      if (at < last) {
+        spans.push({ run, first: at + 1, last })
+      }
+    }
+    const far =
+      at === last ? abridgedAt(after, pieceOf(run, last) + 1, 0) : undefined
+    if (far && side(run, last) * side(far[0], far[1]) < 0) {
+      skips.push(jump([run, last], far))
+    }
+  }
+  const stepsOnWindow = (run: WalkRun) =>
+    run.ids.some((_, i) => stepOnWindow(run, i))
   // an abridged run is kept where its stretch of R overlaps the window
   const abridgedSpan = (run: WalkRun) => {
     const a = reference(run.ids[0]!)
@@ -481,6 +628,8 @@ export function walkCut(
   for (const run of runs) {
     if (run.abridged) {
       abridgedSpan(run)
+    } else if (run.name !== refName && !stepsOnWindow(run)) {
+      crossings(run)
     } else if (contained) {
       containedSpans(run)
     } else {
@@ -528,24 +677,6 @@ export function walkCut(
       bp += length(ids[i]!)
     }
     return bp
-  }
-  // each run's neighbours in its record, by piece index
-  const byRecord = new Map<string, WalkRun[]>()
-  for (const run of runs) {
-    const key = `${run.name}\t${run.fragStart}`
-    const list = byRecord.get(key)
-    if (list) {
-      list.push(run)
-    } else {
-      byRecord.set(key, [run])
-    }
-  }
-  const neighbours = new Map<WalkRun, [WalkRun?, WalkRun?]>()
-  for (const list of byRecord.values()) {
-    list.sort((a, b) => a.firstPiece - b.firstPiece)
-    list.forEach((run, i) => {
-      neighbours.set(run, [list[i - 1], list[i + 1]])
-    })
   }
   const ends = new Map<WalkRun, number>()
   const runEnd = (run: WalkRun) => {
@@ -614,7 +745,13 @@ export function walkCut(
       after: stop(run, true, runEnd(run) - hapEnd),
     })
   }
-  return { kept, fragments, open: [...open.values()] }
+  return {
+    kept,
+    fragments,
+    open: [...open.values()],
+    across: [...across.values()],
+    skips,
+  }
 }
 
 // Where a step on `node` starts on the reference: `at`, the pass its row

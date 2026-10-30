@@ -419,8 +419,9 @@ export interface WalkSkip {
 }
 
 /**
- * The jumps over `region` of the paths the cut holds no walk of, each once, in
- * name order: a path's skip rows repeat its jump in every chunk it skips. Skip
+ * The jumps over `region` of the paths the cut holds no walk of, and those
+ * `crossed`, which the cut found between steps it read, each once, in name
+ * order: a path's skip rows repeat its jump in every chunk it skips. Skip
  * rows hold no steps or nodes, so the step and node budgets leave them out,
  * and a byte budget counts their bytes with the rest of their chunks.
  */
@@ -428,14 +429,16 @@ export function skipsOver(
   jumps: WalkSkip[],
   fragments: { name: string }[],
   region: { start: number; end: number },
+  crossed: WalkSkip[] = [],
 ) {
   const walked = new Set(fragments.map(f => f.name))
+  const own = new Set(crossed)
   const seen = new Set<string>()
   const over: WalkSkip[] = []
-  for (const jump of jumps) {
+  for (const jump of [...crossed, ...jumps]) {
     const key = `${jump.name}\t${jump.fragStart}\t${jump.piece}`
     if (
-      !walked.has(jump.name) &&
+      (own.has(jump) || !walked.has(jump.name)) &&
       !seen.has(key) &&
       jump.refStart < region.end &&
       jump.refEnd > region.start

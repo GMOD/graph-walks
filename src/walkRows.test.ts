@@ -1,4 +1,5 @@
 import { graphTablesGFA } from './testing.ts'
+import { skipsOver } from './walkChunk.ts'
 import {
   WalkGraph,
   byteBudgetError,
@@ -591,4 +592,18 @@ test('the tables keep what lies past either end of each walk', () => {
   expect([...after!.chunkRefs]).toEqual([-1, 0])
   expect([...after!.chunkStarts]).toEqual([Number.NaN, 65536])
   expect(after!.chunkRefNames).toEqual(['GRCh38#0#chr1'])
+})
+
+test('a jump the cut finds is named even for a path with a fragment, once beside its skip rows', () => {
+  const jump = {
+    name: 'HG002#1#chr1',
+    fragStart: 0,
+    piece: 3,
+    refStart: 50,
+    refEnd: 70,
+  }
+  const fragments = [{ name: 'HG002#1#chr1' }]
+  const region = { start: 55, end: 60 }
+  expect(skipsOver([{ ...jump }], fragments, region, [jump])).toEqual([jump])
+  expect(skipsOver([{ ...jump }], fragments, region)).toEqual([])
 })

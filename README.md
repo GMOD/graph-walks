@@ -144,10 +144,17 @@ not keep, then:
 - `cut` returns them as `skips`: one per jump, `name`, `fragStart`, `piece`,
   `refStart` and `refEnd`, for each path that has no fragment in the cut and
   that `keep` keeps
+- The writer leaves out a skip row in a chunk where the path has a piece, so the
+  cut also names a jump between two reference steps it read on either side of
+  the window, reading on to the far side's chunk when only the near side's is
+  read, and names it even when the path has a fragment in the cut
 - `graph.tables(kept, fragments, skips)` keeps them as a `skips` table of
   `names`, `starts` and `ends`, which `cutRegion` fills in
 - Skip rows hold no steps or nodes, so only the byte budget counts them, with
   the rest of their chunk
+- Where a haplotype leaves the reference before the window and rejoins after it,
+  the cut keeps its steps off the reference between as a fragment, which counts
+  the walk read past either end as `trimmed`
 
 ## Moved components
 
@@ -258,7 +265,8 @@ result.forms.map(f => formTag(f, result))
 - Each split leaves two fragments, and each counts the bp of the walk the cut
   read past it as `trimmed`
 - A contained cut reads on to the chunk a cut-off walk goes on in only when that
-  chunk is under the window and its context
+  chunk is under the window and its context, or holds the far side of a walk
+  that crosses the window
 - At AMY1 haplotypes go from a 4 kb window to the other copies of the gene and
   back. The default cut keeps 9,928 nodes there, and the contained cut 182
 

@@ -765,3 +765,43 @@ test('a haplotype with a walk in the cut, or filtered out, is not named as jumpi
   )
   expect(filtered.skips).toEqual([])
 })
+
+// gfa-to-tabix --walks --chunk 20 of test_data/span.gfa, ten 10 bp reference
+// nodes and three off it:
+//   W GRCh38 0 chr1 >1>2>3>4>5>6>7>8>9>10
+//   W HG002  1 chr1 >1>2>3>4>20>21>22>8>9>10   filed in chunk 20, read
+//   W HG003  1 chr1 <10<9<8<22<21<20<4<3<2<1   filed in chunk 60, not read
+//   W HG004  1 chr1 <10<9<8<5<4<3<2<1          jumps from 70 to 50
+// A cut of 50-55 reads chunks 20 and 40
+const spanCut = (haplotype: string, contained = false) =>
+  reader('span.GRCh38').cut(
+    'GRCh38#0#chr1',
+    { start: 50, end: 55 },
+    { context: 0, contained, keep: walkNameFilter([haplotype], 'GRCh38') },
+  )
+
+test.each([
+  ['HG002#1', false, [20, 21, 22]],
+  ['HG003#1', false, [22, 21, 20]],
+  ['HG003#1', true, [22, 21, 20]],
+])(
+  "a cut keeps %s's steps off the reference across the window, contained: %s",
+  async (haplotype, contained, ids) => {
+    const { fragments, skips } = await spanCut(haplotype, contained)
+    const walk = fragments.find(f => f.name === `${haplotype}#chr1`)
+    expect([...(walk?.ids ?? [])]).toEqual(ids)
+    expect(skips).toEqual([])
+  },
+)
+
+test('a cut draws a jump across the window as a deletion, reading on to its far side', async () => {
+  const getLines = vi.spyOn(TabixIndexedFile.prototype, 'getLines')
+  const { fragments, skips } = await spanCut('HG004#1')
+  const reads = getLines.mock.calls.map(call => [call[1], call[2]])
+  getLines.mockRestore()
+  expect(reads).toContainEqual([60, 61])
+  expect(fragments.map(f => f.name)).toEqual(['GRCh38#0#chr1'])
+  expect(skips).toEqual([
+    { name: 'HG004#1#chr1', fragStart: 0, piece: 1, refStart: 50, refEnd: 70 },
+  ])
+})

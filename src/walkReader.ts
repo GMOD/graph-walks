@@ -15,7 +15,7 @@ import {
 } from './walkRows.ts'
 
 import type { ChunkRef, DecodedChunk, WalkSkip } from './walkChunk.ts'
-import type { BudgetNames, WalkHeader, WalkRow } from './walkRows.ts'
+import type { BudgetNames, WalkChunk, WalkHeader, WalkRow } from './walkRows.ts'
 
 // A window reads whole chunks and keeps the steps on it, so a narrow window
 // reads several times what it keeps: 464 haplotypes across the 1.5 kb ABCA7
@@ -458,12 +458,15 @@ export class WalkReader {
       let first = from
       let last = Math.floor((region.end - 1) / chunk) * chunk
       const reach = FOLLOW_CHUNKS * chunk
+      const [farLo, farHi] = [first - reach, last + reach]
       const [lo, hi] = contained
         ? [
             Math.floor((region.start - context) / chunk) * chunk,
             Math.floor((region.end + context - 1) / chunk) * chunk,
           ]
-        : [first - reach, last + reach]
+        : [farLo, farHi]
+      const within = (c: WalkChunk, from: number, to: number) =>
+        c.refName === refName && c.start >= from && c.start <= to
       const cutRows = () =>
         walkCut(joinPieces(rows), graph.nodes, refName, { contained, context })
       cut = cutRows()
@@ -471,11 +474,12 @@ export class WalkReader {
       for (let round = 0; round < FOLLOW_ROUNDS; round++) {
         let reachFirst = first
         let reachLast = last
-        for (const c of cut.open) {
-          if (c.refName === refName && c.start >= lo && c.start <= hi) {
-            reachFirst = Math.min(reachFirst, c.start)
-            reachLast = Math.max(reachLast, c.start)
-          }
+        for (const c of [
+          ...cut.open.filter(c => within(c, lo, hi)),
+          ...cut.across.filter(c => within(c, farLo, farHi)),
+        ]) {
+          reachFirst = Math.min(reachFirst, c.start)
+          reachLast = Math.max(reachLast, c.start)
         }
         const spans = [
           { start: reachFirst, end: first },
@@ -505,7 +509,11 @@ export class WalkReader {
     if (tooMany) {
       throw tooMany
     }
-    return { graph, ...cut, skips: skipsOver(jumps, cut.fragments, region) }
+    return {
+      graph,
+      ...cut,
+      skips: skipsOver(jumps, cut.fragments, region, cut.skips),
+    }
   }
 
   /**
