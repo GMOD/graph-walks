@@ -52,6 +52,8 @@ const tables = graph.tables(kept, fragments)
 - `tables` lists the nodes with their lengths and reference positions, the links
   between them, and each walk's steps. `graphTablesGFA` in
   [@jbrowse/bandage-core](https://github.com/GMOD/bandage-core) writes it as GFA
+- A node the reference passes more than once, as in a collapsed repeat, takes
+  the position of its first pass over the window
 - `reader.header()` lists the reference sample and every haplotype with rows,
   read from the walk file's first block
 - `reader.referenceSequences()` lists the sequences a region can be on, in full
