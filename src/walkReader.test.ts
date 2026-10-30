@@ -109,8 +109,8 @@ test('a cut reads from the chunk before the window', async () => {
 // 5 and 6 are 250 bp, both passes in chunk 2000; the rest are 500 bp, so 7
 // and 8 pass in chunk 3000 and again in chunk 4000
 test.each([
-  [2500, 3000, '5@2500 6@2750', '>4>5>6>5>6'],
-  [4000, 5000, '7@4000 8@4500', '>6>7>8>7>8>9'],
+  [2500, 3000, '5@2500 6@2750', '>5>6>5>6'],
+  [4000, 5000, '7@4000 8@4500', '>7>8>7>8>9'],
 ])(
   'a node the reference passes twice is placed at its pass over the window %i-%i',
   async (start, end, placed, steps) => {
@@ -128,6 +128,22 @@ test.each([
     )
   },
 )
+
+// A reference that passes 7 and 8, 250 bp each, in the chunk before the
+// window and again on it, with 9 and 10 between; the rest are 500 bp:
+//   W GRCh38 0 chr1 >1>2>3>4>5>6>7>8>9>10>7>8>11>12
+//   W HG002  1 chr1 >1>2>3>4>5>6>7>8>9>10>7>13>11>12   13 replaces the second 8
+test("a cut leaves out the reference's other pass over the window's nodes", async () => {
+  const { graph, kept, fragments } = await reader('farpass.GRCh38').cut(
+    'GRCh38#0#chr1',
+    { start: 4500, end: 5000 },
+    { context: 0 },
+  )
+  const text = graphTablesGFA(graph.tables(kept, fragments))
+  expect(text).toMatch(/^W\tGRCh38\t0\tchr1\t4500\t5500\t>7>8>11$/m)
+  expect(text).toMatch(/^W\tHG002\t1\tchr1\t4500\t5500\t>7>13>11$/m)
+  expect(text).not.toMatch(/^S\t(9|10)\t/m)
+})
 
 // Twelve 500 bp reference nodes in 1 kb chunks: HG002#1 leaves chunk 1000 for
 // 20 and 21, 2 kb each, and rejoins at 9, in chunk 4000; HG003#1's contig

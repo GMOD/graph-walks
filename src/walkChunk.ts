@@ -94,18 +94,22 @@ function tags(cols: string[], from: number, anchor: string) {
 }
 
 // The chunk's reference path R: its handles, the bp of its steps before each
-// position, and each node's occurrences in R
+// position, where each position starts on the reference, and each node's
+// occurrences in R
 export class RefPath {
   readonly handles: number[] = []
   readonly before: number[] = [0]
+  readonly starts: number[] = []
   readonly occurrences = new Map<number, number[]>()
 
-  add(handles: number[], lengths: number[]) {
+  add(handles: number[], lengths: number[], start: number) {
     for (let k = 0; k < handles.length; k++) {
       const h = handles[k]!
       const i = this.handles.length
       this.handles.push(h)
       this.before.push(this.before[i]! + lengths[k]!)
+      this.starts.push(start)
+      start += lengths[k]!
       const id = idOf(h)
       const list = this.occurrences.get(id)
       if (list) {
@@ -178,8 +182,8 @@ export class RefPath {
 
 // What a walk row's traversal reports, in step order
 interface Visitor {
-  // one step: the first, or a route's landing
-  step(handle: number): void
+  // one step: the first, or a route's landing, at position i of R
+  step(handle: number, i: number): void
   // the steps along R after position `from` up to and including `to`
   stretch(from: number, to: number, forward: boolean): void
   // a route's steps off R, reversed and flipped when `flip`; false stops
@@ -272,7 +276,7 @@ function traverse(
   if (i === undefined) {
     throw new WalkRowError('a walk row starts off its chunk')
   }
-  visit.step(h)
+  visit.step(h, i)
   const follow = (target: number, count: number) => {
     const forward = path.handles[i!] === h
     const j = counted
@@ -308,7 +312,7 @@ function traverse(
     if (i === undefined) {
       throw new WalkRowError('a route lands off its chunk')
     }
-    visit.step(h)
+    visit.step(h, i)
   }
   follow(end, tail)
   if (h !== end) {
@@ -316,7 +320,8 @@ function traverse(
   }
 }
 
-// A walk row's steps as node ids and reverse flags
+// A walk row's steps as node ids, reverse flags and where each lies on the
+// reference, NaN off R
 function decodeWalk(
   path: RefPath,
   routes: Route[],
@@ -326,10 +331,14 @@ function decodeWalk(
 ) {
   const ids = new Int32Array(n)
   const rev = new Uint8Array(n)
+  const refStarts = new Float64Array(n).fill(Number.NaN)
   let at = 0
-  const push = (h: number) => {
+  const push = (h: number, i?: number) => {
     if (at >= n) {
       throw new WalkRowError('a walk row decodes to more steps than it states')
+    }
+    if (i !== undefined) {
+      refStarts[at] = path.starts[i]!
     }
     ids[at] = idOf(h)
     rev[at++] = h & 1
@@ -339,11 +348,11 @@ function decodeWalk(
     stretch(from, to, forward) {
       if (forward) {
         for (let j = from + 1; j <= to; j++) {
-          push(path.handles[j]!)
+          push(path.handles[j]!, j)
         }
       } else {
         for (let j = from - 1; j >= to; j--) {
-          push(otherStrand(path.handles[j]!))
+          push(otherStrand(path.handles[j]!), j)
         }
       }
     },
@@ -358,7 +367,7 @@ function decodeWalk(
   if (at !== n) {
     throw new WalkRowError(`a walk row decodes to ${at} steps, not ${n}`)
   }
-  return { ids, rev }
+  return { ids, rev, refStarts }
 }
 
 // A chunk as decoded, kept until the cut knows its nodes: tables() then
@@ -516,7 +525,7 @@ export function chunkRef(rows: string[][]): ChunkRef {
   for (const cols of refRows(rows)) {
     const handles = tokens(cols[9]!, { id: 0 }, [])
     const nodeLengths = numbers(cols[10]!)
-    path.add(handles, nodeLengths)
+    path.add(handles, nodeLengths, +cols[6]!)
     for (let k = 0; k < handles.length; k++) {
       lengths.set(idOf(handles[k]!), nodeLengths[k]!)
     }
@@ -556,7 +565,8 @@ export function decodeChunk(
     const handles = tokens(cols[9]!, { id: 0 }, [])
     const nodeLengths = numbers(cols[10]!)
     const hapOffset = +cols[6]!
-    path.add(handles, nodeLengths)
+    const first = path.starts.length
+    path.add(handles, nodeLengths, hapOffset)
     if (withSequences) {
       sliceBases(cols, 11, handles.map(idOf), nodeLengths, out.sequences)
     }
@@ -591,6 +601,7 @@ export function decodeChunk(
         steps: {
           ids: Int32Array.from(handles, idOf),
           rev: Uint8Array.from(handles, h => h & 1),
+          refStarts: Float64Array.from(path.starts.slice(first)),
         },
         ...tags(cols, 11, anchor),
       })

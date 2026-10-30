@@ -308,6 +308,11 @@ export class WalkReader {
     const ends: DecodedChunk['ends'] = []
     const jumps: WalkSkip[] = []
     const surely = new Set<number>()
+    const bounds = {
+      contained,
+      start: region.start - context,
+      end: region.end + context,
+    }
     const filtered = keep !== undefined
     // the expanded walks' rows, with the R of their chunk
     let details: { ref: ChunkRef; row: WalkRow }[] = []
@@ -378,15 +383,10 @@ export class WalkReader {
         ends.push(end)
       }
       if (Number.isFinite(nodeLimit)) {
-        surelyKept(chunkCut, graph.nodes, contained, surely)
+        surelyKept(chunkCut, graph.nodes, bounds, surely)
         if (surely.size > nodeLimit) {
           surely.clear()
-          surelyKept(
-            { nodes: graph.nodes, rows },
-            graph.nodes,
-            contained,
-            surely,
-          )
+          surelyKept({ nodes: graph.nodes, rows }, graph.nodes, bounds, surely)
         }
         const over = keptNodesError(
           surely.size,

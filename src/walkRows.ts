@@ -24,7 +24,8 @@ export interface WalkRow {
   n: number
   // of the n steps, those off R, in routes' interiors
   interior?: number
-  steps: { ids: Int32Array; rev: Uint8Array }
+  // refStarts: where each step lies on the reference, NaN off R or unknown
+  steps: { ids: Int32Array; rev: Uint8Array; refStarts?: Float64Array }
   chunkStart: number
   prev?: WalkChunk
   next?: WalkChunk
@@ -216,6 +217,8 @@ export interface WalkRun {
   firstPiece: number
   ids: Int32Array
   rev: Uint8Array
+  // where each step lies on the reference, NaN off R or unknown
+  refStarts?: Float64Array
   prev?: WalkChunk
   next?: WalkChunk
   prevRecord?: WalkGap
@@ -259,10 +262,14 @@ function decodeRun(pieces: WalkRow[]): WalkRun {
   const n = pieces.reduce((sum, p) => sum + p.n, 0)
   const ids = new Int32Array(n)
   const rev = new Uint8Array(n)
+  const refStarts = new Float64Array(n).fill(Number.NaN)
   let at = 0
   for (const p of pieces) {
     ids.set(p.steps.ids, at)
     rev.set(p.steps.rev, at)
+    if (p.steps.refStarts) {
+      refStarts.set(p.steps.refStarts, at)
+    }
     at += p.n
   }
   const first = pieces[0]!
@@ -274,6 +281,7 @@ function decodeRun(pieces: WalkRow[]): WalkRun {
     firstPiece: first.piece,
     ids,
     rev,
+    refStarts,
     prev: first.prev,
     next: last.next,
     prevRecord: first.prevRecord,
@@ -327,11 +335,28 @@ export function walkCut(
   refName: string,
   { contained = false, context = 0 } = {},
 ) {
-  const onWindow = (id: number) => nodes.get(id)?.onWindow === true
   const reference = (id: number) => {
     const node = nodes.get(id)
     return node?.rank === 0 ? node : undefined
   }
+  // the window and its context, as the reference nodes on it span them
+  let windowStart = Infinity
+  let windowEnd = -Infinity
+  for (const node of nodes.values()) {
+    if (node.onWindow) {
+      windowStart = Math.min(windowStart, node.start)
+      windowEnd = Math.max(windowEnd, node.end)
+    }
+  }
+  const passStart = (run: WalkRun, i: number, node: WalkNode) =>
+    passAt(node, run.refStarts?.[i])
+  const stepOnWindow = (run: WalkRun, i: number) =>
+    passOnWindow(
+      nodes.get(run.ids[i]!),
+      run.refStarts?.[i],
+      windowStart,
+      windowEnd,
+    )
   // the chunks walks cut off at the end of a run go on in
   const open = new Map<string, WalkChunk>()
   const goesOn = (chunk: WalkChunk | undefined) => {
@@ -359,8 +384,12 @@ export function walkCut(
     if (to.refName !== refName) {
       return i - dir
     }
+    const fromStart = passStart(run, at, from)
+    const toStart = passStart(run, i, to)
     const adjacent =
-      i === at + dir && (to.start === from.end || to.end === from.start)
+      i === at + dir &&
+      (toStart === fromStart + from.end - from.start ||
+        toStart + to.end - to.start === fromStart)
     return adjacent ? at : i
   }
   let reachStart = Infinity
@@ -380,7 +409,8 @@ export function walkCut(
     let last = -1
     for (let i = 0; i <= ids.length; i++) {
       const node = i < ids.length ? nodes.get(ids[i]!) : undefined
-      if (i === ids.length || (node?.rank === 0 && !node.onWindow)) {
+      const on = i < ids.length && stepOnWindow(run, i)
+      if (i === ids.length || (node?.rank === 0 && !on)) {
         if (first >= 0) {
           for (let bp = 0; first > from && bp < context;) {
             bp += length(ids[--first]!)
@@ -398,7 +428,7 @@ export function walkCut(
         }
         from = i + 1
         first = -1
-      } else if (node?.onWindow) {
+      } else if (on) {
         if (first < 0) {
           first = i
         }
@@ -411,7 +441,7 @@ export function walkCut(
     let first = -1
     let last = -1
     for (let i = 0; i < ids.length; i++) {
-      if (onWindow(ids[i]!)) {
+      if (stepOnWindow(run, i)) {
         if (first < 0) {
           first = i
         }
@@ -425,21 +455,13 @@ export function walkCut(
         for (const i of [first, last]) {
           const node = reference(ids[i]!)
           if (node) {
-            reachStart = Math.min(reachStart, node.start)
-            reachEnd = Math.max(reachEnd, node.end)
+            const start = passStart(run, i, node)
+            reachStart = Math.min(reachStart, start)
+            reachEnd = Math.max(reachEnd, start + node.end - node.start)
           }
         }
       }
       spans.push({ run, first, last })
-    }
-  }
-  // the window and its context, as the reference nodes on it span them
-  let windowStart = Infinity
-  let windowEnd = -Infinity
-  for (const node of nodes.values()) {
-    if (node.onWindow) {
-      windowStart = Math.min(windowStart, node.start)
-      windowEnd = Math.max(windowEnd, node.end)
     }
   }
   // an abridged run is kept where its stretch of R overlaps the window
@@ -465,14 +487,16 @@ export function walkCut(
       detourSpan(run)
     }
   }
-  const inReach = (id: number) => {
-    const node = reference(id)
-    return (
-      onWindow(id) ||
-      (node?.refName === refName &&
-        node.end > reachStart &&
-        node.start < reachEnd)
-    )
+  const inReach = (run: WalkRun, i: number) => {
+    if (stepOnWindow(run, i)) {
+      return true
+    }
+    const node = reference(run.ids[i]!)
+    if (node?.refName !== refName) {
+      return false
+    }
+    const start = passStart(run, i, node)
+    return start + node.end - node.start > reachStart && start < reachEnd
   }
   const kept = new Set<number>()
   for (const [id, node] of nodes) {
@@ -481,12 +505,13 @@ export function walkCut(
     }
   }
   for (const span of spans) {
-    const { ids } = span.run
-    if (span.run.name === refName) {
-      while (span.first > 0 && inReach(ids[span.first - 1]!)) {
+    const { run } = span
+    const { ids } = run
+    if (run.name === refName) {
+      while (span.first > 0 && inReach(run, span.first - 1)) {
         span.first--
       }
-      while (span.last < ids.length - 1 && inReach(ids[span.last + 1]!)) {
+      while (span.last < ids.length - 1 && inReach(run, span.last + 1)) {
         span.last++
       }
     }
@@ -592,18 +617,38 @@ export function walkCut(
   return { kept, fragments, open: [...open.values()] }
 }
 
+// Where a step on `node` starts on the reference: `at`, the pass its row
+// names, else where the node is placed
+const passAt = (node: WalkNode, at = Number.NaN) =>
+  Number.isNaN(at) ? node.start : at
+
+// Whether a step on `node` lies on the window: a reference that passes a node
+// on the window elsewhere too steps off the window there
+function passOnWindow(
+  node: WalkNode | undefined,
+  at: number | undefined,
+  start: number,
+  end: number,
+) {
+  if (!node?.onWindow) {
+    return false
+  }
+  const from = passAt(node, at)
+  return from < end && from + node.end - node.start > start
+}
+
 /**
  * Adds to `into` the nodes of decoded rows that walkCut keeps whatever else
  * the cut reads: those of `chunk.nodes` on the window, and those a row steps
- * on between two of its steps on the window, with no step onto the reference
- * off the window between them in a contained cut. A node placed later at a
- * reference position off the window can split a contained walk, so the count
- * holds for the placements at the time.
+ * on between two of its steps on the window, `start`-`end` with its context,
+ * with no step onto the reference off the window between them in a contained
+ * cut. A node placed later at a reference position off the window can split a
+ * contained walk, so the count holds for the placements at the time.
  */
 export function surelyKept(
   chunk: { nodes: Map<number, unknown>; rows: WalkRow[] },
   nodes: Map<number, WalkNode>,
-  contained: boolean,
+  { contained, start, end }: { contained: boolean; start: number; end: number },
   into: Set<number>,
 ) {
   for (const id of chunk.nodes.keys()) {
@@ -612,11 +657,11 @@ export function surelyKept(
     }
   }
   for (const { steps } of chunk.rows) {
-    const { ids } = steps
+    const { ids, refStarts } = steps
     let last = -1
     for (let i = 0; i < ids.length; i++) {
       const node = nodes.get(ids[i]!)
-      if (node?.onWindow) {
+      if (passOnWindow(node, refStarts?.[i], start, end)) {
         for (let j = last + 1; last >= 0 && j < i; j++) {
           into.add(ids[j]!)
         }
