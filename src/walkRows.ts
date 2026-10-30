@@ -559,9 +559,8 @@ export function walkCut(
   // A run with no step on the window can still cross it between consecutive
   // reference steps either side, keeping the steps off the reference between
   // them, or jumping straight across as a deletion. A run that ends off the
-  // window with its path going on across it keeps its steps off the reference
-  // past its last reference step, and reads on to the far side, or takes it
-  // from the abridged row of the next piece
+  // window with its path going on across it reads on to the far side, or
+  // takes it from the abridged row of the next piece
   const crossings = (run: WalkRun) => {
     const { ids } = run
     const last = ids.length - 1
@@ -582,9 +581,6 @@ export function walkCut(
       } else {
         if (side(run, i) * chunkSide(run.prev) < 0) {
           goesAcross(run.prev!)
-          if (i > 0) {
-            spans.push({ run, first: 0, last: i - 1 })
-          }
         }
         const far =
           i === 0 ? abridgedAt(before, run.firstPiece - 1, 1) : undefined
@@ -599,9 +595,6 @@ export function walkCut(
     }
     if (side(run, at) * chunkSide(run.next) < 0) {
       goesAcross(run.next!)
-      if (at < last) {
-        spans.push({ run, first: at + 1, last })
-      }
     }
     const far =
       at === last ? abridgedAt(after, pieceOf(run, last) + 1, 0) : undefined
