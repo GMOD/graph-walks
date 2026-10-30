@@ -661,17 +661,17 @@ function stopTable(stops: WalkStop[]): WalkStopTable {
   return table
 }
 
-// Whether placement `node` beats `held`: a reference position beats any
-// other, and among those the path sorting first at its earliest start wins,
-// so the order a cut reads chunks in does not matter
-const outranks = (
-  node: Omit<WalkNode, 'onWindow'>,
-  held: Omit<WalkNode, 'onWindow'>,
-) =>
-  node.rank === 0 &&
-  (held.rank !== 0 ||
-    node.refName < held.refName ||
-    (node.refName === held.refName && node.start < held.start))
+// Whether placement `node` beats `held`: a pass of the reference over the
+// window beats any other, then a reference position beats one off it, and
+// among equals the path sorting first at its earliest start wins, so the order
+// a cut reads chunks in does not matter
+const outranks = (node: WalkNode, held: WalkNode) =>
+  node.onWindow !== held.onWindow
+    ? node.onWindow
+    : node.rank === 0 &&
+      (held.rank !== 0 ||
+        node.refName < held.refName ||
+        (node.refName === held.refName && node.start < held.start))
 
 /**
  * The nodes and links of the chunks a cut reads, and the tables of the cut
@@ -693,19 +693,19 @@ export class WalkGraph {
   // A node with its position, unless the cut already holds it at one that
   // outranks it
   placeNode(id: number, node: Omit<WalkNode, 'onWindow'>) {
-    const held = this.nodes.get(id)
-    if (held && !outranks(node, held)) {
-      return
-    }
     const { window } = this
-    this.nodes.set(id, {
+    const placed = {
       ...node,
       onWindow:
         node.rank === 0 &&
         node.refName === window.refName &&
         node.end > window.start - window.context &&
         node.start < window.end + window.context,
-    })
+    }
+    const held = this.nodes.get(id)
+    if (!held || outranks(placed, held)) {
+      this.nodes.set(id, placed)
+    }
   }
 
   // A link between two endpoints, each id * 2 + 1 when reversed

@@ -369,6 +369,9 @@ export class WalkReader {
       for (const [id, node] of chunkCut.nodes) {
         graph.placeNode(id, node)
       }
+      for (const { id, ...node } of chunkCut.revisits) {
+        graph.placeNode(id, node)
+      }
       graph.addSequences(chunkCut.sequences)
       graph.addChunk(chunkCut.chunk)
       for (const end of chunkCut.ends) {

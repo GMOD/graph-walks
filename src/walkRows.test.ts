@@ -412,6 +412,25 @@ test("a node's reference position wins, whichever chunk is read first", () => {
   ])
 })
 
+test("a node's pass over the window wins over the reference's other passes, whichever is read first", () => {
+  const g = graph()
+  const at = (start: number) => ({
+    rank: 0,
+    refName: 'GRCh38#0#chr1',
+    start,
+    end: start + 100,
+  })
+  g.placeNode(9, at(0))
+  g.placeNode(9, at(200))
+  g.placeNode(9, at(160))
+  g.placeNode(10, at(160))
+  g.placeNode(10, at(0))
+  expect([g.nodes.get(9), g.nodes.get(10)]).toEqual([
+    { ...at(160), onWindow: true },
+    { ...at(160), onWindow: true },
+  ])
+})
+
 test('a cut is written as the GFA its tables stand for', () => {
   const g = graph()
   const runs = joinPieces([

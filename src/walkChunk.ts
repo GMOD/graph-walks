@@ -381,6 +381,8 @@ export interface DecodedChunk {
   // R's nodes with their positions, and the kept walks' nodes off R with
   // their lengths, placed by placeAndLink
   nodes: Map<number, PlacedNode>
+  // R's later passes over a node in `nodes`
+  revisits: (PlacedNode & { id: number })[]
   // every row's first and last handle, for links between pieces
   ends: {
     name: string
@@ -541,6 +543,7 @@ export function decodeChunk(
     sequences: new Map(),
     rows: [],
     nodes: new Map(),
+    revisits: [],
     ends: [],
     chunk: { path, routes, walks: [], lengths, refLengths: ref?.lengths },
     skips: [],
@@ -562,13 +565,11 @@ export function decodeChunk(
       const id = idOf(handles[k]!)
       const length = nodeLengths[k]!
       lengths.set(id, length)
-      if (!out.nodes.has(id)) {
-        out.nodes.set(id, {
-          refName: cols[4]!,
-          start,
-          end: start + length,
-          rank: 0,
-        })
+      const node = { refName: cols[4]!, start, end: start + length, rank: 0 }
+      if (out.nodes.has(id)) {
+        out.revisits.push({ id, ...node })
+      } else {
+        out.nodes.set(id, node)
       }
       start += length
     }

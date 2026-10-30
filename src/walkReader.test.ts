@@ -103,6 +103,32 @@ test('a cut reads from the chunk before the window', async () => {
   getLines.mockRestore()
 })
 
+// A reference that passes nodes twice, in 1 kb chunks:
+//   W GRCh38 0 chr1 >1>2>3>4>5>6>5>6>7>8>7>8>9>10
+//   W HG002  1 chr1 >1>2>3>4>5>6>5>6>7>8>7>11>9>10   11 replaces the second 8
+// 5 and 6 are 250 bp, both passes in chunk 2000; the rest are 500 bp, so 7
+// and 8 pass in chunk 3000 and again in chunk 4000
+test.each([
+  [2500, 3000, '5@2500 6@2750', '>4>5>6>5>6'],
+  [4000, 5000, '7@4000 8@4500', '>6>7>8>7>8>9'],
+])(
+  'a node the reference passes twice is placed at its pass over the window %i-%i',
+  async (start, end, placed, steps) => {
+    const { graph, kept, fragments } = await reader('revisit.GRCh38').cut(
+      'GRCh38#0#chr1',
+      { start, end },
+      { context: 0 },
+    )
+    const onWindow = [...graph.nodes]
+      .filter(([, node]) => node.onWindow)
+      .map(([id, node]) => `${id}@${node.start}`)
+    expect(onWindow.join(' ')).toBe(placed)
+    expect(graphTablesGFA(graph.tables(kept, fragments))).toMatch(
+      new RegExp(`^W\\tGRCh38\\t0\\tchr1\\t\\d+\\t\\d+\\t${steps}$`, 'm'),
+    )
+  },
+)
+
 // Twelve 500 bp reference nodes in 1 kb chunks: HG002#1 leaves chunk 1000 for
 // 20 and 21, 2 kb each, and rejoins at 9, in chunk 4000; HG003#1's contig
 // ends on 22
