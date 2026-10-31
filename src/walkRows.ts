@@ -314,6 +314,16 @@ export interface WalkFragment {
   // set on the fragment of an abridged row, from where it leaves R to where it
   // rejoins, which runs `abridged.bp` on the haplotype
   abridged?: Abridged
+  // set on the fragment of a walk that crosses the window off R: the stretch
+  // of R between the steps where it leaves and rejoins, and whether the walk
+  // runs it backwards
+  crossing?: WalkCrossing
+}
+
+export interface WalkCrossing {
+  refStart: number
+  refEnd: number
+  reverse: boolean
 }
 
 /**
@@ -415,7 +425,12 @@ export function walkCut(
   }
   let reachStart = Infinity
   let reachEnd = -Infinity
-  const spans: { run: WalkRun; first: number; last: number }[] = []
+  const spans: {
+    run: WalkRun
+    first: number
+    last: number
+    crossing?: WalkCrossing
+  }[] = []
   const length = (id: number) => {
     const node = nodes.get(id)
     return node === undefined ? 0 : node.end - node.start
@@ -598,7 +613,13 @@ export function walkCut(
         if (side(run, at) * side(run, i) < 0) {
           const offBp = bpBetween(run, at + 1, i)
           if (i > at + 1 && offBp <= crossingBp) {
-            spans.push({ run, first: at + 1, last: i - 1 })
+            const { refStart, refEnd } = jump([run, at], [run, i])
+            spans.push({
+              run,
+              first: at + 1,
+              last: i - 1,
+              crossing: { refStart, refEnd, reverse: side(run, at) > 0 },
+            })
           } else if (i > at + 1) {
             skips.push({
               ...jump([run, at], [run, i]),
@@ -733,7 +754,7 @@ export function walkCut(
     return gap ? { kind: 'break', ...gap, ...cut } : { kind: 'end', ...cut }
   }
   const fragments: WalkFragment[] = []
-  for (const { run, first: f, last: l } of spans) {
+  for (const { run, first: f, last: l, crossing } of spans) {
     const { ids, rev } = run
     if (abridgedRuns.has(run)) {
       fragments.push({
@@ -768,6 +789,7 @@ export function walkCut(
       rev: rev.subarray(first, last + 1),
       before: stop(run, false, hapStart - run.hapOffset),
       after: stop(run, true, runEnd(run) - hapEnd),
+      ...(crossing ? { crossing } : {}),
     })
   }
   return {

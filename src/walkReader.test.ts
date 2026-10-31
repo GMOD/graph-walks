@@ -781,18 +781,25 @@ const spanCut = (haplotype: string, contained = false) =>
   )
 
 test.each([
-  ['HG002#1', false, [20, 21, 22]],
-  ['HG003#1', false, [22, 21, 20]],
-  ['HG003#1', true, [22, 21, 20]],
+  ['HG002#1', false, [20, 21, 22], false],
+  ['HG003#1', false, [22, 21, 20], true],
+  ['HG003#1', true, [22, 21, 20], true],
 ])(
   "a cut keeps %s's steps off the reference across the window, contained: %s",
-  async (haplotype, contained, ids) => {
+  async (haplotype, contained, ids, reverse) => {
     const { fragments, skips } = await spanCut(haplotype, contained)
     const walk = fragments.find(f => f.name === `${haplotype}#chr1`)
     expect([...(walk?.ids ?? [])]).toEqual(ids)
+    expect(walk?.crossing).toEqual({ refStart: 40, refEnd: 70, reverse })
     expect(skips).toEqual([])
   },
 )
+
+test('a fragment with steps on the window names no crossing', async () => {
+  const { fragments } = await spanCut('HG002#1')
+  const reference = fragments.find(f => f.name === 'GRCh38#0#chr1')
+  expect(reference?.crossing).toBeUndefined()
+})
 
 test('a cut draws a jump across the window as a deletion, reading on to its far side', async () => {
   const getLines = vi.spyOn(TabixIndexedFile.prototype, 'getLines')

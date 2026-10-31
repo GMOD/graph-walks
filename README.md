@@ -155,7 +155,9 @@ not keep, then:
   the rest of their chunk
 - Where a haplotype leaves the reference before the window and rejoins after it,
   the cut keeps its steps off the reference between as a fragment, which counts
-  the walk read past either end as `trimmed`
+  the walk read past either end as `trimmed`. The fragment's `crossing` gives
+  the stretch of the reference between where it leaves and rejoins, as
+  `refStart` and `refEnd`, and `reverse` when the walk runs it backwards
 - A crossing with more than `crossingBp` bp off the reference becomes a skip
   from where it leaves the reference to where it rejoins. The skip's `offBp` and
   `offSteps` give its size, and `chunks` the chunks whose rows hold it, so a

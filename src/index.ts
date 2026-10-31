@@ -19,6 +19,7 @@ export type {
   BudgetNames,
   LongPass,
   WalkChunk,
+  WalkCrossing,
   WalkFragment,
   WalkGap,
   WalkHeader,
