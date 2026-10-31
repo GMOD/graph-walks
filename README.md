@@ -76,19 +76,20 @@ const { tables, refName, sample } = await reader.cutRegion(
 
 ## Cut options
 
-| Option        | Effect                                                                              |
-| ------------- | ----------------------------------------------------------------------------------- |
-| `keep`        | Which walks to decode, by `sample#haplotype#contig`; every one by default           |
-| `context`     | bp of reference kept past each end of the region; default 1000                      |
-| `stepBudget`  | The most steps a cut keeps; no limit by default                                     |
-| `byteBudget`  | The most compressed bytes a cut fetches; no limit by default                        |
-| `nodeLimit`   | The most nodes a cut keeps; no limit by default                                     |
-| `contained`   | `true` keeps each walk within the window; see below                                 |
-| `links`       | `false` lists no links, for a caller that draws no edges                            |
-| `sequences`   | Keep each node's bases in `graph.sequences`, from a `--sequences` file              |
-| `signal`      | An `AbortSignal` that stops the reads                                               |
-| `expand`      | Which abridged walks to read in full, by `sample#haplotype#contig`; none by default |
-| `budgetNames` | The words a `RegionTooLargeError` message uses for the step and byte budgets        |
+| Option        | Effect                                                                                 |
+| ------------- | -------------------------------------------------------------------------------------- |
+| `keep`        | Which walks to decode, by `sample#haplotype#contig`; every one by default              |
+| `context`     | bp of reference kept past each end of the region; default 1000                         |
+| `stepBudget`  | The most steps a cut keeps; no limit by default                                        |
+| `byteBudget`  | The most compressed bytes a cut fetches; no limit by default                           |
+| `nodeLimit`   | The most nodes a cut keeps; no limit by default                                        |
+| `crossingBp`  | The most bp off the reference a walk crossing the window keeps in full; default 65,536 |
+| `contained`   | `true` keeps each walk within the window; see below                                    |
+| `links`       | `false` lists no links, for a caller that draws no edges                               |
+| `sequences`   | Keep each node's bases in `graph.sequences`, from a `--sequences` file                 |
+| `signal`      | An `AbortSignal` that stops the reads                                                  |
+| `expand`      | Which abridged walks to read in full, by `sample#haplotype#contig`; none by default    |
+| `budgetNames` | The words a `RegionTooLargeError` message uses for the step and byte budgets           |
 
 - A cut over a budget or its node limit throws a `RegionTooLargeError`. The
   error's `fitsBp` holds about how wide a window would fit, and JBrowse shows it
@@ -98,8 +99,8 @@ const { tables, refName, sample } = await reader.cutRegion(
   raised to `bytes`. `zoomHelps` is false where no narrower window fits
 - The cut checks the node limit as it decodes each chunk, against the nodes it
   keeps whatever else it reads, and stops reading at the first chunk over it
-- `WALK_BUDGETS` holds the step and byte budgets the JBrowse plugin and
-  BandageJS cut by
+- `WALK_BUDGETS` holds the step and byte budgets and `crossingBp` the JBrowse
+  plugin and BandageJS cut by
 
 ## Fragments
 
@@ -155,6 +156,11 @@ not keep, then:
 - Where a haplotype leaves the reference before the window and rejoins after it,
   the cut keeps its steps off the reference between as a fragment, which counts
   the walk read past either end as `trimmed`
+- A crossing with more than `crossingBp` bp off the reference becomes a skip
+  from where it leaves the reference to where it rejoins. The skip's `offBp` and
+  `offSteps` give its size, and `chunks` the chunks whose rows hold it, so a
+  viewer can label it and cut again with `crossingBp` raised. `graph.tables`
+  keeps `offBp` and `offSteps` as columns, NaN for a deletion
 
 ## Moved components
 

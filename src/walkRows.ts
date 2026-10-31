@@ -215,8 +215,10 @@ export interface WalkRun {
   fragStart: number
   hapOffset: number
   firstPiece: number
-  // where each row after the first starts in `ids`
+  // where each row after the first starts in `ids`, and the chunk each row
+  // is filed under
   pieceStarts?: number[]
+  pieceChunks?: number[]
   ids: Int32Array
   rev: Uint8Array
   // where each step lies on the reference, NaN off R or unknown
@@ -266,11 +268,13 @@ function decodeRun(pieces: WalkRow[]): WalkRun {
   const rev = new Uint8Array(n)
   const refStarts = new Float64Array(n).fill(Number.NaN)
   const pieceStarts: number[] = []
+  const pieceChunks: number[] = []
   let at = 0
   for (const p of pieces) {
     if (at > 0) {
       pieceStarts.push(at)
     }
+    pieceChunks.push(p.chunkStart)
     ids.set(p.steps.ids, at)
     rev.set(p.steps.rev, at)
     if (p.steps.refStarts) {
@@ -286,6 +290,7 @@ function decodeRun(pieces: WalkRow[]): WalkRun {
     hapOffset: first.hapOffset,
     firstPiece: first.piece,
     pieceStarts,
+    pieceChunks,
     ids,
     rev,
     refStarts,
@@ -349,7 +354,7 @@ export function walkCut(
   runs: WalkRun[],
   nodes: Map<number, WalkNode>,
   refName: string,
-  { contained = false, context = 0 } = {},
+  { contained = false, context = 0, crossingBp = CROSSING_BP } = {},
 ) {
   const reference = (id: number) => {
     const node = nodes.get(id)
@@ -556,9 +561,28 @@ export function walkCut(
     i: number,
   ): [WalkRun, number] | undefined =>
     other?.abridged && pieceOf(other, i) === piece ? [other, i] : undefined
+  const bpBetween = (run: WalkRun, from: number, to: number) => {
+    let bp = 0
+    for (let i = from; i < to; i++) {
+      bp += length(run.ids[i]!)
+    }
+    return bp
+  }
+  // the chunks the rows holding steps `from` to `to` are filed under
+  const chunksOf = (run: WalkRun, from: number, to: number) => {
+    const starts = new Set<number>()
+    for (let p = pieceOf(run, from); p <= pieceOf(run, to); p++) {
+      const start = run.pieceChunks?.[p - run.firstPiece]
+      if (start !== undefined) {
+        starts.add(start)
+      }
+    }
+    return [...starts].map(start => ({ refName, start }))
+  }
   // A run with no step on the window can still cross it between consecutive
   // reference steps either side, keeping the steps off the reference between
-  // them, or jumping straight across as a deletion. A run that ends off the
+  // them, a skip in their place past `crossingBp` of them, or jumping straight
+  // across as a deletion. A run that ends off the
   // window with its path going on across it reads on to the far side, or
   // takes it from the abridged row of the next piece
   const crossings = (run: WalkRun) => {
@@ -572,8 +596,16 @@ export function walkCut(
       }
       if (at >= 0) {
         if (side(run, at) * side(run, i) < 0) {
-          if (i > at + 1) {
+          const offBp = bpBetween(run, at + 1, i)
+          if (i > at + 1 && offBp <= crossingBp) {
             spans.push({ run, first: at + 1, last: i - 1 })
+          } else if (i > at + 1) {
+            skips.push({
+              ...jump([run, at], [run, i]),
+              offBp,
+              offSteps: i - at - 1,
+              chunks: chunksOf(run, at + 1, i - 1),
+            })
           } else {
             skips.push(jump([run, at], [run, i]))
           }
@@ -746,6 +778,9 @@ export function walkCut(
     skips,
   }
 }
+
+// The most bp off the reference a crossing of the window keeps in full
+export const CROSSING_BP = 65_536
 
 // Where a step on `node` starts on the reference: `at`, the pass its row
 // names, else where the node is placed
@@ -1034,6 +1069,8 @@ export class WalkGraph {
         names: skips.map(s => s.name),
         starts: Float64Array.from(skips, s => s.refStart),
         ends: Float64Array.from(skips, s => s.refEnd),
+        offBp: Float64Array.from(skips, s => s.offBp ?? NaN),
+        offSteps: Float64Array.from(skips, s => s.offSteps ?? NaN),
       },
     }
   }

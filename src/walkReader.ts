@@ -1,6 +1,7 @@
 import { refNameLookup, resolveRefName } from './refNames.ts'
 import { chunkRef, decodeChunk, pieceLinks, skipsOver } from './walkChunk.ts'
 import {
+  CROSSING_BP,
   WalkGraph,
   byteBudgetError,
   joinPieces,
@@ -36,7 +37,11 @@ const WALK_CONTEXT = 1000
 const DETAIL_READS = 16
 
 // The budgets the JBrowse graph plugin and BandageJS cut a browser's window by
-export const WALK_BUDGETS = { stepBudget: 4_000_000, byteBudget: 8_000_000 }
+export const WALK_BUDGETS = {
+  stepBudget: 4_000_000,
+  byteBudget: 8_000_000,
+  crossingBp: CROSSING_BP,
+}
 
 /**
  * A Tabix-indexed file as the reader uses one: @gmod/tabix's
@@ -135,6 +140,9 @@ export interface WalkCutOptions {
   // Infinity, the default, has no limit. The detail records `expand` reads
   // count only against stepBudget
   byteBudget?: number
+  // the most bp off the reference a walk crossing the window without a step
+  // on it keeps in full, CROSSING_BP by default; a longer crossing is a skip
+  crossingBp?: number
   context?: number
   // false lists no links, for a caller that draws no edges
   links?: boolean
@@ -256,6 +264,7 @@ export class WalkReader {
       context = WALK_CONTEXT,
       stepBudget = Infinity,
       byteBudget = Infinity,
+      crossingBp = CROSSING_BP,
       links = true,
       contained = false,
       nodeLimit = Infinity,
@@ -468,7 +477,11 @@ export class WalkReader {
       const within = (c: WalkChunk, from: number, to: number) =>
         c.refName === refName && c.start >= from && c.start <= to
       const cutRows = () =>
-        walkCut(joinPieces(rows), graph.nodes, refName, { contained, context })
+        walkCut(joinPieces(rows), graph.nodes, refName, {
+          contained,
+          context,
+          crossingBp,
+        })
       cut = cutRows()
       let spent = await bytesFor([{ start: from, end: region.end }])
       for (let round = 0; round < FOLLOW_ROUNDS; round++) {

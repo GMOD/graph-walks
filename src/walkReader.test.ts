@@ -805,3 +805,39 @@ test('a cut draws a jump across the window as a deletion, reading on to its far 
     { name: 'HG004#1#chr1', fragStart: 0, piece: 1, refStart: 50, refEnd: 70 },
   ])
 })
+
+test.each([
+  [30, [20, 21, 22], []],
+  [
+    29,
+    [],
+    [
+      {
+        name: 'HG002#1#chr1',
+        fragStart: 0,
+        piece: 1,
+        refStart: 40,
+        refEnd: 70,
+        offBp: 30,
+        offSteps: 3,
+        chunks: [{ refName: 'GRCh38#0#chr1', start: 20 }],
+      },
+    ],
+  ],
+])(
+  'a crossing with 30 bp off the reference under crossingBp %i keeps steps %j',
+  async (crossingBp, ids, skips) => {
+    const cut = await reader('span.GRCh38').cut(
+      'GRCh38#0#chr1',
+      { start: 50, end: 55 },
+      {
+        context: 0,
+        crossingBp,
+        keep: walkNameFilter(['HG002#1'], 'GRCh38'),
+      },
+    )
+    const walk = cut.fragments.find(f => f.name === 'HG002#1#chr1')
+    expect([...(walk?.ids ?? [])]).toEqual(ids)
+    expect(cut.skips).toEqual(skips)
+  },
+)

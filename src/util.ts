@@ -37,6 +37,9 @@ export interface GraphTables {
     names: string[]
     starts: Float64Array
     ends: Float64Array
+    // a crossing's bp and steps off the reference, NaN for a deletion
+    offBp?: Float64Array
+    offSteps?: Float64Array
   }
 }
 

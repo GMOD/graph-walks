@@ -1,5 +1,6 @@
 export {
   BUDGET_NAMES,
+  CROSSING_BP,
   WalkGraph,
   byteBudgetError,
   chunkQueryStart,

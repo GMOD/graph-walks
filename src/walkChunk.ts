@@ -416,6 +416,11 @@ export interface WalkSkip {
   piece: number
   refStart: number
   refEnd: number
+  // for a crossing the cut found too long to keep: its bp and steps off the
+  // reference, and the chunks whose rows hold them
+  offBp?: number
+  offSteps?: number
+  chunks?: WalkChunk[]
 }
 
 /**
