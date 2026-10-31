@@ -1,6 +1,6 @@
 {
   "name": "@jbrowse/graph-walks",
-  "version": "4.4.0",
+  "version": "4.5.0",
   "description": "Read gfa-to-tabix walk files by range requests and cut a window of a pangenome graph: the reference, every haplotype's walk through it, and the nodes and links they visit",
   "license": "MIT",
   "author": {
