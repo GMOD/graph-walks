@@ -11,7 +11,8 @@
   walk through it, and the nodes and links they visit, as typed arrays; from a
   segment index, the segments and links under the region as GFA text
 - The reader reads walk format 5, which gfa-to-tabix 1.4 and later write, and
-  refuses any other format with a `WalkFormatError` asking for a rebuild
+  refuses an older format with a `WalkFormatError` asking for a rebuild, and
+  a newer one asking for a newer reader
 - The package has no runtime dependencies, and reads through any object with
   [@gmod/tabix](https://github.com/GMOD/tabix-js)'s `TabixIndexedFile` methods
 

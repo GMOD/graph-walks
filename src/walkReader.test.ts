@@ -75,6 +75,21 @@ test.each([2, 3, 4])(
   },
 )
 
+test.each([6, 7])(
+  'a format %i walk file is refused, asking for a newer reader',
+  async format => {
+    const walks = new WalkReader({
+      getHeaderLines: () =>
+        Promise.resolve([`#walks\tformat:i:${format}\tchunk:i:1000`]),
+      getLines: () => Promise.resolve(),
+      getReferenceSequenceNames: () => Promise.resolve([]),
+    })
+    await expect(walks.header()).rejects.toThrow(
+      `This walk file is format ${format}; this version of @jbrowse/graph-walks reads format 5, so update the viewer, or @jbrowse/graph-walks, to one that reads format ${format}`,
+    )
+  },
+)
+
 test('a cut keeps the reference and the haplotypes asked for', async () => {
   const names = walkNames(
     await gfa(reader('header.GRCh38'), 1000, 2600, ['HG002#2']),

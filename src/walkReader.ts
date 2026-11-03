@@ -196,8 +196,11 @@ export class WalkReader {
       const read = this.walks.getHeaderLines().then(lines => {
         const header = walkHeader(lines)
         if (header.format !== 5) {
+          const format = header.format ?? 1
           throw new WalkFormatError(
-            `This walk file is format ${header.format ?? 1}; @jbrowse/graph-walks reads format 5, so rebuild it with gfa-to-tabix 1.4 or later`,
+            format > 5
+              ? `This walk file is format ${format}; this version of @jbrowse/graph-walks reads format 5, so update the viewer, or @jbrowse/graph-walks, to one that reads format ${format}`
+              : `This walk file is format ${format}; @jbrowse/graph-walks reads format 5, so rebuild it with gfa-to-tabix 1.4 or later`,
           )
         }
         return { ...header, chunk: header.chunk ?? 65536 }
