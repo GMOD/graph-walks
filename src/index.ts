@@ -1,6 +1,5 @@
 export {
   BUDGET_NAMES,
-  CROSSING_BP,
   WalkGraph,
   byteBudgetError,
   chunkQueryStart,
@@ -18,18 +17,24 @@ export {
 export type {
   BudgetNames,
   LongPass,
-  WalkChunk,
-  WalkCrossing,
   WalkFragment,
-  WalkGap,
   WalkHeader,
   WalkNode,
   WalkRow,
   WalkRun,
-  WalkStop,
   WalkWindow,
 } from './walkRows.ts'
 export {
+  ATTACH_BP,
+  adjacentSteps,
+  departureKind,
+  departureStretch,
+  parseDepartureRow,
+  squeezer,
+} from './walkDeparture.ts'
+export type { DepartureKind, Hole, WalkDeparture } from './walkDeparture.ts'
+export {
+  DepartureReadError,
   WALK_BUDGETS,
   WalkFormatError,
   WalkReader,
@@ -37,7 +42,6 @@ export {
 } from './walkReader.ts'
 export { refNameLookup, resolveRefName } from './refNames.ts'
 export { referenceNodes } from './walkChunk.ts'
-export type { WalkSkip } from './walkChunk.ts'
 export {
   FLOOR_PRESETS,
   LOPSIDED_RATIO,
@@ -96,7 +100,7 @@ export {
   panSNMatchesPrefix,
   panSNSample,
 } from './util.ts'
-export type { GraphTables, WalkStopTable } from './util.ts'
+export type { DepartureTable, GraphTables } from './util.ts'
 export {
   MOVED_TAG,
   carrierNames,

@@ -1,6 +1,7 @@
 // A cut's tables: what a GFA of S lines tagged LN/SN/SO/SR, L lines and W
-// lines states, every link end and walk step an index into the node table.
-// @jbrowse/bandage-core's GraphTables is the same shape.
+// lines states, every link end and walk step an index into the node table,
+// and the departures over the cut. @jbrowse/bandage-core's GraphTables is the
+// same shape.
 export interface GraphTables {
   nodes: {
     names: string[]
@@ -22,38 +23,37 @@ export interface GraphTables {
     offsets: Int32Array
     steps: Int32Array
     reversed: Uint8Array
-    // what lies past either end of each walk, from a walk-file cut; absent
+    // bp of each walk the cut read but kept out, before and after it; absent
     // from tables another source builds
-    before?: WalkStopTable
-    after?: WalkStopTable
+    trimmedBefore?: Float64Array
+    trimmedAfter?: Float64Array
     // for a walk standing for pieces the writer abridged, their steps and bp,
     // which its two steps on the reference leave out; NaN for any other walk
     abridgedSteps?: Float64Array
     abridgedBp?: Float64Array
   }
-  // the paths with no walk in the cut that jump over the window, each with
-  // the stretch of the reference it leaves out, from a walk file's skip rows
-  skips?: {
-    names: string[]
-    starts: Float64Array
-    ends: Float64Array
-    // a crossing's bp and steps off the reference, NaN for a deletion
-    offBp?: Float64Array
-    offSteps?: Float64Array
-  }
+  // every departure from the reference over the cut, each once
+  departures: DepartureTable
 }
 
-// A WalkStop per walk: `kinds` indexes `kindNames`, `bp` is NaN where the stop
-// states none, `trimmed` is 0 where it states none, and `chunkRefs` indexes
-// `chunkRefNames`, -1 for none
-export interface WalkStopTable {
-  kinds: Uint8Array
-  kindNames: string[]
-  bp: Float64Array
-  trimmed: Float64Array
-  chunkRefs: Int32Array
-  chunkStarts: Float64Array
-  chunkRefNames: string[]
+// A WalkDeparture per row: its ends as breakpoints on the reference, with
+// `leaveReversed` and `rejoinReversed` 1 where the step runs against the
+// reference's orientation; `fromSteps` 1 where the cut computed it from a
+// piece's steps rather than a record; and its own steps the cut holds, as
+// node indices at `offsets[k]` to `offsets[k + 1]`
+export interface DepartureTable {
+  names: string[]
+  hapStarts: Float64Array
+  ownBp: Float64Array
+  missingBp: Float64Array
+  leavePos: Float64Array
+  leaveReversed: Uint8Array
+  rejoinPos: Float64Array
+  rejoinReversed: Uint8Array
+  fromSteps: Uint8Array
+  offsets: Int32Array
+  steps: Int32Array
+  reversed: Uint8Array
 }
 
 /**

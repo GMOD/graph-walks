@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Rebuilds the walk-file fixtures from their GFAs with gfa-to-tabix, in walk
+# format 6. Usage: test_data/build.sh <gfa-to-tabix binary>
+# format1.walks.bed.gz is kept as it is, for the refusal test.
+set -euo pipefail
+cd "$(dirname "$0")"
+B=${1:?the gfa-to-tabix binary}
+build() {
+  local name=$1 gfa=$2; shift 2
+  "$B" "$gfa" --walks -o "$name.tmp" "$@" > /dev/null 2>&1
+  local out
+  for out in "$name".tmp.*.walks.bed.gz; do
+    local sample=${out#"$name".tmp.}; sample=${sample%.walks.bed.gz}
+    mv "$out" "$name.$sample.walks.bed.gz"
+    mv "$out.tbi" "$name.$sample.walks.bed.gz.tbi"
+  done
+}
+build header header.GRCh38.gfa --refs GRCh38 --chunk 1000
+build maxnode maxnode.GRCh38.gfa --refs GRCh38 --chunk 1000
+build revisit revisit.GRCh38.gfa --refs GRCh38 --chunk 1000
+build farpass farpass.GRCh38.gfa --refs GRCh38 --chunk 1000
+build follow follow.GRCh38.gfa --refs GRCh38 --chunk 1000
+build rejoin follow.GRCh38.gfa --refs GRCh38 --chunk 10000
+build records records.GRCh38.gfa --refs GRCh38 --chunk 1000
+build skip skip.GRCh38.gfa --refs GRCh38 --chunk 10
+build span span.gfa --refs GRCh38 --chunk 20
+build unabridged unabridged.R.gfa --refs R --chunk 10
+build abridged unabridged.R.gfa --refs R --chunk 10 --abridge-bytes 1
+build interleaved interleaved.R.gfa --refs R --chunk 10 --stay 0 --abridge-steps 3
+build hprc-chrM hprc-chrM.GRCh38.gfa --refs GRCh38 --sequences

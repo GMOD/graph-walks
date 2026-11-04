@@ -1,12 +1,20 @@
 import { refNameLookup, resolveRefName } from './refNames.ts'
-import { chunkRef, decodeChunk, pieceLinks, skipsOver } from './walkChunk.ts'
+import { chunkRef, decodeChunk, pieceLinks } from './walkChunk.ts'
 import {
-  CROSSING_BP,
+  ATTACH_BP,
+  departureRowKey,
+  parseDepartureRow,
+  squeezer,
+} from './walkDeparture.ts'
+import {
   WalkGraph,
   byteBudgetError,
+  chunkQueryStart,
   joinPieces,
   keptNodesError,
   keptStepsError,
+  lookbackChunks,
+  megabytes,
   stepBudgetError,
   surelyKept,
   walkCut,
@@ -15,8 +23,9 @@ import {
   walksKept,
 } from './walkRows.ts'
 
-import type { ChunkRef, DecodedChunk, WalkSkip } from './walkChunk.ts'
-import type { BudgetNames, WalkChunk, WalkHeader, WalkRow } from './walkRows.ts'
+import type { ChunkRef, DecodedChunk } from './walkChunk.ts'
+import type { WalkDeparture } from './walkDeparture.ts'
+import type { BudgetNames, WalkHeader, WalkRow } from './walkRows.ts'
 
 // A window reads whole chunks and keeps the steps on it, so a narrow window
 // reads several times what it keeps: 464 haplotypes across the 1.5 kb ABCA7
@@ -25,28 +34,28 @@ import type { BudgetNames, WalkChunk, WalkHeader, WalkRow } from './walkRows.ts'
 // multiple of it.
 const READ_STEPS_PER_KEPT = 8
 
-// A walk the read cuts off goes on in the chunk its row names, out to which a
-// cut reads on, in at most this many rounds and this many chunks from the read
-const FOLLOW_ROUNDS = 3
-const FOLLOW_CHUNKS = 4
-
 // bp of reference a cut keeps past each end of the window
 const WALK_CONTEXT = 1000
 
 // detail records an expanding cut reads at once
 const DETAIL_READS = 16
 
+// chunks a cut fetches for the own steps of departure records whose leave
+// piece its read lacks
+const ATTACH_FETCHES = 8
+
 // The budgets the JBrowse graph plugin and BandageJS cut a browser's window by
 export const WALK_BUDGETS = {
   stepBudget: 4_000_000,
   byteBudget: 8_000_000,
-  crossingBp: CROSSING_BP,
+  departureByteBudget: 2_000_000,
+  attachBp: ATTACH_BP,
 }
 
 /**
  * A Tabix-indexed file as the reader uses one: @gmod/tabix's
  * TabixIndexedFile is one. `bytesForRegions` estimates the compressed bytes a
- * read fetches, which the byte budget needs.
+ * read fetches, which the byte budgets need.
  */
 export interface TabixSource {
   getHeaderLines(opts?: { signal?: AbortSignal }): Promise<string[]>
@@ -63,9 +72,28 @@ export interface TabixSource {
   ): Promise<number>
 }
 
-// A walk file in a format other than 5, which the reader refuses
+// A walk file in a format other than 6, which the reader refuses
 export class WalkFormatError extends Error {
   override name = 'WalkFormatError'
+}
+
+/**
+ * A window whose departure read would fetch more than its budget. Zooming in
+ * does not lower the read, since a record is filed over its whole stretch,
+ * so this is not a RegionTooLargeError and shows no zoom-in notice.
+ */
+export class DepartureReadError extends Error {
+  override name = 'DepartureReadError'
+  readonly bytes: number
+  readonly limit: number
+
+  constructor(bytes: number, limit: number) {
+    super(
+      `Too many departures from the reference over this window to read (${megabytes(bytes)} against a budget of ${megabytes(limit)}). A collapsed repeat usually causes this: haplotypes hop between its copies, and each hop is a departure`,
+    )
+    this.bytes = bytes
+    this.limit = limit
+  }
 }
 
 // @gmod/tabix loops forever on a NaN end and reads nothing for a NaN start
@@ -78,8 +106,9 @@ export function checkRange(refName: string, start: number, end: number) {
   }
 }
 
-// A detail record's sequence is its chunk's, `~` and the chunk's start
-function withoutDetails(names: string[]) {
+// A detail record's sequence is its chunk's, `~` and the chunk's start, and
+// a sequence's departures lie under `~departure`
+function withoutSiblings(names: string[]) {
   return names.filter(name => !name.includes('~'))
 }
 
@@ -140,9 +169,15 @@ export interface WalkCutOptions {
   // Infinity, the default, has no limit. The detail records `expand` reads
   // count only against stepBudget
   byteBudget?: number
-  // the most bp off the reference a walk crossing the window without a step
-  // on it keeps in full, CROSSING_BP by default; a longer crossing is a skip
-  crossingBp?: number
+  // the most compressed bytes the departure read fetches; Infinity, the
+  // default, has no limit
+  departureByteBudget?: number
+  // the most bp of own sequence a departure gets its steps attached for,
+  // ATTACH_BP by default
+  attachBp?: number
+  // the most chunks the cut fetches for the own steps of records whose leave
+  // piece its read lacks
+  attachFetches?: number
   context?: number
   // false lists no links, for a caller that draws no edges
   links?: boolean
@@ -173,12 +208,13 @@ export type WalkReaderHeader = WalkHeader & { chunk: number }
 
 /**
  * A `gfa-to-tabix --walks` file, `<prefix>.<sample>.walks.bed.gz`, read a
- * window at a time: one read over whole chunks, from the lookback chunks
- * before the window to its end, each chunk decoded once. The index first
- * estimates the bytes the read fetches, and a window past the byte budget
- * reads no row. Only the walks `keep` accepts are decoded. The step budget
- * bounds the steps the cut keeps, and rows holding READ_STEPS_PER_KEPT times
- * as many stop the read.
+ * window at a time: the walk read over whole chunks, from the lookback
+ * chunks before the window to its end, each chunk decoded once, and the
+ * departure read over the window and its context on the sequence's
+ * `~departure` sibling. The index first estimates the bytes each fetches,
+ * and a window past a budget reads no row. Only the walks `keep` accepts are
+ * decoded. The step budget bounds the steps the cut keeps, and rows holding
+ * READ_STEPS_PER_KEPT times as many stop the read.
  */
 export class WalkReader {
   private headerRead: Promise<WalkReaderHeader> | undefined
@@ -195,12 +231,12 @@ export class WalkReader {
     if (!this.headerRead) {
       const read = this.walks.getHeaderLines().then(lines => {
         const header = walkHeader(lines)
-        if (header.format !== 5) {
+        if (header.format !== 6) {
           const format = header.format ?? 1
           throw new WalkFormatError(
-            format > 5
-              ? `This walk file is format ${format}; this version of @jbrowse/graph-walks reads format 5, so update the viewer, or @jbrowse/graph-walks, to one that reads format ${format}`
-              : `This walk file is format ${format}; @jbrowse/graph-walks reads format 5, so rebuild it with gfa-to-tabix 1.4 or later`,
+            format > 6
+              ? `This walk file is format ${format}; this version of @jbrowse/graph-walks reads format 6, so update the viewer, or @jbrowse/graph-walks, to one that reads format ${format}`
+              : `This walk file is format ${format}; @jbrowse/graph-walks reads format 6, so rebuild it with gfa-to-tabix 3.0 or later`,
           )
         }
         return { ...header, chunk: header.chunk ?? 65536 }
@@ -216,9 +252,9 @@ export class WalkReader {
   }
 
   // The reference sequences the walk file holds windows on, without the
-  // `seq~cs` sequences of detail records
+  // `seq~cs` sequences of detail records and the `seq~departure` siblings
   async referenceSequences(opts: { signal?: AbortSignal } = {}) {
-    return withoutDetails(await this.walks.getReferenceSequenceNames(opts))
+    return withoutSiblings(await this.walks.getReferenceSequenceNames(opts))
   }
 
   /**
@@ -234,7 +270,7 @@ export class WalkReader {
     if (!this.lookupRead) {
       const read = this.walks
         .getReferenceSequenceNames()
-        .then(names => refNameLookup(withoutDetails(names)))
+        .then(names => refNameLookup(withoutSiblings(names)))
       read.catch(() => {
         if (this.lookupRead === read) {
           this.lookupRead = undefined
@@ -267,7 +303,9 @@ export class WalkReader {
       context = WALK_CONTEXT,
       stepBudget = Infinity,
       byteBudget = Infinity,
-      crossingBp = CROSSING_BP,
+      departureByteBudget = Infinity,
+      attachBp = ATTACH_BP,
+      attachFetches = ATTACH_FETCHES,
       links = true,
       contained = false,
       nodeLimit = Infinity,
@@ -276,30 +314,45 @@ export class WalkReader {
     const header = await this.header({ signal })
     const { chunk } = header
     const from = walkQueryStart(header, refName, region.start, region.end)
+    const sibling = `${refName}~departure`
+    // the drawn stretch reaches at most a node past the window's context
+    const reach = header.maxNode ?? chunk
+    const extent = {
+      start: Math.max(0, region.start - context - reach),
+      end: region.end + context + reach,
+    }
     const bytesForRegions = this.walks.bytesForRegions?.bind(this.walks)
-    const budgeted =
-      Number.isFinite(byteBudget) && bytesForRegions !== undefined
-    const bytesFor = async (spans: { start: number; end: number }[]) =>
-      budgeted
-        ? bytesForRegions(
-            spans.map(span => ({ refName, ...span })),
+    const bytesFor = async (
+      name: string,
+      spans: { start: number; end: number }[],
+    ) =>
+      bytesForRegions === undefined
+        ? 0
+        : bytesForRegions(
+            spans.map(span => ({ refName: name, ...span })),
             { signal },
           )
-        : 0
-    const tooLarge = budgeted
-      ? await byteBudgetError(
-          async end => {
-            checkRange(refName, from, end)
-            return bytesFor([{ start: from, end }])
-          },
-          byteBudget,
-          region,
-          chunk,
-          opts.budgetNames,
-        )
-      : undefined
-    if (tooLarge) {
-      throw tooLarge
+    if (Number.isFinite(byteBudget) && bytesForRegions !== undefined) {
+      const tooLarge = await byteBudgetError(
+        async end => {
+          checkRange(refName, from, end)
+          return bytesFor(refName, [{ start: from, end }])
+        },
+        byteBudget,
+        region,
+        chunk,
+        opts.budgetNames,
+      )
+      if (tooLarge) {
+        throw tooLarge
+      }
+    }
+    if (Number.isFinite(departureByteBudget) && bytesForRegions !== undefined) {
+      checkRange(sibling, extent.start, extent.end)
+      const bytes = await bytesFor(sibling, [extent])
+      if (bytes > departureByteBudget) {
+        throw new DepartureReadError(bytes, departureByteBudget)
+      }
     }
     const reads = new AbortController()
     const stop = () => {
@@ -308,7 +361,6 @@ export class WalkReader {
     signal?.throwIfAborted()
     signal?.addEventListener('abort', stop, { once: true })
     const rows: WalkRow[] = []
-    let cut: ReturnType<typeof walkCut>
     const graph = new WalkGraph({
       refName,
       start: region.start,
@@ -318,7 +370,6 @@ export class WalkReader {
     })
     const decoded = new Set<number>()
     const ends: DecodedChunk['ends'] = []
-    const jumps: WalkSkip[] = []
     const surely = new Set<number>()
     const bounds = {
       contained,
@@ -330,15 +381,16 @@ export class WalkReader {
     let details: { ref: ChunkRef; row: WalkRow }[] = []
     // each chunk read is decoded once, into its rows, nodes and the links
     // between pieces, and a cut over its node limit stops there
-    const decode = (cs: number, chunkRows: string[][]) => {
+    const decode = (
+      cs: number,
+      chunkRows: string[][],
+      only: ((name: string) => boolean) | undefined,
+    ) => {
       if (decoded.has(cs)) {
         return
       }
       decoded.add(cs)
-      const chunkCut = decodeChunk(chunkRows, keep, opts.sequences)
-      for (const jump of chunkCut.skips) {
-        jumps.push(jump)
-      }
+      const chunkCut = decodeChunk(chunkRows, only ?? keep, opts.sequences)
       let ref: ChunkRef | undefined
       for (const row of chunkCut.rows) {
         if (row.abridged && expand?.(row.name)) {
@@ -412,8 +464,13 @@ export class WalkReader {
         }
       }
     }
-    // rows arrive in chunk order, and each chunk is decoded as the next starts
-    const readChunks = async (start: number, end: number) => {
+    // rows arrive in chunk order, and each chunk is decoded as the next
+    // starts; `only` narrows a fetch to the walks named
+    const readChunks = async (
+      start: number,
+      end: number,
+      only?: (name: string) => boolean,
+    ) => {
       checkRange(refName, start, end)
       let at: number | undefined
       let held: string[][] = []
@@ -424,7 +481,7 @@ export class WalkReader {
           const cs = +cols[1]!
           if (cs !== at) {
             if (at !== undefined) {
-              decode(at, held)
+              decode(at, held, only)
             }
             at = cs
             held = []
@@ -433,7 +490,7 @@ export class WalkReader {
         },
       })
       if (at !== undefined) {
-        decode(at, held)
+        decode(at, held, only)
       }
       const pending = details
       details = []
@@ -450,8 +507,37 @@ export class WalkReader {
         }
       }
     }
+    // the records over the extent, each once, of the walks kept
+    const readDepartures = async () => {
+      checkRange(sibling, extent.start, extent.end)
+      const seen = new Set<string>()
+      const records: WalkDeparture[] = []
+      await this.walks.getLines(sibling, extent.start, extent.end, {
+        signal: reads.signal,
+        lineCallback: line => {
+          const cols = line.split('\t')
+          if (cols[3] !== 'departure') {
+            return
+          }
+          const key = departureRowKey(cols)
+          if (seen.has(key)) {
+            return
+          }
+          seen.add(key)
+          const record = parseDepartureRow(cols)
+          if (keep === undefined || keep(record.name)) {
+            records.push(record)
+          }
+        },
+      })
+      return records
+    }
+    let cut: ReturnType<typeof walkCut>
     try {
-      await readChunks(from, region.end)
+      const [records] = await Promise.all([
+        readDepartures(),
+        readChunks(from, region.end),
+      ])
       const tooManyRead = stepBudgetError(
         rows,
         stepBudget,
@@ -464,53 +550,34 @@ export class WalkReader {
       if (tooManyRead) {
         throw tooManyRead
       }
-      // the chunks read, first to last, which a follow widens to the
-      // farthest chunk a cut-off walk goes on in, so the reference between
-      // is read too
-      let first = from
-      let last = Math.floor((region.end - 1) / chunk) * chunk
-      const reach = FOLLOW_CHUNKS * chunk
-      const [farLo, farHi] = [first - reach, last + reach]
-      const [lo, hi] = contained
-        ? [
-            Math.floor((region.start - context) / chunk) * chunk,
-            Math.floor((region.end + context - 1) / chunk) * chunk,
-          ]
-        : [farLo, farHi]
-      const within = (c: WalkChunk, from: number, to: number) =>
-        c.refName === refName && c.start >= from && c.start <= to
       const cutRows = () =>
-        walkCut(joinPieces(rows), graph.nodes, refName, {
+        walkCut(joinPieces(rows), graph.nodes, refName, records, {
           contained,
           context,
-          crossingBp,
+          attachBp,
+          squeeze: squeezer(header.holes, refName),
         })
       cut = cutRows()
-      let spent = await bytesFor([{ start: from, end: region.end }])
-      for (let round = 0; round < FOLLOW_ROUNDS; round++) {
-        let reachFirst = first
-        let reachLast = last
-        for (const c of [
-          ...cut.open.filter(c => within(c, lo, hi)),
-          ...cut.across.filter(c => within(c, farLo, farHi)),
-        ]) {
-          reachFirst = Math.min(reachFirst, c.start)
-          reachLast = Math.max(reachLast, c.start)
+      // the leave pieces the read lacks, each chunk fetched once for the
+      // records wanting it, with the chunk before for a straddling node
+      const fetches = new Map<number, Set<string>>()
+      for (const { departure, base } of cut.unattached) {
+        const cs = Math.floor(base / chunk) * chunk
+        if (!decoded.has(cs)) {
+          fetches.set(cs, (fetches.get(cs) ?? new Set()).add(departure.name))
         }
-        const spans = [
-          { start: reachFirst, end: first },
-          { start: last + chunk, end: reachLast + 1 },
-        ].filter(span => span.end > span.start)
-        if (spans.length === 0) {
-          break
-        }
-        spent += await bytesFor(spans)
-        if (spent > byteBudget) {
-          break
-        }
-        first = reachFirst
-        last = reachLast
-        await Promise.all(spans.map(({ start, end }) => readChunks(start, end)))
+      }
+      const wanted = [...fetches].slice(0, attachFetches)
+      if (wanted.length > 0) {
+        await Promise.all(
+          wanted.map(([cs, names]) =>
+            readChunks(
+              chunkQueryStart(cs, chunk, lookbackChunks(header.maxNode, chunk)),
+              cs + 1,
+              name => names.has(name),
+            ),
+          ),
+        )
         cut = cutRows()
       }
     } catch (error) {
@@ -520,16 +587,18 @@ export class WalkReader {
       signal?.removeEventListener('abort', stop)
     }
     const tooMany =
-      keptStepsError(cut.fragments, stepBudget, region, filtered) ??
-      keptNodesError(cut.kept.size, nodeLimit, region, filtered)
+      keptStepsError(
+        cut.fragments,
+        cut.departures,
+        stepBudget,
+        region,
+        filtered,
+      ) ?? keptNodesError(cut.kept.size, nodeLimit, region, filtered)
     if (tooMany) {
       throw tooMany
     }
-    return {
-      graph,
-      ...cut,
-      skips: skipsOver(jumps, cut.fragments, region, cut.skips),
-    }
+    const { kept, fragments, departures } = cut
+    return { graph, kept, fragments, departures }
   }
 
   /**
@@ -553,10 +622,15 @@ export class WalkReader {
         `The walk file has no sequence ${region.refName} on ${sample}; it holds ${names.slice(0, 5).join(', ')}${names.length > 5 ? ', …' : ''}`,
       )
     }
-    const { graph, kept, fragments, skips } = await this.cut(refName, region, {
-      ...rest,
-      keep: walksKept(haplotypes, refName),
-    })
-    return { tables: graph.tables(kept, fragments, skips), refName, sample }
+    const { graph, kept, fragments, departures } = await this.cut(
+      refName,
+      region,
+      { ...rest, keep: walksKept(haplotypes, refName) },
+    )
+    return {
+      tables: graph.tables(kept, fragments, departures),
+      refName,
+      sample,
+    }
   }
 }

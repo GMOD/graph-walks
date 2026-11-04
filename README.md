@@ -10,7 +10,7 @@
 - **Out:** from a walk file, the reference over the region, every haplotype's
   walk through it, and the nodes and links they visit, as typed arrays; from a
   segment index, the segments and links under the region as GFA text
-- The reader reads walk format 5, which gfa-to-tabix 1.4 and later write, and
+- The reader reads walk format 6, which gfa-to-tabix 3.0 and later write, and
   refuses an older format with a `WalkFormatError` asking for a rebuild, and a
   newer one asking for a newer reader
 - The package has no runtime dependencies, and reads through any object with
@@ -42,19 +42,22 @@ const reader = new WalkReader(
 )
 
 const refName = 'GRCh38#0#chr6'
-const { graph, kept, fragments } = await reader.cut(
+const { graph, kept, fragments, departures } = await reader.cut(
   refName,
   { start: 160_614_798, end: 160_647_758 },
   { keep: walksKept(['HG00097', 'HG00133'], refName) },
 )
-const tables = graph.tables(kept, fragments)
+const tables = graph.tables(kept, fragments, departures)
 ```
 
 - `tables` lists the nodes with their lengths and reference positions, the links
-  between them, and each walk's steps. `graphTablesGFA` in
-  [@jbrowse/bandage-core](https://github.com/GMOD/bandage-core) writes it as GFA
+  between them, each walk's steps, and every departure from the reference over
+  the window ([Departures](#departures)). `graphTablesGFA` in
+  [@jbrowse/bandage-core](https://github.com/GMOD/bandage-core) writes the
+  nodes, links and walks as GFA
 - A node the reference passes more than once, as in a collapsed repeat, takes
-  the position of its first pass over the window
+  the position of its pass over the window, and each walk's step on it the pass
+  its row names
 - `reader.header()` lists the reference sample and every haplotype with rows,
   read from the walk file's first block
 - `reader.referenceSequences()` lists the sequences a region can be on, in full
@@ -77,20 +80,22 @@ const { tables, refName, sample } = await reader.cutRegion(
 
 ## Cut options
 
-| Option        | Effect                                                                                 |
-| ------------- | -------------------------------------------------------------------------------------- |
-| `keep`        | Which walks to decode, by `sample#haplotype#contig`; every one by default              |
-| `context`     | bp of reference kept past each end of the region; default 1000                         |
-| `stepBudget`  | The most steps a cut keeps; no limit by default                                        |
-| `byteBudget`  | The most compressed bytes a cut fetches; no limit by default                           |
-| `nodeLimit`   | The most nodes a cut keeps; no limit by default                                        |
-| `crossingBp`  | The most bp off the reference a walk crossing the window keeps in full; default 65,536 |
-| `contained`   | `true` keeps each walk within the window; see below                                    |
-| `links`       | `false` lists no links, for a caller that draws no edges                               |
-| `sequences`   | Keep each node's bases in `graph.sequences`, from a `--sequences` file                 |
-| `signal`      | An `AbortSignal` that stops the reads                                                  |
-| `expand`      | Which abridged walks to read in full, by `sample#haplotype#contig`; none by default    |
-| `budgetNames` | The words a `RegionTooLargeError` message uses for the step and byte budgets           |
+| Option                | Effect                                                                              |
+| --------------------- | ----------------------------------------------------------------------------------- |
+| `keep`                | Which walks to decode, by `sample#haplotype#contig`; every one by default           |
+| `context`             | bp of reference kept past each end of the region; default 1000                      |
+| `stepBudget`          | The most steps a cut keeps, departures' own steps included; no limit by default     |
+| `byteBudget`          | The most compressed bytes the walk read fetches; no limit by default                |
+| `departureByteBudget` | The most compressed bytes the departure read fetches; no limit by default           |
+| `attachBp`            | The most bp of own sequence a departure gets its steps attached for; default 65,536 |
+| `attachFetches`       | The most chunks fetched for own steps the read lacks; default 8                     |
+| `nodeLimit`           | The most nodes a cut keeps; no limit by default                                     |
+| `contained`           | `true` keeps each walk within the window; see below                                 |
+| `links`               | `false` lists no links, for a caller that draws no edges                            |
+| `sequences`           | Keep each node's bases in `graph.sequences`, from a `--sequences` file              |
+| `signal`              | An `AbortSignal` that stops the reads                                               |
+| `expand`              | Which abridged walks to read in full, by `sample#haplotype#contig`; none by default |
+| `budgetNames`         | The words a `RegionTooLargeError` message uses for the step and byte budgets        |
 
 - A cut over a budget or its node limit throws a `RegionTooLargeError`. The
   error's `fitsBp` holds about how wide a window would fit, and JBrowse shows it
@@ -100,28 +105,76 @@ const { tables, refName, sample } = await reader.cutRegion(
   raised to `bytes`. `zoomHelps` is false where no narrower window fits
 - The cut checks the node limit as it decodes each chunk, against the nodes it
   keeps whatever else it reads, and stops reading at the first chunk over it
-- `WALK_BUDGETS` holds the step and byte budgets and `crossingBp` the JBrowse
-  plugin and BandageJS cut by
+- A window past `departureByteBudget` throws a `DepartureReadError`, which is
+  not a `RegionTooLargeError`: a departure's record is filed over its whole
+  stretch, so zooming in does not lower that read. A collapsed repeat that
+  haplotypes hop between the copies of is the usual cause
+- `WALK_BUDGETS` holds the budgets and `attachBp` the JBrowse plugin and
+  BandageJS cut by
 
 ## Fragments
 
 Each of `fragments` is one walk's stretch through the cut: `name`, `fragStart`
-(the W line's start), `hapStart`/`hapEnd`, and its steps. `before` and `after`
-say what lies past each end. First come `trimmed` bp, which the cut read but did
-not keep, then:
+(the W line's start), `hapStart`/`hapEnd`, and its steps, from the walk's first
+step on the drawn stretch of the reference, the window and its context, to its
+last. `trimmedBefore` and `trimmedAfter` count the bp of the walk the cut read
+but kept out past either end.
 
-| `kind`      | The walk                                                                                                   |
-| ----------- | ---------------------------------------------------------------------------------------------------------- |
-| `elsewhere` | goes on in `chunk`, which the cut did not read; `bp` on, it comes back, when the read holds its next piece |
-| `break`     | reaches its record's end, and the contig's next record starts `bp` on, so the graph lacks those bases      |
-| `end`       | reaches the end of the contig's records in the graph                                                       |
+- A cut reads the window's chunks and the chunk before, and nothing else: where
+  a walk goes past the drawn stretch and comes back, its fragment ends at its
+  last step on the stretch, and its departure says where it rejoins
+- A walk's fragment therefore does not depend on which other walks the cut keeps
+- `graph.tables(kept, fragments, departures)` keeps `trimmedBefore` and
+  `trimmedAfter` as columns of `walks`
 
-- `graph.tables(kept, fragments)` keeps the stops as `before`/`after` columns:
-  `kinds` indexes `kindNames`, `bp` is NaN where a stop states none, `trimmed`
-  is 0 where it states none, and `chunkRefs` indexes `chunkRefNames`, -1 for
-  none, beside `chunkStarts`
-- A cut reads on to at most four chunks past what it read, so a walk that goes
-  farther away and comes back stays two fragments, each `elsewhere`
+## Departures
+
+A departure is where a walk's consecutive steps on the reference are not
+adjacent there: it leaves the reference at one breakpoint and rejoins it at
+another, with `ownBp` of its own sequence between. `cut` returns every departure
+over the drawn stretch, each once, from two reads: the walk read gives those
+inside one piece of a walk, which the cut computes from the piece's steps, and a
+read of the sequence's `~departure` sibling gives the rest as the file's
+records, which gfa-to-tabix writes for every departure between two pieces.
+
+```ts
+import { departureKind } from '@jbrowse/graph-walks'
+
+for (const d of departures) {
+  // HG00097#1#chr6 leaves 160,620,000 and rejoins 160,674,000 (forward), 120,000 bp of its own
+  console.log(
+    d.name,
+    d.leavePos,
+    d.rejoinPos,
+    departureKind(d),
+    d.ownBp,
+    d.steps?.ids.length,
+  )
+}
+```
+
+- `leavePos` and `rejoinPos` are breakpoints on the reference, where the walk's
+  sequence stops following it and starts again; `leaveReversed` and
+  `rejoinReversed` say the step runs against the reference's orientation at its
+  pass
+- `hapStart` is where the own sequence starts on the walk's contig and `ownBp`
+  how far it runs, 0 for a direct jump; `missingBp` is the part of it between
+  the contig's W lines, which the graph lacks
+- `departureKind` derives what the departure does from its ends: `switch`, the
+  strands differ; `back`, the walk jumps back over reference it walks again;
+  `adjacent`, sequence of its own between adjacent steps; `forward`, a jump
+  forward over reference it leaves out. The tools make no further call
+- A departure of at most `attachBp` of own sequence carries its own steps in
+  `steps`, from the pieces the cut read; for a record whose leave piece lies
+  outside the read, the cut fetches that chunk, at most `attachFetches` chunks a
+  cut. `fromSteps` is true for a departure computed from a piece's steps
+- Those steps' nodes are kept, so the cut draws a short insertion or replacement
+  at the window's edge whole, and counts them against `stepBudget`
+- `graph.tables(kept, fragments, departures)` keeps them as the `departures`
+  table: `names`, `hapStarts`, `ownBp`, `missingBp`, `leavePos`,
+  `leaveReversed`, `rejoinPos`, `rejoinReversed`, `fromSteps`, and each one's
+  own steps as node indices at `offsets[k]` to `offsets[k + 1]` of `steps`, with
+  `reversed`
 
 ## Abridged walks
 
@@ -132,38 +185,12 @@ not keep, then:
   its `steps` and `bp`, its `pieces`, and the `detail` record that holds them.
   The fragment's two steps are the handles on the reference where the walk
   leaves and rejoins, and `hapStart`/`hapEnd` span its `bp`
-- `graph.tables(kept, fragments)` keeps them as `abridgedSteps` and `abridgedBp`
-  columns, NaN for every other walk
+- `graph.tables(kept, fragments, departures)` keeps them as `abridgedSteps` and
+  `abridgedBp` columns, NaN for every other walk
 - With `expand` naming a walk, the cut reads its detail records and cuts it in
   full, as a file without abridging would
-- `referenceSequences()` leaves out the detail records' sequences, `seq~cs`
-
-## Haplotypes that jump over the window
-
-- A haplotype whose deletion spans the window has no walk row in its chunks.
-  gfa-to-tabix 1.5 writes a `skip` row there instead, naming the path and the
-  stretch of the reference it leaves out
-- `cut` returns them as `skips`: one per jump, `name`, `fragStart`, `piece`,
-  `refStart` and `refEnd`, for each path that has no fragment in the cut and
-  that `keep` keeps
-- The writer leaves out a skip row in a chunk where the path has a piece, so the
-  cut also names a jump between two reference steps it read on either side of
-  the window, reading on to the far side's chunk when only the near side's is
-  read, and names it even when the path has a fragment in the cut
-- `graph.tables(kept, fragments, skips)` keeps them as a `skips` table of
-  `names`, `starts` and `ends`, which `cutRegion` fills in
-- Skip rows hold no steps or nodes, so only the byte budget counts them, with
-  the rest of their chunk
-- Where a haplotype leaves the reference before the window and rejoins after it,
-  the cut keeps its steps off the reference between as a fragment, which counts
-  the walk read past either end as `trimmed`. The fragment's `crossing` gives
-  the stretch of the reference between where it leaves and rejoins, as
-  `refStart` and `refEnd`, and `reverse` when the walk runs it backwards
-- A crossing with more than `crossingBp` bp off the reference becomes a skip
-  from where it leaves the reference to where it rejoins. The skip's `offBp` and
-  `offSteps` give its size, and `chunks` the chunks whose rows hold it, so a
-  viewer can label it and cut again with `crossingBp` raised. `graph.tables`
-  keeps `offBp` and `offSteps` as columns, NaN for a deletion
+- `referenceSequences()` leaves out the detail records' sequences, `seq~cs`, and
+  the departure siblings, `seq~departure`
 
 ## Moved components
 

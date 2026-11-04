@@ -60,8 +60,8 @@ function fragment(
     hapEnd: 0,
     ids: Int32Array.from(parsed, ([id]) => id),
     rev: Uint8Array.from(parsed, ([, rev]) => (rev ? 1 : 0)),
-    before: { kind: 'end' },
-    after: { kind: 'end' },
+    trimmedBefore: 0,
+    trimmedAfter: 0,
     ...more,
   }
 }
@@ -226,7 +226,7 @@ test('R that two walks of a haplotype cover, or a junction between them, has no 
 
 test('tables give the same departures as fragments', () => {
   const names = ['1', '2', '3', '50']
-  const tables: GraphTables = {
+  const tables: Omit<GraphTables, 'departures'> = {
     nodes: {
       names,
       lengths: Int32Array.from([100, 500, 100, 300]),

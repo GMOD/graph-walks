@@ -5,17 +5,16 @@ import {
   panSNMatchesPrefix,
 } from './util.ts'
 import { placeAndLink } from './walkChunk.ts'
+import { ATTACH_BP, departureStretch } from './walkDeparture.ts'
 
-import type { GraphTables, WalkStopTable } from './util.ts'
-import type { Chunk, WalkSkip } from './walkChunk.ts'
+import type { DepartureTable, GraphTables } from './util.ts'
+import type { Chunk } from './walkChunk.ts'
+import type { Hole, WalkDeparture } from './walkDeparture.ts'
 
-// A walk row of gfa-to-tabix's format 5, its steps decoded with its chunk
+// A walk row of gfa-to-tabix's format 6, its steps decoded with its chunk
 // (walkChunk.ts). A haplotype path is cut into pieces, one per chunk it
 // passes, and each piece's row takes the next piece index, so consecutive
-// indices of one path join. A row names the chunk its path's piece before and
-// after it is filed under, `prev` and `next`, with none at either end of the
-// path. A record's first and last rows also name the gap to the contig's
-// record before and after, `prevRecord` and `nextRecord`.
+// indices of one path join.
 export interface WalkRow {
   name: string
   fragStart: number
@@ -24,13 +23,15 @@ export interface WalkRow {
   n: number
   // of the n steps, those off R, in routes' interiors
   interior?: number
-  // refStarts: where each step lies on the reference, NaN off R or unknown
-  steps: { ids: Int32Array; rev: Uint8Array; refStarts?: Float64Array }
+  // refStarts: where each step lies on the reference, NaN off R or unknown;
+  // against: 1 where the step runs against R's orientation at its pass
+  steps: {
+    ids: Int32Array
+    rev: Uint8Array
+    refStarts?: Float64Array
+    against?: Uint8Array
+  }
   chunkStart: number
-  prev?: WalkChunk
-  next?: WalkChunk
-  prevRecord?: WalkGap
-  nextRecord?: WalkGap
   // an `abridged` row, standing for its path's pieces in the chunk: `steps`
   // holds the handles on R it starts and ends on
   abridged?: Abridged
@@ -47,35 +48,6 @@ export interface Abridged {
   bp: number
   detail: { refName: string; start: number }
 }
-
-export interface WalkChunk {
-  refName: string
-  start: number
-}
-
-// Contig bp the graph lacks between two records, and the chunk the other
-// record's nearest piece is filed under, when that record has rows
-export interface WalkGap {
-  bp: number
-  chunk?: WalkChunk
-}
-
-/**
- * What lies past one end of a fragment. `trimmed` bp of the walk come first
- * where the cut read them but kept none, then:
- * - `elsewhere`: the walk goes on in `chunk`, which the cut did not read; `bp`
- *   is how far on it comes back, when the read holds its next piece
- * - `break`: the contig's record ends, and its next record starts `bp` on;
- *   `chunk` files that record's nearest piece, when it has rows
- * - `end`: the contig's last record in the graph ends
- */
-export type WalkStop = (
-  | { kind: 'elsewhere'; chunk: WalkChunk; bp?: number }
-  | { kind: 'break'; bp: number; chunk?: WalkChunk }
-  | { kind: 'end' }
-) & { trimmed?: number }
-
-const WALK_STOP_KINDS = ['elsewhere', 'break', 'end'] as const
 
 export interface WalkNode {
   refName: string
@@ -103,13 +75,14 @@ export interface LongPass {
 }
 
 export interface WalkHeader {
-  // format:i:5; the reader refuses any other, and format 1 states none
+  // format:i:6; the reader refuses any other, and format 1 states none
   format?: number
   chunk?: number
   maxNode?: number
   references: string[]
   haplotypes: string[]
   long: LongPass[]
+  holes: Hole[]
 }
 
 function integerTag(line: string, tag: string) {
@@ -119,12 +92,19 @@ function integerTag(line: string, tag: string) {
 
 /**
  * What a walk file's header states: a `#walks` line with the format, the
- * chunk size and the longest node in bp, `format:i:5\tchunk:i:65536\tmaxnode:i:1024`,
- * a `#reference\tGRCh38` line naming the reference sample and a
- * `#haplotype\tHG002#1` line per other haplotype with rows
+ * chunk size and the longest node in bp, `format:i:6\tchunk:i:65536\tmaxnode:i:1024`,
+ * a `#reference\tGRCh38` line naming the reference sample, a
+ * `#haplotype\tHG002#1` line per other haplotype with rows, a `#long` line
+ * per pass of the reference over a node longer than a chunk and a `#hole`
+ * line per stretch of a reference sequence no line of the reference covers
  */
 export function walkHeader(lines: string[]): WalkHeader {
-  const header: WalkHeader = { references: [], haplotypes: [], long: [] }
+  const header: WalkHeader = {
+    references: [],
+    haplotypes: [],
+    long: [],
+    holes: [],
+  }
   for (const line of lines) {
     const [key, value = '', start = '', end = ''] = line.split('\t')
     if (key === '#reference') {
@@ -133,6 +113,8 @@ export function walkHeader(lines: string[]): WalkHeader {
       header.haplotypes.push(value)
     } else if (key === '#long') {
       header.long.push({ refName: value, start: +start, end: +end })
+    } else if (key === '#hole') {
+      header.holes.push({ refName: value, start: +start, end: +end })
     } else {
       header.format ??= integerTag(line, 'format')
       header.chunk ??= integerTag(line, 'chunk')
@@ -208,8 +190,7 @@ export function walksKept(wanted: string[] | undefined, refName: string) {
   return walkNameFilter(wanted, panSNHaplotype(refName) ?? refName)
 }
 
-// One stretch of a haplotype path: rows of consecutive piece index, decoded,
-// and where the path goes on before and after it, when the rows say
+// One stretch of a haplotype path: rows of consecutive piece index, decoded
 export interface WalkRun {
   name: string
   fragStart: number
@@ -217,16 +198,14 @@ export interface WalkRun {
   firstPiece: number
   // where each row after the first starts in `ids`, and the chunk each row
   // is filed under
-  pieceStarts?: number[]
-  pieceChunks?: number[]
+  pieceStarts: number[]
+  pieceChunks: number[]
   ids: Int32Array
   rev: Uint8Array
-  // where each step lies on the reference, NaN off R or unknown
-  refStarts?: Float64Array
-  prev?: WalkChunk
-  next?: WalkChunk
-  prevRecord?: WalkGap
-  nextRecord?: WalkGap
+  // where each step lies on the reference, NaN off R or unknown, and whether
+  // it runs against R's orientation at its pass
+  refStarts: Float64Array
+  against: Uint8Array
   abridged?: Abridged
 }
 
@@ -267,6 +246,7 @@ function decodeRun(pieces: WalkRow[]): WalkRun {
   const ids = new Int32Array(n)
   const rev = new Uint8Array(n)
   const refStarts = new Float64Array(n).fill(Number.NaN)
+  const against = new Uint8Array(n)
   const pieceStarts: number[] = []
   const pieceChunks: number[] = []
   let at = 0
@@ -280,10 +260,12 @@ function decodeRun(pieces: WalkRow[]): WalkRun {
     if (p.steps.refStarts) {
       refStarts.set(p.steps.refStarts, at)
     }
+    if (p.steps.against) {
+      against.set(p.steps.against, at)
+    }
     at += p.n
   }
   const first = pieces[0]!
-  const last = pieces.at(-1)!
   return {
     name: first.name,
     fragStart: first.fragStart,
@@ -294,14 +276,16 @@ function decodeRun(pieces: WalkRow[]): WalkRun {
     ids,
     rev,
     refStarts,
-    prev: first.prev,
-    next: last.next,
-    prevRecord: first.prevRecord,
-    nextRecord: last.nextRecord,
+    against,
     ...(first.abridged ? { abridged: first.abridged } : {}),
   }
 }
 
+/**
+ * One walk's stretch through the cut, from its first step on the drawn
+ * stretch of the reference to its last. `trimmedBefore` and `trimmedAfter`
+ * count the bp of the walk the cut read but kept out, before and after it.
+ */
 export interface WalkFragment {
   name: string
   fragStart: number
@@ -309,67 +293,66 @@ export interface WalkFragment {
   hapEnd: number
   ids: Int32Array
   rev: Uint8Array
-  before: WalkStop
-  after: WalkStop
+  trimmedBefore: number
+  trimmedAfter: number
   // set on the fragment of an abridged row, from where it leaves R to where it
   // rejoins, which runs `abridged.bp` on the haplotype
   abridged?: Abridged
-  // set on the fragment of a walk that crosses the window off R: the stretch
-  // of R between the steps where it leaves and rejoins, and whether the walk
-  // runs it backwards
-  crossing?: WalkCrossing
 }
 
-export interface WalkCrossing {
-  refStart: number
-  refEnd: number
-  reverse: boolean
+export interface WalkCutOptions {
+  // keep the reference over the window and its context alone, and split each
+  // walk where it steps onto the reference off them
+  contained?: boolean
+  // bp of each walk kept past either end of a contained span
+  context?: number
+  // the most bp of own sequence a departure gets its steps attached for
+  attachBp?: number
+  // a position with the reference's holes before it removed
+  squeeze?: (bp: number) => number
+}
+
+// A record whose own steps the cut should attach and does not hold: the base
+// of the reference beside its leave breakpoint names the chunk its leave
+// piece is filed under, or the one before for a node straddling a boundary
+export interface Unattached {
+  departure: WalkDeparture
+  base: number
 }
 
 /**
  * The cut a window draws from its walks: the reference inside the window plus
- * its context, and each run from its first to its last step on that stretch.
- * A run that leaves the reference there, through steps off it or across a
- * deletion, is followed to the reference step where it rejoins, when the read
- * holds it, and otherwise through the steps off the reference it holds: at
- * the ABCA7 VNTR four haplotypes leave inside the repeat and rejoin 1.8 kb
- * past the window, and cut at the context they measured as partial walks. The reference is cut out as far as those rejoins reach, and
- * a run then runs on outward while the next step's node is already in the
- * cut. Without the run-on a haplotype whose alternate allele straddles the
- * edge stopped short of a node other walks had brought into the cut, and that
- * node drew without it. The run-on adds no node, so one pass is enough, but
- * it reaches through nodes other walks brought in, so with a window edge inside
- * a collapsed array a row's length depends on which haplotypes are cut.
+ * its context, the drawn stretch, and each run from its first step on that
+ * stretch to its last. Nothing is followed past the drawn stretch and no
+ * fragment runs on through nodes other walks kept, so a haplotype's fragment
+ * does not depend on which others are cut.
  *
- * A contained cut keeps the reference over the window and its context alone,
- * and splits a run wherever it steps onto the reference off that stretch.
- * Each piece between those steps that steps on the stretch is kept from its
- * first such step to its last, so a detour that comes back is kept whole, and
- * `context` bp of the walk past either end. At AMY1 haplotypes go from a 4 kb
- * window to the other copies and back: the cut above keeps 9,928 nodes there,
- * the contained cut 182.
+ * A contained cut splits a run wherever it steps onto the reference off the
+ * drawn stretch. Each piece between those steps that steps on the stretch is
+ * kept from its first such step to its last, so a detour that comes back is
+ * kept whole, and `context` bp of the walk past either end. At AMY1
+ * haplotypes go from a 4 kb window to the other copies and back: the cut
+ * above keeps 9,928 nodes there, the contained cut 182.
  *
- * A haplotype with no step on the window can still cross it, between
- * consecutive reference steps either side. The cut keeps the steps off the
- * reference between them, and names a jump straight across as a skip, as
- * gfa-to-tabix's skip rows do in chunks where the path has no piece. At
- * 22q11 four HPRC haplotypes jump over a 54 kb stretch of GRCh38 from pieces
- * in the chunks either side, so the file holds no skip row for them. A run
- * that ends off the window with its path going on across it lists the chunk
- * it goes on in as `across`, which the reader reads even in a contained cut.
- *
- * Each fragment says what lies past either end (WalkStop).
+ * Every place a walk departs from the reference over the drawn stretch comes
+ * back once: the departures inside one piece are computed from its steps,
+ * and those between pieces, in different chunks or across W lines, come from
+ * the file's records, which the reader read over the same stretch. A record
+ * under `attachBp` of own sequence gets its own steps from the pieces the
+ * cut holds, and the reader fetches the leave piece of one it does not.
  */
 export function walkCut(
   runs: WalkRun[],
   nodes: Map<number, WalkNode>,
   refName: string,
-  { contained = false, context = 0, crossingBp = CROSSING_BP } = {},
+  records: WalkDeparture[],
+  {
+    contained = false,
+    context = 0,
+    attachBp = ATTACH_BP,
+    squeeze = (bp: number) => bp,
+  }: WalkCutOptions = {},
 ) {
-  const reference = (id: number) => {
-    const node = nodes.get(id)
-    return node?.rank === 0 ? node : undefined
-  }
   // the window and its context, as the reference nodes on it span them
   let windowStart = Infinity
   let windowEnd = -Infinity
@@ -379,62 +362,34 @@ export function walkCut(
       windowEnd = Math.max(windowEnd, node.end)
     }
   }
-  const passStart = (run: WalkRun, i: number, node: WalkNode) =>
-    passAt(node, run.refStarts?.[i])
-  const stepOnWindow = (run: WalkRun, i: number) =>
-    passOnWindow(
-      nodes.get(run.ids[i]!),
-      run.refStarts?.[i],
-      windowStart,
-      windowEnd,
-    )
-  // the chunks walks cut off at the end of a run go on in
-  const open = new Map<string, WalkChunk>()
-  const goesOn = (chunk: WalkChunk | undefined) => {
-    if (chunk) {
-      open.set(`${chunk.refName}:${chunk.start}`, chunk)
-    }
-  }
-  // Where a walk stops being followed from step `at`, going by `dir`: the
-  // reference step it rejoins at past any steps off the reference, or across
-  // a deletion; else its last step off the reference before the run ends,
-  // noting the chunk the path goes on in, or reaches another reference
-  // sequence
-  const rejoin = (run: WalkRun, at: number, dir: number) => {
-    const { ids } = run
-    let i = at + dir
-    while (i >= 0 && i < ids.length && reference(ids[i]!) === undefined) {
-      i += dir
-    }
-    if (i < 0 || i >= ids.length) {
-      goesOn(dir < 0 ? run.prev : run.next)
-      return i - dir
-    }
-    const from = reference(ids[at]!)!
-    const to = reference(ids[i]!)!
-    if (to.refName !== refName) {
-      return i - dir
-    }
-    const fromStart = passStart(run, at, from)
-    const toStart = passStart(run, i, to)
-    const adjacent =
-      i === at + dir &&
-      (toStart === fromStart + from.end - from.start ||
-        toStart + to.end - to.start === fromStart)
-    return adjacent ? at : i
-  }
-  let reachStart = Infinity
-  let reachEnd = -Infinity
-  const spans: {
-    run: WalkRun
-    first: number
-    last: number
-    crossing?: WalkCrossing
-  }[] = []
   const length = (id: number) => {
     const node = nodes.get(id)
     return node === undefined ? 0 : node.end - node.start
   }
+  const onR = (run: WalkRun, i: number) => !Number.isNaN(run.refStarts[i])
+  // bp of a run's steps before each, and after its last
+  const prefixes = new Map<WalkRun, Float64Array>()
+  const before = (run: WalkRun) => {
+    let out = prefixes.get(run)
+    if (!out) {
+      out = new Float64Array(run.ids.length + 1)
+      for (let i = 0; i < run.ids.length; i++) {
+        out[i + 1] = out[i]! + length(run.ids[i]!)
+      }
+      prefixes.set(run, out)
+    }
+    return out
+  }
+  const stepOnWindow = (run: WalkRun, i: number) => {
+    const start = run.refStarts[i]!
+    const bp = before(run)
+    return (
+      !Number.isNaN(start) &&
+      start < windowEnd &&
+      start + bp[i + 1]! - bp[i]! > windowStart
+    )
+  }
+  const spans: { run: WalkRun; first: number; last: number }[] = []
   // A contained run's spans: each stretch between steps onto the reference
   // off the window that has steps on it, from its first such step to its
   // last, and `context` bp of the walk past either
@@ -444,21 +399,14 @@ export function walkCut(
     let first = -1
     let last = -1
     for (let i = 0; i <= ids.length; i++) {
-      const node = i < ids.length ? nodes.get(ids[i]!) : undefined
       const on = i < ids.length && stepOnWindow(run, i)
-      if (i === ids.length || (node?.rank === 0 && !on)) {
+      if (i === ids.length || (onR(run, i) && !on)) {
         if (first >= 0) {
           for (let bp = 0; first > from && bp < context;) {
             bp += length(ids[--first]!)
           }
           for (let bp = 0; last < i - 1 && bp < context;) {
             bp += length(ids[++last]!)
-          }
-          if (first === 0) {
-            goesOn(run.prev)
-          }
-          if (last === ids.length - 1) {
-            goesOn(run.next)
           }
           spans.push({ run, first, last })
         }
@@ -472,11 +420,10 @@ export function walkCut(
       }
     }
   }
-  const detourSpan = (run: WalkRun) => {
-    const { ids } = run
+  const stretchSpan = (run: WalkRun) => {
     let first = -1
     let last = -1
-    for (let i = 0; i < ids.length; i++) {
+    for (let i = 0; i < run.ids.length; i++) {
       if (stepOnWindow(run, i)) {
         if (first < 0) {
           first = i
@@ -485,213 +432,32 @@ export function walkCut(
       }
     }
     if (first >= 0) {
-      if (run.name !== refName) {
-        first = rejoin(run, first, -1)
-        last = rejoin(run, last, 1)
-        for (const i of [first, last]) {
-          const node = reference(ids[i]!)
-          if (node) {
-            const start = passStart(run, i, node)
-            reachStart = Math.min(reachStart, start)
-            reachEnd = Math.max(reachEnd, start + node.end - node.start)
-          }
-        }
-      }
       spans.push({ run, first, last })
     }
   }
-  // the chunks holding the far side of walks that cross the window
-  const across = new Map<string, WalkChunk>()
-  const goesAcross = (chunk: WalkChunk) => {
-    across.set(`${chunk.refName}:${chunk.start}`, chunk)
-  }
-  // each run's neighbours in its record, by piece index
-  const byRecord = new Map<string, WalkRun[]>()
-  for (const run of runs) {
-    const key = `${run.name}\t${run.fragStart}`
-    const list = byRecord.get(key)
-    if (list) {
-      list.push(run)
-    } else {
-      byRecord.set(key, [run])
-    }
-  }
-  const neighbours = new Map<WalkRun, [WalkRun?, WalkRun?]>()
-  for (const list of byRecord.values()) {
-    list.sort((a, b) => a.firstPiece - b.firstPiece)
-    list.forEach((run, i) => {
-      neighbours.set(run, [list[i - 1], list[i + 1]])
-    })
-  }
-  const skips: WalkSkip[] = []
-  // -1 where step `i` passes the reference before the window, 1 after it,
-  // else 0
-  const side = (run: WalkRun, i: number) => {
-    const node = reference(run.ids[i]!)
-    if (node?.refName !== refName) {
-      return 0
-    }
-    const start = passStart(run, i, node)
-    return start + node.end - node.start <= windowStart
-      ? -1
-      : start >= windowEnd
-        ? 1
-        : 0
-  }
-  const chunkSide = (chunk: WalkChunk | undefined) =>
-    chunk?.refName !== refName
-      ? 0
-      : chunk.start >= windowEnd
-        ? 1
-        : chunk.start < windowStart
-          ? -1
-          : 0
-  const pieceOf = (run: WalkRun, i: number) =>
-    run.abridged
-      ? i === 0
-        ? run.firstPiece
-        : run.abridged.pieces.at(-1)!
-      : run.firstPiece + (run.pieceStarts ?? []).filter(s => s <= i).length
-  // a deletion from step `a` to step `b`, a step later along the path
-  const jump = (a: [WalkRun, number], b: [WalkRun, number]): WalkSkip => {
-    const [x, y] = [a, b].map(([run, i]) => {
-      const node = reference(run.ids[i]!)!
-      const start = passStart(run, i, node)
-      return [start, start + node.end - node.start] as const
-    })
-    const [run, i] = a
-    return {
-      name: run.name,
-      fragStart: run.fragStart,
-      piece: pieceOf(run, i),
-      refStart: Math.min(x![1], y![1]),
-      refEnd: Math.max(x![0], y![0]),
-    }
-  }
-  // the step on R an abridged row holding piece `piece` stands at, at its
-  // end `i`
-  const abridgedAt = (
-    other: WalkRun | undefined,
-    piece: number,
-    i: number,
-  ): [WalkRun, number] | undefined =>
-    other?.abridged && pieceOf(other, i) === piece ? [other, i] : undefined
-  const bpBetween = (run: WalkRun, from: number, to: number) => {
-    let bp = 0
-    for (let i = from; i < to; i++) {
-      bp += length(run.ids[i]!)
-    }
-    return bp
-  }
-  // the chunks the rows holding steps `from` to `to` are filed under
-  const chunksOf = (run: WalkRun, from: number, to: number) => {
-    const starts = new Set<number>()
-    for (let p = pieceOf(run, from); p <= pieceOf(run, to); p++) {
-      const start = run.pieceChunks?.[p - run.firstPiece]
-      if (start !== undefined) {
-        starts.add(start)
-      }
-    }
-    return [...starts].map(start => ({ refName, start }))
-  }
-  // A run with no step on the window can still cross it between consecutive
-  // reference steps either side, keeping the steps off the reference between
-  // them, a skip in their place past `crossingBp` of them, or jumping straight
-  // across as a deletion. A run that ends off the
-  // window with its path going on across it reads on to the far side, or
-  // takes it from the abridged row of the next piece
-  const crossings = (run: WalkRun) => {
-    const { ids } = run
-    const last = ids.length - 1
-    const [before, after] = neighbours.get(run) ?? []
-    let at = -1
-    for (let i = 0; i <= last; i++) {
-      if (reference(ids[i]!) === undefined) {
-        continue
-      }
-      if (at >= 0) {
-        if (side(run, at) * side(run, i) < 0) {
-          const offBp = bpBetween(run, at + 1, i)
-          if (i > at + 1 && offBp <= crossingBp) {
-            const { refStart, refEnd } = jump([run, at], [run, i])
-            spans.push({
-              run,
-              first: at + 1,
-              last: i - 1,
-              crossing: { refStart, refEnd, reverse: side(run, at) > 0 },
-            })
-          } else if (i > at + 1) {
-            skips.push({
-              ...jump([run, at], [run, i]),
-              offBp,
-              offSteps: i - at - 1,
-              chunks: chunksOf(run, at + 1, i - 1),
-            })
-          } else {
-            skips.push(jump([run, at], [run, i]))
-          }
-        }
-      } else {
-        if (side(run, i) * chunkSide(run.prev) < 0) {
-          goesAcross(run.prev!)
-        }
-        const far =
-          i === 0 ? abridgedAt(before, run.firstPiece - 1, 1) : undefined
-        if (far && side(far[0], far[1]) * side(run, 0) < 0) {
-          skips.push(jump(far, [run, 0]))
-        }
-      }
-      at = i
-    }
-    if (at < 0) {
-      return
-    }
-    if (side(run, at) * chunkSide(run.next) < 0) {
-      goesAcross(run.next!)
-    }
-    const far =
-      at === last ? abridgedAt(after, pieceOf(run, last) + 1, 0) : undefined
-    if (far && side(run, last) * side(far[0], far[1]) < 0) {
-      skips.push(jump([run, last], far))
-    }
-  }
-  const stepsOnWindow = (run: WalkRun) =>
-    run.ids.some((_, i) => stepOnWindow(run, i))
   // an abridged run is kept where its stretch of R overlaps the window
   const abridgedSpan = (run: WalkRun) => {
-    const a = reference(run.ids[0]!)
-    const b = reference(run.ids.at(-1)!)
-    if (a?.refName !== refName || b?.refName !== refName) {
+    const a = run.refStarts[0]!
+    const b = run.refStarts[1]!
+    if (Number.isNaN(a) || Number.isNaN(b)) {
       return
     }
+    const ends = [a + length(run.ids[0]!), b + length(run.ids[1]!)]
     if (
-      Math.max(a.end, b.end) > windowStart &&
-      Math.min(a.start, b.start) < windowEnd
+      Math.max(ends[0]!, ends[1]!) > windowStart &&
+      Math.min(a, b) < windowEnd
     ) {
-      spans.push({ run, first: 0, last: run.ids.length - 1 })
+      spans.push({ run, first: 0, last: 1 })
     }
   }
   for (const run of runs) {
     if (run.abridged) {
       abridgedSpan(run)
-    } else if (run.name !== refName && !stepsOnWindow(run)) {
-      crossings(run)
     } else if (contained) {
       containedSpans(run)
     } else {
-      detourSpan(run)
+      stretchSpan(run)
     }
-  }
-  const inReach = (run: WalkRun, i: number) => {
-    if (stepOnWindow(run, i)) {
-      return true
-    }
-    const node = reference(run.ids[i]!)
-    if (node?.refName !== refName) {
-      return false
-    }
-    const start = passStart(run, i, node)
-    return start + node.end - node.start > reachStart && start < reachEnd
   }
   const kept = new Set<number>()
   for (const [id, node] of nodes) {
@@ -699,64 +465,19 @@ export function walkCut(
       kept.add(id)
     }
   }
+  const spansOf = new Map<WalkRun, { first: number; last: number }[]>()
   for (const span of spans) {
-    const { run } = span
-    const { ids } = run
-    if (run.name === refName) {
-      while (span.first > 0 && inReach(run, span.first - 1)) {
-        span.first--
-      }
-      while (span.last < ids.length - 1 && inReach(run, span.last + 1)) {
-        span.last++
-      }
-    }
     for (let i = span.first; i <= span.last; i++) {
-      kept.add(ids[i]!)
+      kept.add(span.run.ids[i]!)
     }
+    spansOf.set(span.run, [...(spansOf.get(span.run) ?? []), span])
   }
-  const abridgedRuns = new Set(
-    spans.filter(span => span.run.abridged).map(span => span.run),
-  )
-  const bpOf = (ids: Int32Array, from: number, to: number) => {
-    let bp = 0
-    for (let i = from; i < to; i++) {
-      bp += length(ids[i]!)
-    }
-    return bp
-  }
-  const ends = new Map<WalkRun, number>()
-  const runEnd = (run: WalkRun) => {
-    let end = ends.get(run)
-    if (end === undefined) {
-      end =
-        run.hapOffset + (run.abridged?.bp ?? bpOf(run.ids, 0, run.ids.length))
-      ends.set(run, end)
-    }
-    return end
-  }
-  const stop = (run: WalkRun, after: boolean, trimmed: number): WalkStop => {
-    const cut = trimmed > 0 ? { trimmed } : {}
-    const chunk = after ? run.next : run.prev
-    if (chunk) {
-      const other = neighbours.get(run)?.[after ? 1 : 0]
-      return other
-        ? {
-            kind: 'elsewhere',
-            chunk,
-            bp: after
-              ? other.hapOffset - runEnd(run)
-              : run.hapOffset - runEnd(other),
-            ...cut,
-          }
-        : { kind: 'elsewhere', chunk, ...cut }
-    }
-    const gap = after ? run.nextRecord : run.prevRecord
-    return gap ? { kind: 'break', ...gap, ...cut } : { kind: 'end', ...cut }
-  }
+  const runEnd = (run: WalkRun) =>
+    run.hapOffset + (run.abridged?.bp ?? before(run)[run.ids.length]!)
   const fragments: WalkFragment[] = []
-  for (const { run, first: f, last: l, crossing } of spans) {
+  for (const { run, first, last } of spans) {
     const { ids, rev } = run
-    if (abridgedRuns.has(run)) {
+    if (run.abridged) {
       fragments.push({
         name: run.name,
         fragStart: run.fragStart,
@@ -764,22 +485,15 @@ export function walkCut(
         hapEnd: runEnd(run),
         ids,
         rev,
-        before: stop(run, false, 0),
-        after: stop(run, true, 0),
+        trimmedBefore: 0,
+        trimmedAfter: 0,
         abridged: run.abridged,
       })
       continue
     }
-    let first = f
-    let last = l
-    while (first > 0 && kept.has(ids[first - 1]!)) {
-      first--
-    }
-    while (last < ids.length - 1 && kept.has(ids[last + 1]!)) {
-      last++
-    }
-    const hapStart = run.hapOffset + bpOf(ids, 0, first)
-    const hapEnd = hapStart + bpOf(ids, first, last + 1)
+    const bp = before(run)
+    const hapStart = run.hapOffset + bp[first]!
+    const hapEnd = run.hapOffset + bp[last + 1]!
     fragments.push({
       name: run.name,
       fragStart: run.fragStart,
@@ -787,41 +501,223 @@ export function walkCut(
       hapEnd,
       ids: ids.subarray(first, last + 1),
       rev: rev.subarray(first, last + 1),
-      before: stop(run, false, hapStart - run.hapOffset),
-      after: stop(run, true, runEnd(run) - hapEnd),
-      ...(crossing ? { crossing } : {}),
+      trimmedBefore: hapStart - run.hapOffset,
+      trimmedAfter: runEnd(run) - hapEnd,
     })
   }
-  return {
-    kept,
-    fragments,
-    open: [...open.values()],
-    across: [...across.values()],
-    skips,
+  // A step's breakpoint on R: where the path's sequence stops following R,
+  // the node's end for a step along R and its start for one against it, and
+  // the other way round for a rejoin
+  const breakpoint = (run: WalkRun, i: number, leave: boolean) => {
+    const reversed = run.against[i] === 1
+    const start = run.refStarts[i]!
+    return {
+      pos: reversed === leave ? start : start + length(run.ids[i]!),
+      reversed,
+    }
   }
+  const overExtent = (d: WalkDeparture) => {
+    const [lo, hi] = departureStretch(d)
+    return lo < windowEnd && hi > windowStart
+  }
+  // where each walk's fragments start and end on its contig
+  const fragmentEdges = new Map<string, Set<number>>()
+  for (const f of fragments) {
+    const edges = fragmentEdges.get(f.name) ?? new Set<number>()
+    edges.add(f.hapStart)
+    edges.add(f.hapEnd)
+    fragmentEdges.set(f.name, edges)
+  }
+  const touchesFragment = (d: WalkDeparture) => {
+    const edges = fragmentEdges.get(d.name)
+    return (
+      edges !== undefined &&
+      (edges.has(d.hapStart) || edges.has(d.hapStart + d.ownBp))
+    )
+  }
+  const departures: WalkDeparture[] = []
+  for (const run of runs) {
+    if (run.abridged || run.name === refName) {
+      continue
+    }
+    const { ids, rev, refStarts, against } = run
+    const bp = before(run)
+    const bounds = pieceBounds(run)
+    const spansHere = spansOf.get(run)
+    const edges = fragmentEdges.get(run.name)
+    const inSpan = (i: number, j: number) =>
+      spansHere?.some(s => s.first <= i && j <= s.last) ?? false
+    for (let p = 0; p + 1 < bounds.length; p++) {
+      let last = -1
+      for (let i = bounds[p]!; i < bounds[p + 1]!; i++) {
+        const start = refStarts[i]!
+        if (Number.isNaN(start)) {
+          continue
+        }
+        if (last >= 0) {
+          const ownBp = bp[i]! - bp[last + 1]!
+          const leaveReversed = against[last] === 1
+          const rejoinReversed = against[i] === 1
+          const leavePos = leaveReversed
+            ? refStarts[last]!
+            : refStarts[last]! + bp[last + 1]! - bp[last]!
+          const rejoinPos = rejoinReversed ? start + bp[i + 1]! - bp[i]! : start
+          const adjacent =
+            ownBp === 0 &&
+            leaveReversed === rejoinReversed &&
+            squeeze(leavePos) === squeeze(rejoinPos)
+          if (!adjacent) {
+            const leaveBase = leaveReversed ? leavePos : leavePos - 1
+            const rejoinBase = rejoinReversed ? rejoinPos - 1 : rejoinPos
+            const lo = Math.max(0, Math.min(leaveBase, rejoinBase))
+            const hi = Math.max(lo, leaveBase, rejoinBase) + 1
+            const hapStart = run.hapOffset + bp[last + 1]!
+            if (
+              (lo < windowEnd && hi > windowStart) ||
+              inSpan(last, i) ||
+              edges?.has(hapStart) === true ||
+              edges?.has(hapStart + ownBp) === true
+            ) {
+              const d: WalkDeparture = {
+                name: run.name,
+                hapStart,
+                ownBp,
+                missingBp: 0,
+                leavePos,
+                leaveReversed,
+                rejoinPos,
+                rejoinReversed,
+                fromSteps: true,
+              }
+              if (i > last + 1 && ownBp <= attachBp) {
+                d.steps = {
+                  ids: ids.subarray(last + 1, i),
+                  rev: rev.subarray(last + 1, i),
+                }
+                for (let k = last + 1; k < i; k++) {
+                  kept.add(ids[k]!)
+                }
+              }
+              departures.push(d)
+            }
+          }
+        }
+        last = i
+      }
+    }
+  }
+  // A record's own steps: those after its leave step to the end of that
+  // piece, then those before its rejoin step from the start of its piece. A
+  // leave step is the last step on R of its piece and a rejoin step the
+  // first of its, so the cut indexes those by name, breakpoint and contig
+  // position
+  const edgeKey = (name: string, pos: number, reversed: boolean, hap: number) =>
+    `${name}\t${pos}\t${reversed ? '-' : '+'}\t${hap}`
+  // a piece's last step on R and where the piece ends, and its first and
+  // where the piece starts
+  const leaves = new Map<string, [WalkRun, number, number]>()
+  const rejoins = new Map<string, [WalkRun, number, number]>()
+  for (const run of runs) {
+    if (run.abridged) {
+      continue
+    }
+    const bp = before(run)
+    const bounds = pieceBounds(run)
+    for (let p = 0; p + 1 < bounds.length; p++) {
+      let first = -1
+      let last = -1
+      for (let i = bounds[p]!; i < bounds[p + 1]!; i++) {
+        if (onR(run, i)) {
+          if (first < 0) {
+            first = i
+          }
+          last = i
+        }
+      }
+      if (first < 0) {
+        continue
+      }
+      const leave = breakpoint(run, last, true)
+      leaves.set(
+        edgeKey(
+          run.name,
+          leave.pos,
+          leave.reversed,
+          run.hapOffset + bp[last + 1]!,
+        ),
+        [run, last, bounds[p + 1]!],
+      )
+      const rejoin = breakpoint(run, first, false)
+      rejoins.set(
+        edgeKey(
+          run.name,
+          rejoin.pos,
+          rejoin.reversed,
+          run.hapOffset + bp[first]!,
+        ),
+        [run, first, bounds[p]!],
+      )
+    }
+  }
+  const unattached: Unattached[] = []
+  for (const d of records) {
+    if (d.ownBp > d.missingBp && d.ownBp <= attachBp) {
+      const ids: number[] = []
+      const rev: number[] = []
+      const leave = leaves.get(
+        edgeKey(d.name, d.leavePos, d.leaveReversed, d.hapStart),
+      )
+      if (leave) {
+        const [run, i, end] = leave
+        for (let k = i + 1; k < end; k++) {
+          ids.push(run.ids[k]!)
+          rev.push(run.rev[k]!)
+        }
+      }
+      const rejoin = rejoins.get(
+        edgeKey(d.name, d.rejoinPos, d.rejoinReversed, d.hapStart + d.ownBp),
+      )
+      if (rejoin) {
+        const [run, i, start] = rejoin
+        for (let k = start; k < i; k++) {
+          ids.push(run.ids[k]!)
+          rev.push(run.rev[k]!)
+        }
+      }
+      if (ids.length > 0) {
+        d.steps = { ids: Int32Array.from(ids), rev: Uint8Array.from(rev) }
+        for (const id of ids) {
+          kept.add(id)
+        }
+      }
+      if (!leave) {
+        unattached.push({
+          departure: d,
+          base: d.leaveReversed ? d.leavePos : Math.max(0, d.leavePos - 1),
+        })
+      }
+    }
+    if (overExtent(d) || touchesFragment(d)) {
+      departures.push(d)
+    }
+  }
+  departures.sort(
+    (a, b) =>
+      (a.name < b.name ? -1 : a.name > b.name ? 1 : 0) ||
+      a.hapStart - b.hapStart ||
+      a.leavePos - b.leavePos,
+  )
+  return { kept, fragments, departures, unattached }
 }
 
-// The most bp off the reference a crossing of the window keeps in full
-export const CROSSING_BP = 65_536
-
-// Where a step on `node` starts on the reference: `at`, the pass its row
-// names, else where the node is placed
-const passAt = (node: WalkNode, at = Number.NaN) =>
-  Number.isNaN(at) ? node.start : at
-
-// Whether a step on `node` lies on the window: a reference that passes a node
-// on the window elsewhere too steps off the window there
-function passOnWindow(
-  node: WalkNode | undefined,
-  at: number | undefined,
-  start: number,
-  end: number,
-) {
-  if (!node?.onWindow) {
-    return false
+// Where each of a run's pieces starts, and where the last ends
+function pieceBounds(run: WalkRun) {
+  const bounds = [0]
+  for (const start of run.pieceStarts) {
+    bounds.push(start)
   }
-  const from = passAt(node, at)
-  return from < end && from + node.end - node.start > start
+  bounds.push(run.ids.length)
+  return bounds
 }
 
 /**
@@ -848,49 +744,23 @@ export function surelyKept(
     let last = -1
     for (let i = 0; i < ids.length; i++) {
       const node = nodes.get(ids[i]!)
-      if (passOnWindow(node, refStarts?.[i], start, end)) {
+      const at = refStarts?.[i]
+      const onR = at !== undefined && !Number.isNaN(at)
+      if (
+        node?.onWindow &&
+        onR &&
+        at < end &&
+        at + node.end - node.start > start
+      ) {
         for (let j = last + 1; last >= 0 && j < i; j++) {
           into.add(ids[j]!)
         }
         last = i
-      } else if (contained && node?.rank === 0) {
+      } else if (contained && onR) {
         last = -1
       }
     }
   }
-}
-
-function stopTable(stops: WalkStop[]): WalkStopTable {
-  const chunkRefNames: string[] = []
-  const refIndex = new Map<string, number>()
-  const table: WalkStopTable = {
-    kinds: new Uint8Array(stops.length),
-    kindNames: [...WALK_STOP_KINDS],
-    bp: new Float64Array(stops.length).fill(Number.NaN),
-    trimmed: new Float64Array(stops.length),
-    chunkRefs: new Int32Array(stops.length).fill(-1),
-    chunkStarts: new Float64Array(stops.length).fill(Number.NaN),
-    chunkRefNames,
-  }
-  stops.forEach((stop, i) => {
-    table.kinds[i] = WALK_STOP_KINDS.indexOf(stop.kind)
-    table.trimmed[i] = stop.trimmed ?? 0
-    if ('bp' in stop && stop.bp !== undefined) {
-      table.bp[i] = stop.bp
-    }
-    if ('chunk' in stop && stop.chunk) {
-      const { refName, start } = stop.chunk
-      let ref = refIndex.get(refName)
-      if (ref === undefined) {
-        ref = chunkRefNames.length
-        refIndex.set(refName, ref)
-        chunkRefNames.push(refName)
-      }
-      table.chunkRefs[i] = ref
-      table.chunkStarts[i] = start
-    }
-  })
-  return table
 }
 
 // Whether placement `node` beats `held`: a pass of the reference over the
@@ -962,13 +832,13 @@ export class WalkGraph {
    * The cut as typed arrays, which the worker transfers rather than copies:
    * nodes by reference position, each link once in the order its L line
    * sorts, then a walk per fragment, the reference's first and the rest by
-   * name. graphTablesGFA writes them as the GFA they stand for, the same bytes
-   * for the same rows.
+   * name, and the departures with their own steps. graphTablesGFA writes
+   * them as the GFA they stand for, the same bytes for the same rows.
    */
   tables(
     kept: Set<number>,
     fragments: WalkFragment[],
-    skips: WalkSkip[] = [],
+    departures: WalkDeparture[] = [],
   ): GraphTables {
     if (this.chunks.length > 0) {
       placeAndLink(
@@ -1082,18 +952,12 @@ export class WalkGraph {
         offsets,
         steps,
         reversed,
-        before: stopTable(walks.map(f => f.before)),
-        after: stopTable(walks.map(f => f.after)),
+        trimmedBefore: Float64Array.from(walks, f => f.trimmedBefore),
+        trimmedAfter: Float64Array.from(walks, f => f.trimmedAfter),
         abridgedSteps: Float64Array.from(walks, f => f.abridged?.steps ?? NaN),
         abridgedBp: Float64Array.from(walks, f => f.abridged?.bp ?? NaN),
       },
-      skips: {
-        names: skips.map(s => s.name),
-        starts: Float64Array.from(skips, s => s.refStart),
-        ends: Float64Array.from(skips, s => s.refEnd),
-        offBp: Float64Array.from(skips, s => s.offBp ?? NaN),
-        offSteps: Float64Array.from(skips, s => s.offSteps ?? NaN),
-      },
+      departures: departureTable(departures, nodeIndex),
     }
   }
 
@@ -1110,15 +974,44 @@ export class WalkGraph {
   }
 }
 
-/**
- * The zoom-in notice for a cut whose walk rows hold more steps than
- * `readPerKept` times `stepBudget`, or undefined when they fit. A window reads whole chunks, those before it
- * included, so the span that fits is counted in chunks from the window's
- * start; when the chunks a window there always reads are over on their own,
- * no zoom fits and the notice asks for fewer haplotypes. A cut for every
- * haplotype is also offered fewer where the reference and one haplotype, at
- * the walks' average steps, would fit the whole window.
- */
+function departureTable(
+  departures: WalkDeparture[],
+  nodeIndex: (id: number) => number,
+): DepartureTable {
+  const n = departures.length
+  const offsets = new Int32Array(n + 1)
+  departures.forEach((d, k) => {
+    offsets[k + 1] = offsets[k]! + (d.steps?.ids.length ?? 0)
+  })
+  const steps = new Int32Array(offsets[n]!)
+  const reversed = new Uint8Array(steps.length)
+  departures.forEach((d, k) => {
+    if (d.steps) {
+      const at = offsets[k]!
+      for (let j = 0; j < d.steps.ids.length; j++) {
+        steps[at + j] = nodeIndex(d.steps.ids[j]!)
+      }
+      reversed.set(d.steps.rev, at)
+    }
+  })
+  return {
+    names: departures.map(d => d.name),
+    hapStarts: Float64Array.from(departures, d => d.hapStart),
+    ownBp: Float64Array.from(departures, d => d.ownBp),
+    missingBp: Float64Array.from(departures, d => d.missingBp),
+    leavePos: Float64Array.from(departures, d => d.leavePos),
+    leaveReversed: Uint8Array.from(departures, d => (d.leaveReversed ? 1 : 0)),
+    rejoinPos: Float64Array.from(departures, d => d.rejoinPos),
+    rejoinReversed: Uint8Array.from(departures, d =>
+      d.rejoinReversed ? 1 : 0,
+    ),
+    fromSteps: Uint8Array.from(departures, d => (d.fromSteps ? 1 : 0)),
+    offsets,
+    steps,
+    reversed,
+  }
+}
+
 // How a notice names the budgets, such as the config slots that set them
 export interface BudgetNames {
   steps: string
@@ -1139,6 +1032,16 @@ const readSteps = (row: WalkRow) => {
   return interior + (row.n - interior) / ALONG_R_PER_STEP
 }
 
+/**
+ * The zoom-in notice for a cut whose walk rows hold more steps than
+ * `readPerKept` times `stepBudget`, or undefined when they fit. A window reads
+ * whole chunks, those before it included, so the span that fits is counted in
+ * chunks from the window's start; when the chunks a window there always reads
+ * are over on their own, no zoom fits and the notice asks for fewer
+ * haplotypes. A cut for every haplotype is also offered fewer where the
+ * reference and one haplotype, at the walks' average steps, would fit the
+ * whole window.
+ */
 export function stepBudgetError(
   rows: WalkRow[],
   stepBudget: number,
@@ -1184,17 +1087,21 @@ export function stepBudgetError(
 }
 
 /**
- * The zoom-in notice for a cut that keeps more steps than `budget`, or
- * undefined when it fits. The span that fits is the window scaled by how far
- * over the cut is.
+ * The zoom-in notice for a cut that keeps more steps than `budget`, the
+ * fragments' and the departures' attached steps together, or undefined when
+ * it fits. The span that fits is the window scaled by how far over the cut
+ * is.
  */
 export function keptStepsError(
   fragments: WalkFragment[],
+  departures: WalkDeparture[],
   budget: number,
   window: { start: number; end: number },
   filtered: boolean,
 ) {
-  const total = fragments.reduce((sum, f) => sum + f.ids.length, 0)
+  const total =
+    fragments.reduce((sum, f) => sum + f.ids.length, 0) +
+    departures.reduce((sum, d) => sum + (d.steps?.ids.length ?? 0), 0)
   return keptOverError(total, budget, window, filtered)
 }
 
@@ -1232,9 +1139,9 @@ function keptOverError(
 }
 
 /**
- * The zoom-in notice for a cut whose three files would fetch more than
- * `budget` compressed bytes, or undefined when they fit. `bytesTo(end)` is the
- * indexes' estimate for a read from the window's first query base to `end`;
+ * The zoom-in notice for a cut whose walk read would fetch more than
+ * `budget` compressed bytes, or undefined when it fits. `bytesTo(end)` is the
+ * index's estimate for a read from the window's first query base to `end`;
  * the span that fits grows a chunk at a time from the chunk holding the
  * window's start, and when that chunk and those before it are over on their
  * own, no zoom fits.
@@ -1282,4 +1189,4 @@ export async function byteBudgetError(
       )
 }
 
-const megabytes = (bytes: number) => `${(bytes / 1e6).toFixed(1)} MB`
+export const megabytes = (bytes: number) => `${(bytes / 1e6).toFixed(1)} MB`

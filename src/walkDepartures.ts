@@ -42,7 +42,8 @@ export interface HaplotypeDepartures {
 }
 
 export type DepartureSource =
-  { fragments: WalkFragment[]; nodes: Map<number, WalkNode> } | GraphTables
+  | { fragments: WalkFragment[]; nodes: Map<number, WalkNode> }
+  | Pick<GraphTables, 'nodes' | 'walks'>
 
 interface Walk {
   name: string
@@ -77,7 +78,7 @@ function fromFragments(
       id: k => f.ids[k]!,
       rev: k => f.rev[k] === 1,
       abridgedBp: f.abridged?.bp,
-      trimmed: [f.before.trimmed ?? 0, f.after.trimmed ?? 0],
+      trimmed: [f.trimmedBefore, f.trimmedAfter],
     })),
     refStart: id => {
       const node = nodes.get(id)
@@ -90,7 +91,10 @@ function fromFragments(
   }
 }
 
-function fromTables({ nodes, walks }: GraphTables, refName: string): Lookup {
+function fromTables(
+  { nodes, walks }: Pick<GraphTables, 'nodes' | 'walks'>,
+  refName: string,
+): Lookup {
   const ref = nodes.refNames.indexOf(refName)
   return {
     walks: walks.names.map((name, p) => {

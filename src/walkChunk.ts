@@ -1,11 +1,13 @@
-import type { WalkChunk, WalkRow } from './walkRows.ts'
+import type { WalkRow } from './walkRows.ts'
 
-// A chunk of gfa-to-tabix's walk format 5, one file per reference (that
+// A chunk of gfa-to-tabix's walk format 6, one file per reference (that
 // repo's docs/walks-format.md). A chunk lists its `ref` rows, which joined in
 // hapOffset order are the chunk's reference path R; a `nodes` row with the
-// lengths of the nodes its routes visit; `route` rows, each a way off R; and a
+// lengths of the nodes its routes visit; `route` rows, each a way off R; a
 // `walk` row per piece of every other path, naming the routes it takes in
-// order. A handle is 2 * id + 1 when reversed.
+// order and, where R holds a node more than once, the occurrence a step
+// takes; and an `abridged` row per path whose pieces the writer moved to a
+// detail record. A handle is 2 * id + 1 when reversed.
 
 const NONE = -1
 
@@ -63,34 +65,10 @@ export function canonicalLink(a: number, b: number): [number, number] {
   return a > otherStrand(b) ? [otherStrand(b), otherStrand(a)] : [a, b]
 }
 
-// A chunk tag's value, `i:cs` on the row's own sequence or `Z:seq:cs`
-function chunkTag(tag: string, anchor: string): WalkChunk {
-  const at = tag.lastIndexOf(':')
-  return {
-    refName: tag[3] === 'Z' ? tag.slice(5, at) : anchor,
-    start: +tag.slice(at + 1),
-  }
-}
-
-// The neighbour tags pv/nx, and the record tags pg/pr and ng/nr
-function tags(cols: string[], from: number, anchor: string) {
-  const out: Pick<WalkRow, 'prev' | 'next' | 'prevRecord' | 'nextRecord'> = {}
-  for (let k = from; k < cols.length; k++) {
-    const tag = cols[k]!
-    const key = tag.slice(0, 2)
-    if (key === 'pv') {
-      out.prev = chunkTag(tag, anchor)
-    } else if (key === 'nx') {
-      out.next = chunkTag(tag, anchor)
-    } else if (key === 'pg' || key === 'ng') {
-      const side = key === 'pg' ? 'prevRecord' : 'nextRecord'
-      out[side] = { ...out[side], bp: +tag.slice(5) }
-    } else if (key === 'pr' || key === 'nr') {
-      const side = key === 'pr' ? 'prevRecord' : 'nextRecord'
-      out[side] = { bp: 0, ...out[side], chunk: chunkTag(tag, anchor) }
-    }
-  }
-  return out
+// A handle token and the occurrence in R its `@k` names, NONE for the default
+function parseCopy(token: string): [number, number] {
+  const at = token.indexOf('@')
+  return at < 0 ? [+token, NONE] : [+token.slice(0, at), +token.slice(at + 1)]
 }
 
 // The chunk's reference path R: its handles, the bp of its steps before each
@@ -127,6 +105,11 @@ export class RefPath {
 
   first(handle: number) {
     return this.occurrences.get(idOf(handle))?.[0]
+  }
+
+  // occurrence k of the handle's node, counting R's positions holding it from 0
+  copy(handle: number, k: number) {
+    return this.occurrences.get(idOf(handle))?.[k]
   }
 
   nearest(handle: number, i: number) {
@@ -205,55 +188,59 @@ const interiorAt = (route: Route, flip: boolean, k: number) =>
     ? otherStrand(route.interior[route.interior.length - 1 - k]!)
     : route.interior[k]!
 
-// A walk row's choices, three numbers each: route index, flip and step count,
-// from `tok` or `tok:count` tokens
+// A walk row's choices, four numbers each: route index, flip, and the
+// occurrences its `:k` and `@k` name, NONE for the defaults
 function parseChoices(field: string) {
   const choices: number[] = []
   if (field !== '.') {
     let previous = 0
+    const parts = [0, NONE, NONE]
+    let part = 0
     let v = 0
     let neg = false
-    let tok = 0
-    let colonSeen = false
+    let any = false
     for (let p = 0; p <= field.length; p++) {
       const ch = p < field.length ? field.charCodeAt(p) : 44
-      if (ch === 44) {
-        const value = neg ? -v : v
-        const d = colonSeen ? tok : value
-        const r = d & 1
-        previous += (d - r) / 2
-        choices.push(previous, r, colonSeen ? value : 0)
+      if (ch === 44 || ch === 58 || ch === 64) {
+        if (any) {
+          parts[part] = neg ? -v : v
+        }
         v = 0
         neg = false
-        colonSeen = false
-      } else if (ch === 58) {
-        tok = neg ? -v : v
-        v = 0
-        neg = false
-        colonSeen = true
+        any = false
+        if (ch === 44) {
+          const d = parts[0]!
+          const r = d & 1
+          previous += (d - r) / 2
+          choices.push(previous, r, parts[1]!, parts[2]!)
+          parts[0] = 0
+          parts[1] = NONE
+          parts[2] = NONE
+          part = 0
+        } else {
+          part = ch === 58 ? 1 : 2
+        }
       } else if (ch === 45) {
         neg = true
       } else {
         v = v * 10 + (ch - 48)
+        any = true
       }
     }
   }
   return choices
 }
 
-// Follows a walk row as docs/walks-format.md decodes it
+// Follows a walk row of `n` steps as docs/walks-format.md decodes it
 function traverse(
   path: RefPath,
   routes: Route[],
   start: number,
-  endField: string,
+  startCopy: number,
   choices: number[],
+  n: number,
   visit: Visitor,
 ) {
-  const colon = endField.indexOf(':')
-  const end = start + +(colon < 0 ? endField : endField.slice(0, colon))
-  const counted = colon >= 0
-  const tail = counted ? +endField.slice(colon + 1) : 0
   const routeOf = (index: number) => {
     const route = routes[index]
     if (!route) {
@@ -261,6 +248,7 @@ function traverse(
     }
     return route
   }
+  let emitted = 0
   let k = 0
   if (
     choices.length > 0 &&
@@ -269,29 +257,37 @@ function traverse(
     if (!visit.route(choices[0]!, choices[1] === 1)) {
       return
     }
-    k = 3
+    emitted += routeOf(choices[0]!).interior.length
+    k = 4
   }
   let h = start
-  let i = path.first(h)
+  let i = startCopy === NONE ? path.first(h) : path.copy(h, startCopy)
   if (i === undefined) {
     throw new WalkRowError('a walk row starts off its chunk')
   }
   visit.step(h, i)
-  const follow = (target: number, count: number) => {
+  emitted++
+  // along R to the occurrence `copy` names, or to the first position holding
+  // `target`
+  const follow = (target: number, copy: number) => {
     const forward = path.handles[i!] === h
-    const j = counted
-      ? i! + (forward ? count : -count)
-      : path.reach(i!, h, target)
-    if (j === undefined || j < 0 || j >= path.handles.length) {
+    const j =
+      copy === NONE ? path.reach(i!, h, target) : path.copy(target, copy)
+    if (
+      j === undefined ||
+      (forward ? j < i! : j > i!) ||
+      path.handleAt(j, forward) !== target
+    ) {
       throw new WalkRowError('a walk row runs off its chunk')
     }
     if (j !== i) {
       visit.stretch(i!, j, forward)
+      emitted += Math.abs(j - i!)
     }
     i = j
-    h = path.handleAt(j, forward)
+    h = target
   }
-  for (; k < choices.length; k += 3) {
+  for (; k < choices.length; k += 4) {
     const index = choices[k]!
     const flip = choices[k + 1] === 1
     const route = routeOf(index)
@@ -303,35 +299,47 @@ function traverse(
     if (!visit.route(index, flip)) {
       return
     }
+    emitted += route.interior.length
     const exit = orientedExit(route, flip)
     if (exit === NONE) {
       return
     }
     h = exit
-    i = path.nearest(h, i)
+    const copy = choices[k + 3]!
+    i = copy === NONE ? path.nearest(h, i) : path.copy(h, copy)
     if (i === undefined) {
       throw new WalkRowError('a route lands off its chunk')
     }
     visit.step(h, i)
+    emitted++
   }
-  follow(end, tail)
-  if (h !== end) {
-    throw new WalkRowError('a walk row misses its last handle')
+  const tail = n - emitted
+  if (tail < 0) {
+    throw new WalkRowError(`a walk row decodes to more than its ${n} steps`)
+  }
+  if (tail > 0) {
+    const forward = path.handles[i] === h
+    const j = i + (forward ? tail : -tail)
+    if (j < 0 || j >= path.handles.length) {
+      throw new WalkRowError('a walk row runs off its chunk')
+    }
+    visit.stretch(i, j, forward)
   }
 }
 
-// A walk row's steps as node ids, reverse flags and where each lies on the
-// reference, NaN off R
+// A walk row's steps as node ids, reverse flags, where each lies on the
+// reference, NaN off R, and whether each runs against R at its pass
 function decodeWalk(
   path: RefPath,
   routes: Route[],
   cols: string[],
   choices: number[],
-  n: number,
 ) {
+  const n = +cols[8]!
   const ids = new Int32Array(n)
   const rev = new Uint8Array(n)
   const refStarts = new Float64Array(n).fill(Number.NaN)
+  const against = new Uint8Array(n)
   let at = 0
   const push = (h: number, i?: number) => {
     if (at >= n) {
@@ -339,11 +347,13 @@ function decodeWalk(
     }
     if (i !== undefined) {
       refStarts[at] = path.starts[i]!
+      against[at] = path.handles[i] === h ? 0 : 1
     }
     ids[at] = idOf(h)
     rev[at++] = h & 1
   }
-  traverse(path, routes, +cols[9]!, cols[10]!, choices, {
+  const [start, startCopy] = parseCopy(cols[9]!)
+  traverse(path, routes, start, startCopy, choices, n, {
     step: push,
     stretch(from, to, forward) {
       if (forward) {
@@ -367,7 +377,7 @@ function decodeWalk(
   if (at !== n) {
     throw new WalkRowError(`a walk row decodes to ${at} steps, not ${n}`)
   }
-  return { ids, rev, refStarts }
+  return { ids, rev, refStarts, against }
 }
 
 // A chunk as decoded, kept until the cut knows its nodes: tables() then
@@ -392,7 +402,8 @@ export interface DecodedChunk {
   nodes: Map<number, PlacedNode>
   // R's later passes over a node in `nodes`
   revisits: (PlacedNode & { id: number })[]
-  // every row's first and last handle, for links between pieces
+  // the first and last handle of the reference's rows and the kept rows,
+  // for links between pieces
   ends: {
     name: string
     fragStart: number
@@ -401,64 +412,6 @@ export interface DecodedChunk {
     last: number
   }[]
   chunk: Chunk
-  // the kept paths' skip rows: each jump over this chunk
-  skips: WalkSkip[]
-}
-
-/**
- * A jump a path makes over a stretch of the reference, from a `skip` row:
- * `piece` is the piece before the jump, and refStart-refEnd the stretch it
- * leaves out, as a deletion does
- */
-export interface WalkSkip {
-  name: string
-  fragStart: number
-  piece: number
-  refStart: number
-  refEnd: number
-  // for a crossing the cut found too long to keep: its bp and steps off the
-  // reference, and the chunks whose rows hold them
-  offBp?: number
-  offSteps?: number
-  chunks?: WalkChunk[]
-}
-
-/**
- * The jumps over `region` of the paths the cut holds no walk of, and those
- * `crossed`, which the cut found between steps it read, each once, in name
- * order: a path's skip rows repeat its jump in every chunk it skips. Skip
- * rows hold no steps or nodes, so the step and node budgets leave them out,
- * and a byte budget counts their bytes with the rest of their chunks.
- */
-export function skipsOver(
-  jumps: WalkSkip[],
-  fragments: { name: string }[],
-  region: { start: number; end: number },
-  crossed: WalkSkip[] = [],
-) {
-  const walked = new Set(fragments.map(f => f.name))
-  const own = new Set(crossed)
-  const seen = new Set<string>()
-  const over: WalkSkip[] = []
-  for (const jump of [...crossed, ...jumps]) {
-    const key = `${jump.name}\t${jump.fragStart}\t${jump.piece}`
-    if (
-      (own.has(jump) || !walked.has(jump.name)) &&
-      !seen.has(key) &&
-      jump.refStart < region.end &&
-      jump.refEnd > region.start
-    ) {
-      seen.add(key)
-      over.push(jump)
-    }
-  }
-  return over.sort((a, b) =>
-    a.name < b.name
-      ? -1
-      : a.name > b.name
-        ? 1
-        : a.fragStart - b.fragStart || a.piece - b.piece,
-  )
 }
 
 // The bases an SQ:Z: tag at or after column `from` joins, one node's per
@@ -483,29 +436,43 @@ function sliceBases(
 }
 
 // The row of an `abridged` line, as a two-step walk from the handle on R it
-// starts on to the one it ends on. Its detail record is filed under
+// starts on to the one it ends on, each at the occurrence its `@k` names,
+// else the first and the one nearest it. Its detail record is filed under
 // `seq~cs`, one Tabix leaf bin apart.
 const DETAIL_SPACING = 16384
 
-function abridgedRow(cols: string[]): WalkRow {
+function abridgedRow(cols: string[], path: RefPath): WalkRow {
   const anchor = cols[0]!
-  const handles = [+cols[10]!, +cols[11]!]
+  const [h0, k0] = parseCopy(cols[10]!)
+  const [h1, k1] = parseCopy(cols[11]!)
+  const i0 = k0 === NONE ? path.first(h0) : path.copy(h0, k0)
+  const i1 =
+    i0 === undefined
+      ? undefined
+      : k1 === NONE
+        ? path.nearest(h1, i0)
+        : path.copy(h1, k1)
   const pieces = numbers(cols[7]!)
   for (let k = 1; k < pieces.length; k++) {
     pieces[k]! += pieces[k - 1]!
   }
+  const at = (i: number | undefined) =>
+    i === undefined ? Number.NaN : path.starts[i]!
+  const againstAt = (i: number | undefined, h: number) =>
+    i !== undefined && path.handles[i] !== h ? 1 : 0
   return {
     chunkStart: +cols[1]!,
     name: cols[4]!,
     fragStart: +cols[5]!,
     hapOffset: +cols[6]!,
     piece: pieces[0]!,
-    n: handles.length,
+    n: 2,
     steps: {
-      ids: Int32Array.from(handles, idOf),
-      rev: Uint8Array.from(handles, h => h & 1),
+      ids: Int32Array.from([h0, h1], idOf),
+      rev: Uint8Array.from([h0, h1], h => h & 1),
+      refStarts: Float64Array.from([at(i0), at(i1)]),
+      against: Uint8Array.from([againstAt(i0, h0), againstAt(i1, h1)]),
     },
-    ...tags(cols, 13, anchor),
     abridged: {
       pieces,
       steps: +cols[8]!,
@@ -563,13 +530,11 @@ export function decodeChunk(
     revisits: [],
     ends: [],
     chunk: { path, routes, walks: [], lengths, refLengths: ref?.lengths },
-    skips: [],
   }
   const placed = (id: number) =>
     out.nodes.has(id) || ref?.lengths.has(id) === true
   const previous = { id: 0 }
   for (const cols of ref ? [] : refRows(rows)) {
-    const anchor = cols[0]!
     const handles = tokens(cols[9]!, { id: 0 }, [])
     const nodeLengths = numbers(cols[10]!)
     const hapOffset = +cols[6]!
@@ -610,8 +575,8 @@ export function decodeChunk(
           ids: Int32Array.from(handles, idOf),
           rev: Uint8Array.from(handles, h => h & 1),
           refStarts: Float64Array.from(path.starts.slice(first)),
+          against: new Uint8Array(handles.length),
         },
-        ...tags(cols, 11, anchor),
       })
     }
   }
@@ -643,61 +608,23 @@ export function decodeChunk(
     return route
   }
   for (const cols of rows) {
-    if (cols[3] === 'skip') {
-      if (keep === undefined || keep(cols[4]!)) {
-        out.skips.push({
-          name: cols[4]!,
-          fragStart: +cols[5]!,
-          piece: +cols[6]!,
-          refStart: +cols[9]!,
-          refEnd: +cols[10]!,
-        })
-      }
-      continue
-    }
     if (cols[3] === 'abridged') {
       const name = cols[4]!
       if (keep === undefined || keep(name)) {
-        out.rows.push(abridgedRow(cols))
+        out.rows.push(abridgedRow(cols, path))
       }
       continue
     }
     if (cols[3] !== 'walk') {
       continue
     }
-    const choices = parseChoices(cols[11]!)
+    const choices = parseChoices(cols[10]!)
     out.chunk.walks.push({ cols, choices })
     const name = cols[4]!
-    const start = +cols[9]!
-    const endField = cols[10]!
-    const colon = endField.indexOf(':')
-    let first = start
-    let last = start + +(colon < 0 ? endField : endField.slice(0, colon))
-    if (choices.length > 0) {
-      const lead = routeOf(choices[0]!)
-      const leadFlip = choices[1] === 1
-      if (orientedEntry(lead, leadFlip) === NONE) {
-        first = interiorAt(lead, leadFlip, 0)
-      }
-      const at = choices.length - 3
-      const tail = routeOf(choices[at]!)
-      const tailFlip = choices[at + 1] === 1
-      if (orientedExit(tail, tailFlip) === NONE) {
-        last = interiorAt(tail, tailFlip, tail.interior.length - 1)
-      }
-    }
-    out.ends.push({
-      name,
-      fragStart: +cols[5]!,
-      piece: +cols[7]!,
-      first,
-      last,
-    })
     if (keep === undefined || keep(name)) {
-      const n = +cols[8]!
       let interior = 0
       // the walk's nodes off R, by length; placeAndLink gives their position
-      for (let k = 0; k < choices.length; k += 3) {
+      for (let k = 0; k < choices.length; k += 4) {
         interior += routeOf(choices[k]!).interior.length
         for (const h of routeOf(choices[k]!).interior) {
           const id = idOf(h)
@@ -707,6 +634,15 @@ export function decodeChunk(
           }
         }
       }
+      const steps = decodeWalk(path, routes, cols, choices)
+      const n = steps.ids.length
+      out.ends.push({
+        name,
+        fragStart: +cols[5]!,
+        piece: +cols[7]!,
+        first: steps.ids[0]! * 2 + steps.rev[0]!,
+        last: steps.ids[n - 1]! * 2 + steps.rev[n - 1]!,
+      })
       out.rows.push({
         chunkStart: +cols[1]!,
         name,
@@ -715,8 +651,7 @@ export function decodeChunk(
         piece: +cols[7]!,
         n,
         interior,
-        steps: decodeWalk(path, routes, cols, choices, n),
-        ...tags(cols, 12, cols[0]!),
+        steps,
       })
     }
   }
@@ -795,7 +730,7 @@ export function placeAndLink(
     const taken = new Uint8Array(routes.length)
     for (const { cols, choices } of walks) {
       let remaining = 0
-      for (let k = 0; k < choices.length; k += 3) {
+      for (let k = 0; k < choices.length; k += 4) {
         const index = choices[k]!
         if (wanted[index] && !taken[index]) {
           remaining++
@@ -806,7 +741,8 @@ export function placeAndLink(
       }
       const name = cols[4]!
       let offset = +cols[6]!
-      traverse(path, routes, +cols[9]!, cols[10]!, choices, {
+      const [start, startCopy] = parseCopy(cols[9]!)
+      traverse(path, routes, start, startCopy, choices, +cols[8]!, {
         step(h) {
           offset += lengthOf(h)
         },
