@@ -1102,3 +1102,21 @@ test('a direct jump across the window is a record with nothing of its own', asyn
     ['HG004#1#chr1', 30, 0, 0, '70-', '50-', 'forward', 'record', undefined],
   ])
 })
+
+// Twelve 10 bp reference nodes in 20 bp chunks (attach.GRCh38.gfa); HG003#1
+// leaves after 2, in chunk 0, for 21 and HG002#1 after 3, in chunk 20, for
+// 20, and both rejoin at 11, in chunk 100:
+//   W GRCh38 0 chr1 >1>2>3>4>5>6>7>8>9>10>11>12
+//   W HG002  1 chr1 >1>2>3>20>11>12
+//   W HG003  1 chr1 >1>2>21>11>12
+test('two records whose leave pieces lie in adjacent chunks both get their own steps', async () => {
+  const { departures } = await reader('attach.GRCh38').cut(
+    'GRCh38#0#chr1',
+    { start: 100, end: 120 },
+    { context: 0 },
+  )
+  expect(departures.map(departure)).toEqual([
+    ['HG002#1#chr1', 30, 10, 0, '30+', '100+', 'forward', 'record', '>20'],
+    ['HG003#1#chr1', 20, 10, 0, '20+', '100+', 'forward', 'record', '>21'],
+  ])
+})

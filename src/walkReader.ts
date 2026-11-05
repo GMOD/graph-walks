@@ -375,7 +375,10 @@ export class WalkReader {
       context,
       sequences: opts.sequences,
     })
-    const decoded = new Set<number>()
+    // the name filters each chunk was decoded under
+    const decodedBy = new Map<number, ((name: string) => boolean)[]>()
+    const decodedFor = (cs: number, name: string) =>
+      decodedBy.get(cs)?.some(took => took(name)) === true
     const ends: DecodedChunk['ends'] = []
     const surely = new Set<number>()
     const bounds = {
@@ -395,11 +398,14 @@ export class WalkReader {
       chunkRows: string[][],
       only: ((name: string) => boolean) | undefined,
     ) => {
-      if (decoded.has(cs)) {
-        return
-      }
-      decoded.add(cs)
-      const chunkCut = decodeChunk(chunkRows, only ?? keep, opts.sequences)
+      const wanted = only ?? keep ?? (() => true)
+      const earlier = decodedBy.get(cs) ?? []
+      decodedBy.set(cs, [...earlier, wanted])
+      const chunkCut = decodeChunk(
+        chunkRows,
+        name => wanted(name) && !earlier.some(took => took(name)),
+        opts.sequences,
+      )
       let ref: ChunkRef | undefined
       for (const row of chunkCut.rows) {
         if (row.abridged && expand?.(row.name)) {
@@ -577,7 +583,7 @@ export class WalkReader {
       const fetches = new Map<number, Set<string>>()
       for (const { departure, base } of cut.unattached) {
         const cs = Math.floor(base / chunk) * chunk
-        if (!decoded.has(cs)) {
+        if (!decodedFor(cs, departure.name)) {
           fetches.set(cs, (fetches.get(cs) ?? new Set()).add(departure.name))
         }
       }
