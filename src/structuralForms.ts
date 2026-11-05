@@ -53,7 +53,11 @@ export interface SiteState {
 }
 
 /**
- * Overlapping marks make one site. `covered` counts the placed haplotypes
+ * Overlapping marks that at least minCarriers haplotypes share make one site,
+ * two marks shared where each covers at least half of the other on R. A rarer
+ * mark states itself at every site it overlaps without widening any, so one
+ * haplotype's long jump leaves the sites it crosses apart; rarer marks that
+ * overlap none make sites of their own the same way. `covered` counts the placed haplotypes
  * with a call there: walks spanning the site's part inside the window, so a
  * mark beside a gap in them is no call. An `edge` site is one most haplotypes in the window have no call
  * at, which no form key holds. A `shared` site tells no forms apart, since no
@@ -444,9 +448,42 @@ const covers = (h: HaplotypeDepartures, start: number, end: number) =>
 const overlaps = (h: HaplotypeDepartures, start: number, end: number) =>
   h.covered.some(([a, b]) => a <= end && b >= start)
 
-function siteSpans(marksBy: Mark[][]) {
-  const spans = marksBy
-    .flat()
+// Marks of at least `minCarriers` haplotypes, two marks shared where each
+// covers at least half of the other on R, a point taking 1 bp
+function commonMarks(marksBy: Mark[][], minCarriers: number) {
+  const all = marksBy
+    .flatMap((marks, hap) =>
+      marks.map(m => ({
+        m,
+        hap,
+        start: m.refStart,
+        end: Math.max(m.refEnd, m.refStart + 1),
+      })),
+    )
+    .sort((a, b) => a.start - b.start)
+  const sharers = all.map(a => new Set([a.hap]))
+  all.forEach((a, i) => {
+    const half = (a.end - a.start) / 2
+    for (
+      let j = i + 1;
+      j < all.length && all[j]!.start <= a.start + half;
+      j++
+    ) {
+      const b = all[j]!
+      const overlap = Math.min(a.end, b.end) - b.start
+      if (overlap >= half && 2 * overlap >= b.end - b.start) {
+        sharers[i]!.add(b.hap)
+        sharers[j]!.add(a.hap)
+      }
+    }
+  })
+  return new Set(
+    all.flatMap((a, i) => (sharers[i]!.size >= minCarriers ? [a.m] : [])),
+  )
+}
+
+function unionSpans(marks: Mark[]) {
+  const spans = marks
     .map(m => [m.refStart, m.refEnd] as const)
     .sort((a, b) => a[0] - b[0])
   const sites: [number, number][] = []
@@ -459,6 +496,35 @@ function siteSpans(marksBy: Mark[][]) {
     }
   }
   return sites
+}
+
+// The spans of overlapping common marks, then of overlapping rarer marks that
+// overlap none of those
+function siteSpans(marks: Mark[], common: Set<Mark>) {
+  const commonSpans = unionSpans(marks.filter(m => common.has(m)))
+  const apart = marks.filter(
+    m => !common.has(m) && sitesOver(commonSpans, m).length === 0,
+  )
+  return [...commonSpans, ...unionSpans(apart)].sort((a, b) => a[0] - b[0])
+}
+
+// The indices of the sites `m` overlaps
+function sitesOver(sites: [number, number][], m: Mark) {
+  let lo = 0
+  let hi = sites.length
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (sites[mid]![1] < m.refStart) {
+      lo = mid + 1
+    } else {
+      hi = mid
+    }
+  }
+  const over: number[] = []
+  for (let i = lo; i < sites.length && sites[i]![0] <= m.refEnd; i++) {
+    over.push(i)
+  }
+  return over
 }
 
 function siteIndex(sites: [number, number][], m: Pick<Mark, 'refStart'>) {
@@ -500,17 +566,23 @@ export function structuralForms(
   const piecesBy = haplotypes.map(h =>
     haplotypePieces(h.departures, floorBp, joinBp, opts.window),
   )
-  const spans = siteSpans(piecesBy.map(p => p.marks))
+  const marksBy = piecesBy.map(p => p.marks)
+  const sharedMarks =
+    minCarriers > 1
+      ? commonMarks(marksBy, minCarriers)
+      : new Set(marksBy.flat())
+  const spans = siteSpans(marksBy.flat(), sharedMarks)
   const summed = spans.map(([a, b]) => b - a <= SUMMED_SITE_BP)
-  const marksAt = piecesBy.map(({ marks, plain }) => {
+  const rawAt = piecesBy.map(({ marks, plain }) => {
     const at = new Map<number, Mark[]>()
     const add = (i: number, m: Mark) => {
       at.set(i, [...(at.get(i) ?? []), m])
     }
     for (const m of marks) {
-      const i = siteIndex(spans, m)
-      if (!PLAIN_KINDS.has(m.kind) || !summed[i]) {
-        add(i, m)
+      for (const i of sitesOver(spans, m)) {
+        if (!PLAIN_KINDS.has(m.kind) || !summed[i]) {
+          add(i, m)
+        }
       }
     }
     const plainAt = new Map<number, Joined[]>()
@@ -524,25 +596,30 @@ export function structuralForms(
       const m = siteChange(pieces, floorBp)
       if (m) {
         add(i, m)
+        sharedMarks.add(m)
       }
     }
-    return new Map(
-      [...at].map(([site, ms]) => {
-        ms.sort((a, b) => a.refStart - b.refStart || a.refEnd - b.refEnd)
-        const state = ms.map(m => stateKey(m, floorBp)).join(';')
-        return [site, ms.map((m): SiteMark => ({ ...m, site, state }))]
-      }),
-    )
+    return at
   })
-  for (const at of marksAt) {
+  for (const at of rawAt) {
     for (const [i, ms] of at) {
       const span = spans[i]!
-      for (const m of ms) {
+      for (const m of ms.filter(mark => sharedMarks.has(mark))) {
         span[0] = Math.min(span[0], m.refStart)
         span[1] = Math.max(span[1], m.refEnd)
       }
     }
   }
+  const marksAt = rawAt.map(
+    at =>
+      new Map(
+        [...at].map(([site, ms]) => {
+          ms.sort((a, b) => a.refStart - b.refStart || a.refEnd - b.refEnd)
+          const state = ms.map(m => stateKey(m, floorBp)).join(';')
+          return [site, ms.map((m): SiteMark => ({ ...m, site, state }))]
+        }),
+      ),
+  )
   const raw = spans.map(([start, end], i) =>
     haplotypes.map((h, j) =>
       covers(h, Math.max(start, window.start), Math.min(end, window.end))
@@ -658,10 +735,11 @@ export function structuralForms(
     }
   }
   const forms = [...byKey].map(([key, { states, members }]): Form => {
-    const marks = states
-      .flatMap((state, i) => stateOf(i, state)?.marks ?? [])
-      .concat(shared)
-      .sort((a, b) => a.refStart - b.refStart)
+    const marks = onceEach(
+      states
+        .flatMap((state, i) => stateOf(i, state)?.marks ?? [])
+        .concat(shared),
+    ).sort((a, b) => a.refStart - b.refStart)
     const own = marks.filter(m => !sites[m.site]!.shared)
     const onlyShifts =
       own.length > 0 &&
@@ -699,6 +777,17 @@ export function structuralForms(
     minCarriers,
     floorBp,
   }
+}
+
+// A rarer mark over several sites states itself at each, and counts once
+function onceEach(marks: SiteMark[]) {
+  const seen = new Set<string>()
+  return marks.filter(m => {
+    const key = `${m.kind} ${m.refStart} ${m.refEnd} ${m.delta}`
+    const fresh = !seen.has(key)
+    seen.add(key)
+    return fresh
+  })
 }
 
 function extent(haplotypes: HaplotypeDepartures[]) {

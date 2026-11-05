@@ -375,6 +375,66 @@ test('nested changes are one site, each haplotype stating only its own', () => {
   ])
 })
 
+test('a rare mark over two common sites keeps them apart and states itself at each', () => {
+  const left = dep(10_000, 12_000, 0)
+  const right = dep(30_000, 32_000, 0)
+  const bridge = dep(11_000, 31_000, 5000)
+  const input = [
+    ...haps('R', 6),
+    ...haps('L', 3, [left]),
+    ...haps('G', 3, [right]),
+    hap('X#1', [bridge]),
+  ]
+  const result = forms(input, { minCarriers: 2 })
+  expect(result.sites.map(s => [s.refStart, s.refEnd])).toEqual([
+    [10_000, 12_000],
+    [30_000, 32_000],
+  ])
+  expect(result.forms.map(f => [f.key, f.members.length])).toEqual([
+    ['0|0', 6],
+    ['-2000|0', 4],
+    ['0|-2000', 3],
+  ])
+  expect(result.rareCarriers).toEqual(['X#1'])
+  const kept = forms(input, { minCarriers: 2, foldRareForms: false })
+  const x = kept.forms.find(f => f.members.includes('X#1'))!
+  expect(x.states).toEqual(['-15000', '-15000'])
+  expect(describeForm(x)).toBe('repl 20kb->5kb')
+  expect(x.net).toBe(-15_000)
+})
+
+test('rare marks overlapping no common site make a site of their own', () => {
+  const result = forms(
+    [
+      ...haps('R', 6),
+      ...haps('L', 3, [dep(10_000, 12_000, 0)]),
+      hap('X#1', [dep(50_000, 52_000, 0)]),
+      hap('Y#1', [dep(51_000, 60_000, 0)]),
+    ],
+    { minCarriers: 2 },
+  )
+  expect(result.sites.map(s => [s.refStart, s.refEnd])).toEqual([
+    [10_000, 12_000],
+    [50_000, 60_000],
+  ])
+})
+
+test('a mark shared by minCarriers haplotypes, each covering half of the other, makes sites', () => {
+  const result = forms(
+    [
+      ...haps('R', 6),
+      ...haps('L', 3, [dep(10_000, 12_000, 0)]),
+      ...haps('G', 3, [dep(30_000, 32_000, 0)]),
+      hap('X#1', [dep(11_000, 31_000, 5000)]),
+      hap('Y#1', [dep(11_500, 31_500, 4000)]),
+    ],
+    { minCarriers: 2 },
+  )
+  expect(result.sites.map(s => [s.refStart, s.refEnd])).toEqual([
+    [10_000, 32_000],
+  ])
+})
+
 test('a rare state folds to the common state nearest in net change', () => {
   const result = forms(
     [
