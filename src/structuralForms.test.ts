@@ -589,6 +589,52 @@ test('a change at another place in a site is another state, never folded into it
   ])
 })
 
+// A and B delete 10 kb at places 5.5 kb apart, which overlap by under half
+// of either; C deletes 10 kb between them, covering half of each
+test("one haplotype's mark covering half of two common changes merges neither's place", () => {
+  const two = [
+    ...haps('R', 80),
+    ...haps('A', 10, [dep(10_000, 20_000, 0)]),
+    ...haps('B', 10, [dep(15_500, 25_500, 0)]),
+  ]
+  const states = (input: HaplotypeDepartures[], minCarriers?: number) =>
+    forms(input, { minCarriers })
+      .sites[0]!.states.map(s => [s.key, s.carriers.length])
+      .sort()
+  for (const minCarriers of [undefined, 5]) {
+    expect(states(two, minCarriers)).toEqual([
+      ['-10000@10000', 10],
+      ['-10000@15500', 10],
+      ['0', 80],
+    ])
+    expect(
+      states([...two, hap('C#1', [dep(12_750, 22_750, 0)])], minCarriers),
+    ).toEqual([
+      ['-10000@10000', 11],
+      ['-10000@15500', 10],
+      ['0', 80],
+    ])
+  }
+})
+
+// 20 haplotypes delete 10 kb from 10,011, and one from 10,000: the place is
+// the span most carry, not the earliest start among those it is shared with
+test('a common change is placed where most of its carriers put it', () => {
+  const result = forms(
+    [
+      ...haps('R', 80),
+      ...haps('A', 20, [dep(10_011, 20_011, 0)]),
+      hap('C#1', [dep(10_000, 21_600, 0)]),
+    ],
+    { minCarriers: 5 },
+  )
+  expect(result.sites[0]!.states.map(s => [s.key, s.carriers.length])).toEqual([
+    ['0', 80],
+    ['-10000@10011', 20],
+    ['-12000@10011', 1],
+  ])
+})
+
 test('a haplotype of a form under minCarriers joins a form whose every state fits it, or other', () => {
   const left = (bp: number) => dep(1000, 1000 + bp, 0)
   const right = (bp: number) => dep(40_000, 40_000 + bp, 0)
@@ -1056,7 +1102,7 @@ test('a GSTM1-like window is two forms, and other holds a rare insertion', () =>
     {
       ...mark('deletion', 7001, 25_447, -18_445),
       site: 0,
-      state: '-18000@7000',
+      state: '-18000@7001',
     },
   ])
 })

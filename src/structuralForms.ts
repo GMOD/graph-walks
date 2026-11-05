@@ -45,8 +45,8 @@ export interface SiteMark extends Mark {
  * the marks of the carrier with that change. `carriers` are the haplotypes
  * whose own marks give the state, before any folding. `0` is R's structure.
  * At a site wider than SUMMED_SITE_BP each change keys on its size and its
- * place, `-20000@1000`: the first start among the marks joined to it by the
- * half-cover relation that makes marks common.
+ * place, `-20000@1000`: the start of the span carried most among the common
+ * spans that half-cover it, or its own start where it is rarer (commonMarks).
  */
 export interface SiteState {
   key: string
@@ -496,27 +496,35 @@ const covers = (h: HaplotypeDepartures, start: number, end: number) =>
 const overlaps = (h: HaplotypeDepartures, start: number, end: number) =>
   h.covered.some(([a, b]) => a <= end && b >= start)
 
-// Marks of at least `minCarriers` haplotypes, two marks shared where each
-// covers at least half of the other on R, a point taking 1 bp, and each mark's
-// place: the start of the first span among the marks it is joined to by that
-// relation. Marks of one span compare once, and a mark stops gathering sharers
-// at minCarriers
+interface Span {
+  start: number
+  end: number
+}
+
+// Whether each of two spans on R covers at least half of the other, a point
+// taking 1 bp
+const halfCover = (a: Span, b: Span) => {
+  const overlap = Math.min(a.end, b.end) - Math.max(a.start, b.start)
+  return 2 * overlap >= a.end - a.start && 2 * overlap >= b.end - b.start
+}
+
+const spanOf = (m: Pick<Mark, 'refStart' | 'refEnd'>): Span => ({
+  start: m.refStart,
+  end: Math.max(m.refEnd, m.refStart + 1),
+})
+
+// Marks of at least `minCarriers` haplotypes, two marks shared where they
+// half-cover each other, and each common mark's place: the start of the span
+// carried most, earlier first, that half-covers it and no span carried more
+// already places. A rarer mark places only itself, at its own start. Marks of
+// one span compare once, and a mark stops gathering sharers at minCarriers
 function commonMarks(marksBy: Mark[][], minCarriers: number) {
-  const bySpan = new Map<
-    string,
-    { start: number; end: number; marks: Mark[]; haps: Set<number> }
-  >()
+  const bySpan = new Map<string, Span & { marks: Mark[]; haps: Set<number> }>()
   marksBy.forEach((marks, hap) => {
     for (const m of marks) {
-      const start = m.refStart
-      const end = Math.max(m.refEnd, m.refStart + 1)
-      const key = `${start} ${end}`
-      const group = bySpan.get(key) ?? {
-        start,
-        end,
-        marks: [],
-        haps: new Set(),
-      }
+      const span = spanOf(m)
+      const key = `${span.start} ${span.end}`
+      const group = bySpan.get(key) ?? { ...span, marks: [], haps: new Set() }
       group.marks.push(m)
       group.haps.add(hap)
       bySpan.set(key, group)
@@ -532,9 +540,6 @@ function commonMarks(marksBy: Mark[][], minCarriers: number) {
       into.add(hap)
     }
   }
-  const joined = all.map((_, i) => i)
-  const first = (i: number): number =>
-    joined[i] === i ? i : (joined[i] = first(joined[i]!))
   all.forEach((a, i) => {
     const half = (a.end - a.start) / 2
     for (
@@ -543,21 +548,59 @@ function commonMarks(marksBy: Mark[][], minCarriers: number) {
       j++
     ) {
       const b = all[j]!
-      const overlap = Math.min(a.end, b.end) - b.start
-      if (overlap >= half && 2 * overlap >= b.end - b.start) {
+      if (halfCover(a, b)) {
         gather(sharers[i]!, b.haps)
         gather(sharers[j]!, a.haps)
-        const [lo, hi] = [first(i), first(j)].sort((x, y) => x - y)
-        joined[hi!] = lo!
       }
     }
   })
+  const common = all.filter((_, i) => sharers[i]!.size >= minCarriers)
+  // places by start; a span that half-covers another is at most twice as
+  // long, so a place it half-covers starts no earlier than twice its length
+  // before it
+  const places: (Span & { carriers: number })[] = []
+  const placeOf = new Map<Span, number>()
+  for (const g of common.toSorted(
+    (a, b) => b.haps.size - a.haps.size || a.start - b.start,
+  )) {
+    const from = g.start - 2 * (g.end - g.start)
+    let lo = 0
+    let hi = places.length
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (places[mid]!.start < from) {
+        lo = mid + 1
+      } else {
+        hi = mid
+      }
+    }
+    let best: (Span & { carriers: number }) | undefined
+    for (let k = lo; k < places.length && places[k]!.start <= g.end; k++) {
+      const p = places[k]!
+      if (
+        halfCover(p, g) &&
+        (!best ||
+          p.carriers > best.carriers ||
+          (p.carriers === best.carriers && p.start < best.start))
+      ) {
+        best = p
+      }
+    }
+    if (best) {
+      placeOf.set(g, best.start)
+    } else {
+      placeOf.set(g, g.start)
+      places.splice(lo, 0, {
+        start: g.start,
+        end: g.end,
+        carriers: g.haps.size,
+      })
+    }
+  }
   return {
-    common: new Set(
-      all.flatMap((g, i) => (sharers[i]!.size >= minCarriers ? g.marks : [])),
-    ),
+    common: new Set(common.flatMap(g => g.marks)),
     place: new Map(
-      all.flatMap((g, i) => g.marks.map(m => [m, all[first(i)]!.start])),
+      all.flatMap(g => g.marks.map(m => [m, placeOf.get(g) ?? g.start])),
     ),
   }
 }
