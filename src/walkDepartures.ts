@@ -111,7 +111,12 @@ export function walkDepartures(
   const reference = panSNHaplotype(refName) ?? refName
   const byPath = new Map<string, Item[]>()
   const add = (name: string, item: Item) => {
-    byPath.set(name, [...(byPath.get(name) ?? []), item])
+    const items = byPath.get(name)
+    if (items) {
+      items.push(item)
+    } else {
+      byPath.set(name, [item])
+    }
   }
   for (const f of fragments) {
     add(f.name, fragmentItem(f, length))
@@ -243,35 +248,28 @@ function pathChains(items: Item[], length: (id: number) => number) {
     'fragment' in item && !item.fragment.abridged
       ? [item.fragment.hapStart, item.fragment.hapEnd]
       : item.hap
-  const all = [...groups, ...rest]
-  const parent = new Map(all.map(item => [item, item]))
-  const find = (item: Item) => {
-    let root = item
-    for (let p = parent.get(root); p !== undefined && p !== root;) {
-      root = p
-      p = parent.get(root)
-    }
-    return root
-  }
-  const union = (a: Item, b: Item) => parent.set(find(a), find(b))
-  // items meet where one's contig stretch touches another's: a departure's
+  // items chain where one's contig stretch touches another's: a departure's
   // leave at a fragment's last step or inside it, its rejoin at the first,
-  // or two fragments abutting
-  const meets = (a: [number, number], b: [number, number]) =>
-    a[0] <= b[1] && a[1] >= b[0]
-  all.forEach((item, i) => {
-    for (const other of all.slice(i + 1)) {
-      if (meets(edges(item), edges(other))) {
-        union(item, other)
-      }
+  // or two fragments abutting. In start order, an item touches the chain so
+  // far when it starts no later than the chain's furthest end
+  const all = [...groups, ...rest]
+    .map(item => ({ item, edges: edges(item) }))
+    .sort((a, b) => a.edges[0] - b.edges[0])
+  const chains: Item[][] = []
+  let chainEnd = -Infinity
+  for (const {
+    item,
+    edges: [start, end],
+  } of all) {
+    const chain = chains.at(-1)
+    if (chain && start <= chainEnd) {
+      chain.push(item)
+    } else {
+      chains.push([item])
     }
-  })
-  const chains = new Map<Item, Item[]>()
-  for (const item of all) {
-    const root = find(item)
-    chains.set(root, [...(chains.get(root) ?? []), item])
+    chainEnd = Math.max(chainEnd, end)
   }
-  return [...chains.values()].map(chain => chainEvents(chain, holder, length))
+  return chains.map(chain => chainEvents(chain, holder, length))
 }
 
 function chainEvents(

@@ -317,7 +317,7 @@ test('an abridged fragment is net between its handles, and the departures either
   })
 })
 
-test('a departure within an abridged stretch joins its net', () => {
+test('a departure within an abridged stretch joins its net, with the bp the graph lacks', () => {
   const abridged = { pieces: [1, 3], steps: 900, bp: 1200, detail }
   const [a] = departuresOf(
     [
@@ -326,7 +326,7 @@ test('a departure within an abridged stretch joins its net', () => {
     ],
     [
       record('A#1#c', 600, 0, '+600', '+600'),
-      record('A#1#c', 700, 0, '+700', '+700'),
+      record('A#1#c', 700, 50, '+700', '+700', 50),
     ],
   )
   expect(a).toEqual({
@@ -336,11 +336,46 @@ test('a departure within an abridged stretch joins its net', () => {
       {
         refStart: 100,
         refEnd: 1700,
-        altLength: 1300,
+        altLength: 1350,
         ...plain,
         abridged: true,
       },
     ],
+  })
+})
+
+test('a departure leaving from inside abridged pieces keeps only the own bp outside them', () => {
+  const abridged = { pieces: [1], steps: 900, bp: 1500, detail }
+  const [a] = departuresOf(
+    [
+      walk('A#1#c', '+2 +4', { hapStart: 120, abridged }),
+      walk('A#1#c', '+51 +5 +6', { hapStart: 1620 }),
+    ],
+    [record('A#1#c', 1600, 40, '+1700', '+1700')],
+  )
+  expect(a!.departures).toEqual([
+    {
+      refStart: 100,
+      refEnd: 1700,
+      altLength: 1500 + 20,
+      ...plain,
+      abridged: true,
+    },
+  ])
+})
+
+test("a contig's second visit to the window gives the R both reach no call", () => {
+  const [a] = departuresOf([
+    walk('A#1#c', '+1 +2 +3'),
+    walk('A#1#c', '+2 +3 +4', { hapStart: 5000 }),
+  ])
+  expect(a).toEqual({
+    haplotype: 'A#1',
+    covered: [
+      [0, 100],
+      [700, 1700],
+    ],
+    departures: [],
   })
 })
 
@@ -468,5 +503,31 @@ describe('a forms cut', () => {
         }),
       ),
     ).toEqual(whole)
+  })
+
+  test("keeps an abridged walk's net exact when a piece of it lies in another chunk", async () => {
+    // X#1's pieces 0 and 2 are abridged in chunk 0, and piece 1 between them
+    // walks R in chunk 10
+    const window = { refName: 'c', start: 0, end: 36 }
+    const [abridged, expanded] = await Promise.all(
+      [false, true].map(async expand =>
+        byHaplotype(
+          await formsCut(reader('interleaved.R'), window, { expand }),
+        ),
+      ),
+    )
+    const x = abridged!['X#1']!
+    expect(net(expanded!['X#1']!)).toBe(84)
+    expect(net(x)).toBe(84)
+    expect(x.covered).toEqual(expanded!['X#1']!.covered)
+  })
+
+  test('throws RegionTooLargeError past its byte budget', async () => {
+    await expect(
+      formsCut(reader('abridged.R'), region, { byteBudget: 1 }),
+    ).rejects.toBeInstanceOf(RegionTooLargeError)
+    expect(
+      await formsCut(reader('abridged.R'), region, { byteBudget: 1e9 }),
+    ).toEqual(await formsCut(reader('abridged.R'), region))
   })
 })

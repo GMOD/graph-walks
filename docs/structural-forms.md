@@ -20,31 +20,38 @@ alternatives fall short:
 | MinigraphBubbleAdapter / GetSubgraph | One feature per bubble with no genotypes                                                                                                                                      |
 | **walks against R**                  | **Chosen**                                                                                                                                                                    |
 
-`walkDepartures` steps along R in each walk:
+`walkDepartures` reads each haplotype off the cut's departures and its
+fragments' ends, in chains:
 
-- A fragment that reads R mostly reversed reads the other way round (5 of 3,740
-  fragments measured)
-- A forward R step that does not abut the last one closes a departure. Its REF
-  span runs from the last R step's end to this one's start, and the steps
-  between give its ALT length
-- A reversed R step inside a forward walk counts as ALT and as inverted bp
-  (AMY1: 317 haplotypes)
+- A chain is a fragment with the departures leaving its last step, rejoining its
+  first or lying inside it, fragments that abut on the contig, or a departure
+  touching no fragment, such as a contig that jumps over the window or rejoins
+  far outside it, which the window's chunks never held. Each chain reads in its
+  own orientation: one that reads R mostly reversed reads the other way round (5
+  of 3,740 fragments measured)
+- Between a departure's rejoin and the next leave the path follows R. A rejoin
+  that is not where the last stretch along R ended closes a departure. Its REF
+  span runs from that end to the rejoin, and the path's own bp between, sequence
+  the graph lacks between a contig's W lines included, give its ALT length
+- A stretch of R walked against it inside a forward chain counts as ALT and as
+  inverted bp (AMY1: 317 haplotypes)
 - A step back along R is a tandem copy. The departure is the zero-width
   junction, and the bp walked again count as ALT, as `repeatedBp`, with their
   span as `copied`
-- Off-R steps before the first R step or after the last leave the walk open: the
-  haplotype has no call there
-- Fragments of one path that abut on the haplotype read as one walk. An abridged
-  fragment's bp then lie between the R steps either side of it, so the departure
-  holding it is exact in net, and only placement inside it is lost
-- An abridged row's pieces need not be consecutive. Where the path steps onto
-  another chunk's R and back, the pieces between lie in that chunk, and their bp
-  join the abridged departure's. Leaving them out put AMY1's unexpanded
-  HG03710#1 29 kb short: +167,764 bp against +196,894 expanded
-- An abridged fragment at either end of a walk has no R step beyond it, so its
-  departure stops at its anchors, which is exact only where the walk enters or
-  leaves R there. At AMY1, 129 of 132 unexpanded abridged haplotypes match their
-  expanded net and coverage exactly
+- R that two chains of one haplotype reach, such as a contig's second visit to
+  the window or a second contig over the same locus, is no call there
+- An abridged fragment's bp lie between the R its handles reach, so the
+  departure holding it is exact in net, and only placement inside it is lost.
+  Its pieces need not be consecutive: the pieces of other chunks between them,
+  the departures within them and the abridged fragments abutting them join its
+  net, each with the bp it adds, since an abridged row's bp count the moved
+  pieces alone. Leaving them out put AMY1's unexpanded HG03710#1 29 kb short:
+  +167,764 bp against +196,894 expanded
+- A departure with one end inside abridged pieces keeps only the own bp outside
+  them, the steps the cut holds and the bp the graph lacks, since its own steps
+  inside lie in the pieces' bp. At AMY1, under graph-walks 4's step-walking
+  reader, 129 of 132 unexpanded abridged haplotypes matched their expanded net
+  and coverage exactly; not remeasured on the chains
 
 Walks give exact lengths. Each haplotype's summed departures across the truth
 table's span match its assembly in 2,779 of 2,780 scored cases, median gap 0 bp;
@@ -67,7 +74,7 @@ one haplotype cover is now no call.
 | Rare states     | Fold to the common state nearest in net change. The sidecar's restored parents are dropped. `foldRareForms: false` keeps them apart at a site that tells forms apart, as a scorer wants every member's own sizes                                                                                                                                                                                                                                    |
 | Rare forms      | A form under `minCarriers` folds into the form nearest in net. Without it LPA at 50 bp has 48 single-haplotype rows                                                                                                                                                                                                                                                                                                                                 |
 | Edge sites      | A site that most haplotypes in the window have no call at is `edge` and left out of the key. A haplotype's call reads its coverage over the site's part inside the window, so a departure followed past the edge does not make the others no-calls                                                                                                                                                                                                  |
-| No calls        | A haplotype whose walks leave a gap in a site's part inside the window has no call there, even with a mark at the site, as an open walk at AMY1's insertion junction has. R that two of its walks cover, such as a second contig, and a junction between two walks, such as a record break whose bases the graph lacks, are gaps too                                                                                                                |
+| No calls        | A haplotype whose walks leave a gap in a site's part inside the window has no call there, even with a mark at the site, as a walk running off R at AMY1's insertion junction has. R that two of its walks cover, such as a second contig, and a junction between two walks, such as a record break whose bases the graph lacks, are gaps too                                                                                                        |
 | Shared sites    | A site where no second state reaches `minCarriers` is not in the key, and every form carries its majority state's marks                                                                                                                                                                                                                                                                                                                             |
 
 ### Folding to the nearest state
