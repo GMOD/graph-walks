@@ -858,7 +858,7 @@ export class WalkGraph {
   tables(
     kept: Set<number>,
     fragments: WalkFragment[],
-    departures: WalkDeparture[] = [],
+    departures: WalkDeparture[],
   ): GraphTables {
     if (this.chunks.length > 0) {
       placeAndLink(

@@ -197,6 +197,19 @@ test.each([
   },
 )
 
+// graph-walks 4's two-argument call must not compile, or a caller that
+// missed the bump would draw no departure at all
+test('tables takes the departures, so the call without them is a type error', async () => {
+  const { graph, kept, fragments, departures } = await reader(
+    'skip.GRCh38',
+  ).cut('GRCh38#0#chr1', { start: 31, end: 60 }, { context: 0 })
+  // @ts-expect-error departures are required
+  expect(() => graph.tables(kept, fragments)).toThrow()
+  expect(graph.tables(kept, fragments, departures).departures.names).toEqual([
+    'HG002#1#ctg',
+  ])
+})
+
 test('a step on a second pass over the window departs from that pass', async () => {
   const { fragments, departures } = await reader('revisit.GRCh38').cut(
     'GRCh38#0#chr1',
