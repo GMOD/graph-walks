@@ -10,9 +10,10 @@ export interface GraphTables {
     starts: Float64Array
     ranks: Int32Array
     refNames: string[]
-    // how many times the reference's paths pass each node, 0 off them: above
-    // 1, a step's pass there is the writer's placement choice; absent from
-    // tables another source builds
+    // how many times the reference's paths pass each node, as WalkNode's
+    // `passes`: above 1, a step's pass there is the writer's placement choice;
+    // 0 for a node placed off R, which may lie on the reference outside the
+    // rows read; absent from tables another source builds
     passes?: Int32Array
   }
   links: {

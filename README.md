@@ -110,8 +110,15 @@ const { tables, refName, sample } = await reader.cutRegion(
   stretch, so zooming in does not lower that read. A collapsed repeat that
   haplotypes hop between the copies of is the usual cause
 - `WALK_BUDGETS` holds the default budgets and `attachBp`, what a browser window
-  holds; a caller that wants no limit passes `Infinity`, so one that passes
-  nothing never fetches an unbounded read
+  holds; a caller that wants no limit passes `Infinity`
+- The byte budgets bound what a cut fetches only where the source has
+  `bytesForRegions`: the cut estimates the window's chunks and the departure
+  read before fetching them, and refuses either past its budget. A source
+  without it gets those reads whole. On any source, the detail records `expand`
+  names count only against `stepBudget`, once read, and the chunks fetched for
+  records' own steps, at most `attachFetches` (8), against no budget; the writer
+  moves paths out of any chunk whose rows would compress past its header's
+  `abridgebytes`
 
 ## Fragments
 
@@ -170,9 +177,11 @@ for (const d of departures) {
   chose which pass the step takes, so the departure is its choice, not a jump
   the walk makes, as where a walk follows one copy of a collapsed repeat the
   reference passes several times. A node's `passes` in `graph.nodes`, and the
-  tables' `nodes.passes`, say the same of each step on the reference; the
-  header's `revisited` counts the nodes passed more than once, 0 where every
-  departure in the file is a fact of the graph
+  tables' `nodes.passes`, say the same of each step on the reference, from the
+  ref rows the cut read; a node the cut places off the reference has 0, though
+  it may lie on the reference outside those rows; the header's `revisited`
+  counts the nodes passed more than once, 0 where every departure in the file is
+  a fact of the graph
 - A departure of at most `attachBp` of own sequence carries its own steps in
   `steps`, from the pieces the cut read; for a record whose leave piece lies
   outside the read, the cut fetches that chunk, at most `attachFetches` chunks a
@@ -236,10 +245,10 @@ result.forms.map(f => formTag(f, result))
   reading them all would take the cut past `stepBudget`, it throws
   `ExpansionTooLargeError`, a `RegionTooLargeError` with the step count, before
   the second cut
-- `formsCut` takes `byteBudget`, and a region the index estimates past it throws
-  `RegionTooLargeError` before any read. The budget covers the region's chunks,
-  not the detail records an expanded cut reads, which only the step budget
-  bounds
+- `formsCut` takes `byteBudget`, and on a source with `bytesForRegions` a region
+  the index estimates past it throws `RegionTooLargeError` before any read. The
+  budget covers the region's chunks, not the detail records an expanded cut
+  reads, which only the step budget bounds
 - `formsCut` reads each haplotype's departures off the cut's `departures`, every
   one over the region, and its fragments' ends, so a haplotype that leaves the
   region and rejoins the reference far away, or jumps over it whole, is a
@@ -265,14 +274,14 @@ result.forms.map(f => formTag(f, result))
 - [docs/structural-forms.md](docs/structural-forms.md) gives the grouping rules
   and the measurements behind them
 
-| Option          | Effect                                                                                   |
-| --------------- | ---------------------------------------------------------------------------------------- |
-| `window`        | The region; marks must touch it, and `auto` reads its width                              |
-| `floorBp`       | The smallest change a form tells apart; `auto` gives 50 bp, 1 kb or 10 kb by width       |
-| `minCarriers`   | The fewest haplotypes a state or form needs; 1% of them, at least one, by default        |
-| `joinBp`        | Departures of one haplotype nearer than this on the reference join; default 50           |
-| `exclude`       | Samples to leave out, such as a second reference carried as a haplotype; none by default |
-| `foldRareForms` | Fold states and forms under `minCarriers` into the nearest common one; on by default     |
+| Option          | Effect                                                                                                                    |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `window`        | The region; marks must touch it, and `auto` reads its width                                                               |
+| `floorBp`       | The smallest change a form tells apart; `auto` gives 50 bp, 1 kb or 10 kb by width                                        |
+| `minCarriers`   | The fewest haplotypes a state or form needs; 1% of them, at least one, by default                                         |
+| `joinBp`        | Departures of one haplotype nearer than this on the reference join; default 50                                            |
+| `exclude`       | Samples to leave out, such as a second reference carried as a haplotype; none by default                                  |
+| `foldRareForms` | Fold states and forms under `minCarriers` into the nearest common one they agree with, else `~` or `other`; on by default |
 
 ### Labels
 

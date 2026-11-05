@@ -465,11 +465,13 @@ export interface FormsCutOptions {
   // FORMS_STEP_BUDGET by default; each cut keeps at least FORMS_STEP_BUDGET
   stepBudget?: number
   // the most compressed bytes either cut fetches from the region's chunks,
-  // past which the cut throws RegionTooLargeError; WALK_BUDGETS' by default.
-  // Only stepBudget bounds the detail records expansion reads
+  // past which the cut throws RegionTooLargeError, on a source with
+  // bytesForRegions; WALK_BUDGETS' by default. Only stepBudget bounds the
+  // detail records expansion reads
   byteBudget?: number
   // the most compressed bytes either cut's departure read fetches, past
-  // which the cut throws DepartureReadError; WALK_BUDGETS' by default
+  // which the cut throws DepartureReadError, on a source with
+  // bytesForRegions; WALK_BUDGETS' by default
   departureByteBudget?: number
   signal?: AbortSignal
 }

@@ -23,7 +23,9 @@ export interface PlacedNode {
   start: number
   end: number
   rank: number
-  // how many times the reference's paths pass the node, 0 off them
+  // how many times the reference's paths pass the node, from the chunk's ref
+  // rows; 0 for a node off its R, whether off the reference or on it only
+  // where these rows do not hold it
   passes: number
 }
 
@@ -62,13 +64,23 @@ function numbers(field: string) {
   return field === '.' ? [] : field.split(',').map(Number)
 }
 
+// What a row from a format 6 writer before pass counts and one abridged row
+// per piece asks of the reader
+export const EARLIER_FORMAT_6 =
+  'from a gfa-to-tabix that wrote format 6 before pass counts and abridged rows per piece, so rebuild the walk file with gfa-to-tabix 3.0 or later'
+
 // A ref row's `passes`: how many times the reference's paths pass each
 // step's node, `.` when every one is 1
 function passCounts(cols: string[], n: number) {
   const field = cols[11]
   const counts =
     field === '.' ? new Array<number>(n).fill(1) : numbers(field ?? '')
-  if (counts.length !== n || counts.some(c => !Number.isInteger(c) || c < 1)) {
+  if (field === undefined || field.startsWith('SQ:Z:')) {
+    throw new WalkRowError(`a ref row with no passes, ${EARLIER_FORMAT_6}`)
+  } else if (
+    counts.length !== n ||
+    counts.some(c => !Number.isInteger(c) || c < 1)
+  ) {
     throw new WalkRowError(`a ref row's passes do not count its ${n} steps`)
   }
   return counts
@@ -460,7 +472,11 @@ const DETAIL_SPACING = 16384
 function abridgedRow(cols: string[], path: RefPath): WalkRow {
   const count = (k: number) => {
     const n = Number(cols[k])
-    if (cols[k] === '' || !Number.isInteger(n) || n < 0) {
+    if (cols[7]?.includes(',')) {
+      throw new WalkRowError(
+        `an abridged row of several pieces, ${EARLIER_FORMAT_6}: ${cols.join('\t')}`,
+      )
+    } else if (cols[k] === '' || !Number.isInteger(n) || n < 0) {
       throw new WalkRowError(
         `not an abridged row of one piece: ${cols.join('\t')}`,
       )

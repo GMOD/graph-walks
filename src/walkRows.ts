@@ -53,7 +53,9 @@ export interface WalkNode {
   start: number
   end: number
   rank: number
-  // how many times the reference's paths pass the node, 0 off them
+  // how many times the reference's paths pass the node, from the ref rows the
+  // cut read; 0 for a node it places off R, whether off the reference or on
+  // it only where no ref row it read holds the node
   passes: number
   // on the reference inside the window plus the cut's context
   onWindow: boolean

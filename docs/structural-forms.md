@@ -115,7 +115,10 @@ adding up plain pieces at a summed site, and shares with `structuralForms` only
   those also agrees
 - `unsited`: every change of the member lies in a site
 
-`other` and edge sites state nothing, so nothing there can contradict.
+`other` and edge sites state nothing, so nothing there can contradict. It checks
+what a form's keys state: its key at each informative site and, at a shared one,
+the state of its marks there. A form's `marks` and `net`, which `describeForm`
+and `formTag` draw, are built from those states and not checked again.
 structuralForms meets it by construction. A state folds, and a haplotype joins a
 form, only through the same `agrees`, change by change under half-cover at a
 wider site. A place is spans every two of which cover half of each other, and

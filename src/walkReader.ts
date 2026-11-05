@@ -167,12 +167,13 @@ export interface WalkCutOptions {
   // the most steps a cut keeps, WALK_BUDGETS' by default; Infinity has no
   // limit
   stepBudget?: number
-  // the most compressed bytes a cut fetches from the windows' chunks,
-  // WALK_BUDGETS' by default; Infinity has no limit. The detail records
-  // `expand` reads count only against stepBudget
+  // the most compressed bytes a cut fetches from the windows' chunks, on a
+  // source with bytesForRegions, WALK_BUDGETS' by default; Infinity has no
+  // limit. The detail records `expand` reads count only against stepBudget,
+  // and the chunks fetched for records' own steps against no budget
   byteBudget?: number
-  // the most compressed bytes the departure read fetches, WALK_BUDGETS' by
-  // default; Infinity has no limit
+  // the most compressed bytes the departure read fetches, on a source with
+  // bytesForRegions, WALK_BUDGETS' by default; Infinity has no limit
   departureByteBudget?: number
   // the most bp of own sequence a departure gets its steps attached for,
   // ATTACH_BP by default

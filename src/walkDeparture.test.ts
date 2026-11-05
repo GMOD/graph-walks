@@ -1,3 +1,4 @@
+import { decodeChunk, referenceNodes } from './walkChunk.ts'
 import {
   adjacentSteps,
   departureKind,
@@ -46,12 +47,45 @@ test('a record row parses to its ends, own sequence and contig position', () => 
   )
 })
 
-test('a record row without pass counts is refused, not misread', () => {
+test('a record row from a writer before pass counts is refused, saying to rebuild the file', () => {
   const cols =
     'GRCh38#0#chr1~departure\t19\t81\tdeparture\tHG002#1#ctg\t20\t30\t12\t20\t+\t80\t-'.split(
       '\t',
     )
-  expect(() => parseDepartureRow(cols)).toThrow(/not a walk format 6 row/)
+  expect(() => parseDepartureRow(cols)).toThrow(
+    /no pass counts.*rebuild the walk file with gfa-to-tabix 3.0 or later/,
+  )
+})
+
+test('a record row passing an end zero times is refused, as a ref row is', () => {
+  const row = (leavePasses: number, rejoinPasses: number) =>
+    `GRCh38#0#chr1~departure\t19\t81\tdeparture\tHG002#1#ctg\t20\t30\t12\t20\t+\t${leavePasses}\t80\t-\t${rejoinPasses}`.split(
+      '\t',
+    )
+  expect(() => parseDepartureRow(row(0, 1))).toThrow(/not a walk format 6 row/)
+  expect(() => parseDepartureRow(row(1, 0))).toThrow(/not a walk format 6 row/)
+  expect(parseDepartureRow(row(1, 1)).leavePasses).toBe(1)
+})
+
+test('ref and abridged rows from a writer before pass counts are refused, saying to rebuild the file', () => {
+  const ref = (more: string) =>
+    `R#0#c\t0\t1\tref\tR#0#c\t0\t0\t0\t2\t2,2\t6,6${more}`.split('\t')
+  expect(referenceNodes([ref('\t.')]).map(n => n.passes)).toEqual([1, 1])
+  for (const earlier of ['', '\tSQ:Z:ACGTACGTACGT']) {
+    expect(() => referenceNodes([ref(earlier)])).toThrow(
+      /ref row with no passes.*rebuild the walk file/,
+    )
+  }
+  const abridged = (pieces: string) =>
+    `R#0#c\t0\t1\tabridged\tX#1#c\t0\t0\t${pieces}\t5\t42\t2\t4\t1`.split('\t')
+  expect(() => decodeChunk([ref('\t.'), abridged('0,2')], undefined)).toThrow(
+    /abridged row of several pieces.*rebuild the walk file/,
+  )
+  expect(
+    decodeChunk([ref('\t.'), abridged('0')], undefined).rows.filter(
+      r => r.abridged,
+    ),
+  ).toHaveLength(1)
 })
 
 test('a departure is a placement choice where either end lies on a node the reference passes more than once', () => {

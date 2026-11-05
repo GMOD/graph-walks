@@ -1,4 +1,4 @@
-import { WalkRowError } from './walkChunk.ts'
+import { EARLIER_FORMAT_6, WalkRowError } from './walkChunk.ts'
 
 // A departure: where a path's consecutive steps on the reference sequence S
 // are not adjacent there, from a walk file's `departure` records or computed
@@ -124,9 +124,14 @@ export function placementChoice(
   return d.leavePasses > 1 || d.rejoinPasses > 1
 }
 
-const count = (field: string | undefined, row: string[]) => {
+const count = (field: string | undefined, row: string[], least = 0) => {
   const n = Number(field)
-  if (field === undefined || field === '' || !Number.isInteger(n) || n < 0) {
+  if (
+    field === undefined ||
+    field === '' ||
+    !Number.isInteger(n) ||
+    n < least
+  ) {
     throw new WalkRowError(`not a walk format 6 row: ${row.join('\t')}`)
   }
   return n
@@ -141,9 +146,16 @@ const strand = (field: string | undefined, row: string[]) => {
 
 // A record row's columns, `departure path hapStart ownBp missingBp leavePos
 // leaveStrand leavePasses rejoinPos rejoinStrand rejoinPasses`, from its kind
-// at `from`; a row that is not one throws
+// at `from`; a row that is not one throws, saying to rebuild a file whose
+// rows lack the pass counts
 export function parseDepartureRow(cols: string[], from = 3): WalkDeparture {
   const n = (k: number) => count(cols[from + k], cols)
+  const passes = (k: number) => count(cols[from + k], cols, 1)
+  if (cols.length - from === 9) {
+    throw new WalkRowError(
+      `a departure record with no pass counts, ${EARLIER_FORMAT_6}: ${cols.join('\t')}`,
+    )
+  }
   return {
     name: cols[from + 1]!,
     hapStart: n(2),
@@ -151,10 +163,10 @@ export function parseDepartureRow(cols: string[], from = 3): WalkDeparture {
     missingBp: n(4),
     leavePos: n(5),
     leaveReversed: strand(cols[from + 6], cols),
-    leavePasses: n(7),
+    leavePasses: passes(7),
     rejoinPos: n(8),
     rejoinReversed: strand(cols[from + 9], cols),
-    rejoinPasses: n(10),
+    rejoinPasses: passes(10),
     fromSteps: false,
   }
 }
