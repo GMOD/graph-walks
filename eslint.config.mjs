@@ -5,7 +5,13 @@ import tseslint from 'typescript-eslint'
 
 export default defineConfig(
   {
-    ignores: ['eslint.config.mjs', 'esm/*', 'vitest.config.ts', '.claude/**'],
+    ignores: [
+      'eslint.config.mjs',
+      'esm/*',
+      'vitest.config.ts',
+      'release-check/vitest.config.ts',
+      '.claude/**',
+    ],
   },
   {
     languageOptions: {

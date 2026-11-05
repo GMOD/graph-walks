@@ -45,7 +45,8 @@
     "test": "vitest run",
     "prepack": "pnpm build",
     "preversion": "pnpm lint && pnpm format:check && pnpm typecheck && pnpm test && pnpm build",
-    "postversion": "git push --follow-tags"
+    "postversion": "git push --follow-tags",
+    "release-check": "vitest run --config release-check/vitest.config.ts"
   },
   "engines": {
     "node": ">=20"

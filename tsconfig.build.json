@@ -7,5 +7,6 @@
     "outDir": "esm",
     "types": []
   },
-  "exclude": ["src/**/*.test.ts", "src/testing.ts"]
+  "exclude": ["src/**/*.test.ts", "src/testing.ts"],
+  "include": ["src"]
 }
