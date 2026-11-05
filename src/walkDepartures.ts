@@ -48,17 +48,16 @@ export interface DepartureSource {
 
 // What a path does along its contig: follows R over [lo, hi), along or
 // against it; runs `bp` of its own; or runs `bp` the writer abridged between
-// R's bases lo and hi
+// R's bases lo and hi, along R or against it as its ends are
 type Event =
   | { kind: 'on'; lo: number; hi: number; reversed: boolean }
   | { kind: 'own'; bp: number }
-  | { kind: 'abridged'; lo: number; hi: number; bp: number }
+  | { kind: 'abridged'; lo: number; hi: number; bp: number; reversed: boolean }
 
 // A point on a path's contig: where it is on R until (a fragment's last step
 // or a departure's leave, `order` 0), from (a fragment's first step or a
 // departure's rejoin, 1), or where an abridged stretch starts (2). `own` is
-// the bp of the path's own that follow a leave, or precede a rejoin whose
-// leave lies in an abridged stretch
+// the bp of the path's own that follow a leave
 interface Anchor {
   hap: number
   order: 0 | 1 | 2
@@ -66,7 +65,7 @@ interface Anchor {
   reversed: boolean
   exit?: true
   own?: number
-  abridged?: { lo: number; hi: number; bp: number }
+  abridged?: { lo: number; hi: number; bp: number; reversed: boolean }
 }
 
 // A fragment or departure as the bp of its contig it holds, the R it reaches
@@ -96,9 +95,10 @@ const most = (a: number, b: number) =>
  * walked against it reads as inverted, a jump back as a tandem copy, and
  * sequence between a contig's W lines as the path's own. R that two chains
  * of a haplotype reach, such as a contig's second visit to the window, has
- * no call. An abridged fragment's bp, with those of the fragments and
- * departures lying within them, are a net change between the R its handles
- * reach. The walks on R's own haplotype are left out.
+ * no call. An abridged fragment's bp, less the own bp of the departures
+ * leaving or rejoining inside it, are a net change between the R its handles
+ * reach, along R or against it as both handles are. The walks on R's own
+ * haplotype are left out.
  */
 export function walkDepartures(
   { fragments, departures, nodes }: DepartureSource,
@@ -177,59 +177,18 @@ function fragmentItem(f: WalkFragment, length: (id: number) => number): Item {
  * the read did not see lies between chains, so each reads on its own, and R
  * that two chains reach has no call. An abridged fragment is a net over one
  * piece a writer moved out of a chunk, from its row's hapOffset to hapOffset
- * + bp on the contig. Abridged fragments that abut join into one net, as do
- * two that a departure leaves and rejoins strictly inside, across a contig's
- * W lines, with the departure's missing bp added: the pieces hold its own
- * steps. A departure with one end inside one keeps the bp of its own
- * outside: those the graph lacks and the steps the cut holds.
+ * + bp on the contig. A departure keeps all its own bp, so a piece it leaves
+ * inside ends at its leave and one it rejoins inside starts at its rejoin:
+ * those steps of the piece are the departure's own.
  */
 function pathChains(items: Item[], length: (id: number) => number) {
-  const touches = (a: Item, b: Item) =>
-    a.hap[0] <= b.hap[1] && a.hap[1] >= b.hap[0]
-  // a group's stretch of the contig and of R, and `bp` more of the path
-  const join = (g: Item, item: Item, bp: number) => {
-    g.hap = [Math.min(g.hap[0], item.hap[0]), Math.max(g.hap[1], item.hap[1])]
-    g.lo = least(g.lo, item.lo)
-    g.hi = most(g.hi, item.hi)
-    g.bp += bp
-  }
-  const abridged = (item: Item) =>
-    'fragment' in item && item.fragment.abridged !== undefined
-  let groups = items.filter(abridged).map(i => ({ ...i }))
-  const fragments = items.filter(i => 'fragment' in i && !abridged(i))
-  let departures = items.filter(i => !('fragment' in i))
-  // the group whose pieces hold the step at `hap` on the contig, past their
-  // first step and before their last: a departure leaving their last step
-  // or rejoining their first has its own bp outside them, and stays exact
-  const holder = (hap: number) =>
-    groups.find(g => g.hap[0] < hap && hap < g.hap[1])
-  for (let changed = groups.length > 0; changed;) {
-    const before = departures.length + groups.length
-    departures = departures.filter(item => {
-      const d = 'departure' in item ? item.departure : undefined
-      const a = d && holder(d.hapStart)
-      const b = d && holder(d.hapStart + d.ownBp)
-      if (d && a && b) {
-        if (b !== a) {
-          join(a, b, b.bp)
-          groups = groups.filter(g => g !== b)
-        }
-        join(a, item, d.missingBp)
-      }
-      return !(a && b)
-    })
-    const merged: Item[] = []
-    for (const g of groups.toSorted((a, b) => a.hap[0] - b.hap[0])) {
-      const last = merged.at(-1)
-      if (last && touches(last, g)) {
-        join(last, g, g.bp)
-      } else {
-        merged.push(g)
-      }
-    }
-    groups = merged
-    changed = departures.length + groups.length < before
-  }
+  const departures = items.filter(i => 'departure' in i)
+  const pieces = items.flatMap(item =>
+    'fragment' in item && item.fragment.abridged
+      ? [ownTrimmed(item, departures)]
+      : [],
+  )
+  const fragments = items.filter(i => 'fragment' in i && !i.fragment.abridged)
   // where each item starts and ends on the contig
   const edges = (item: Item): [number, number] =>
     'fragment' in item && !item.fragment.abridged
@@ -239,7 +198,7 @@ function pathChains(items: Item[], length: (id: number) => number) {
   // leave at a fragment's last step or inside it, its rejoin at the first,
   // or two fragments abutting. In start order, an item touches the chain so
   // far when it starts no later than the chain's furthest end
-  const all = [...groups, ...fragments, ...departures]
+  const all = [...pieces, ...fragments, ...departures]
     .map(item => ({ item, edges: edges(item) }))
     .sort((a, b) => a.edges[0] - b.edges[0])
   const chains: Item[][] = []
@@ -256,26 +215,43 @@ function pathChains(items: Item[], length: (id: number) => number) {
     }
     chainEnd = Math.max(chainEnd, end)
   }
-  return chains.map(chain => chainEvents(chain, holder, length))
+  return chains.map(chain => chainEvents(chain, length))
 }
 
-function chainEvents(
-  items: Item[],
-  holder: (hap: number) => Item | undefined,
-  length: (id: number) => number,
-) {
+// An abridged piece without the own steps of the departures that leave or
+// rejoin inside it: its steps on R lie outside every departure's own
+// sequence, so those are its leading and trailing steps
+function ownTrimmed(piece: Item, departures: Item[]): Item {
+  let [start, end] = piece.hap
+  for (const { hap } of departures) {
+    if (hap[0] > start && hap[0] < end) {
+      end = hap[0]
+    }
+    if (hap[1] > start && hap[1] < end) {
+      start = hap[1]
+    }
+  }
+  return {
+    ...piece,
+    hap: [start, end],
+    bp: piece.bp - (start - piece.hap[0]) - (piece.hap[1] - end),
+  }
+}
+
+function chainEvents(items: Item[], length: (id: number) => number) {
   const anchors: Anchor[] = []
   for (const item of items) {
     if ('fragment' in item) {
       const f = item.fragment
       if (f.abridged) {
         if (onR(item.lo) && onR(item.hi)) {
+          const reversed = f.against.every(r => r === 1)
           anchors.push({
             hap: item.hap[0],
             order: 2,
             pos: item.lo,
-            reversed: false,
-            abridged: { lo: item.lo, hi: item.hi, bp: item.bp },
+            reversed,
+            abridged: { lo: item.lo, hi: item.hi, bp: item.bp, reversed },
           })
         }
         continue
@@ -295,31 +271,21 @@ function chainEvents(
       }
     } else {
       const d = item.departure
-      const leaveIn = holder(d.hapStart) !== undefined
-      const rejoinIn = holder(d.hapStart + d.ownBp) !== undefined
-      const own =
-        leaveIn || rejoinIn
-          ? d.missingBp +
-            (d.steps?.ids.reduce((sum, id) => sum + length(id), 0) ?? 0)
-          : d.ownBp
-      if (!leaveIn) {
-        anchors.push({
+      anchors.push(
+        {
           hap: d.hapStart,
           order: 0,
           pos: d.leavePos,
           reversed: d.leaveReversed,
-          own,
-        })
-      }
-      if (!rejoinIn) {
-        anchors.push({
+          own: d.ownBp,
+        },
+        {
           hap: d.hapStart + d.ownBp,
           order: 1,
           pos: d.rejoinPos,
           reversed: d.rejoinReversed,
-          ...(leaveIn ? { own } : {}),
-        })
-      }
+        },
+      )
     }
   }
   anchors.sort((a, b) => a.hap - b.hap || a.order - b.order)
@@ -349,9 +315,6 @@ function chainEvents(
       close()
       events.push({ kind: 'abridged', ...a.abridged })
     } else if (a.order === 1) {
-      if (a.own !== undefined) {
-        events.push({ kind: 'own', bp: a.own })
-      }
       cur ??= { pos: a.pos, reversed: a.reversed }
     } else if (a.exit) {
       if (cur) {
@@ -376,7 +339,7 @@ function chainEvents(
 function readPath(events: Event[], h: HaplotypeDepartures) {
   let bias = 0
   for (const e of events) {
-    if (e.kind === 'on') {
+    if (e.kind !== 'own') {
       bias += (e.reversed ? 1 : -1) * (e.hi - e.lo || 1)
     }
   }
@@ -387,18 +350,25 @@ function readPath(events: Event[], h: HaplotypeDepartures) {
   let alt = 0
   let inverted = 0
   // set while an abridged stretch's bp are in `alt`: the far end of the R
-  // its handles reach
+  // its handles reach where it runs along R, and true where it runs against
   let abridgedEnd = NaN
+  let abridgedAgainst = false
   for (const e of flip ? events.toReversed() : events) {
     if (e.kind === 'own') {
       alt += e.bp
+    } else if (e.kind === 'abridged' && e.reversed !== flip) {
+      alt += e.bp
+      inverted += e.hi - e.lo
+      abridgedAgainst = true
     } else if (e.kind === 'abridged') {
       if (Number.isNaN(prevEnd)) {
         first = e.lo
         prevEnd = e.lo
       }
       alt += e.bp
-      abridgedEnd = e.hi
+      abridgedEnd = Number.isNaN(abridgedEnd)
+        ? e.hi
+        : Math.max(abridgedEnd, e.hi)
     } else if (e.reversed !== flip) {
       alt += e.hi - e.lo
       inverted += e.hi - e.lo
@@ -411,7 +381,7 @@ function readPath(events: Event[], h: HaplotypeDepartures) {
           refStart: prevEnd,
           refEnd: Math.max(start, prevEnd),
           altLength: alt + Math.max(0, prevEnd - start),
-          invertedBp: 0,
+          invertedBp: inverted,
           repeatedBp: 0,
           abridged: true,
         })
@@ -426,12 +396,14 @@ function readPath(events: Event[], h: HaplotypeDepartures) {
           invertedBp: inverted,
           repeatedBp: repeated,
           ...(repeated > 0 ? { copied: [start, prevEnd] } : {}),
+          ...(abridgedAgainst ? { abridged: true as const } : {}),
         })
       }
       prevEnd = e.hi
       reach = Math.max(reach, e.hi)
       alt = 0
       inverted = 0
+      abridgedAgainst = false
     }
   }
   if (!Number.isNaN(abridgedEnd)) {
@@ -439,7 +411,7 @@ function readPath(events: Event[], h: HaplotypeDepartures) {
       refStart: prevEnd,
       refEnd: Math.max(abridgedEnd, prevEnd),
       altLength: alt,
-      invertedBp: 0,
+      invertedBp: inverted,
       repeatedBp: 0,
       abridged: true,
     })

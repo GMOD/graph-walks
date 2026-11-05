@@ -44,17 +44,29 @@ fragments' ends, in chains:
   departure holding it is exact in net, and only placement inside it is lost.
   Each abridged row is one piece, from its hapOffset to hapOffset + bp, so a
   piece of another chunk between two moved pieces is a fragment of its own and
-  the departures between them are records. Abridged fragments that abut join one
-  net, as do two a departure across W lines leaves and rejoins strictly inside,
-  with its missing bp. Before gfa-to-tabix wrote a row per piece, one row stood
-  for a path's moved pieces in a chunk with the bp of those pieces alone, and a
-  reader had to add what lay between them; leaving that out put AMY1's
-  unexpanded HG03710#1 29 kb short: +167,764 bp against +196,894 expanded
-- A departure with one end inside abridged pieces keeps only the own bp outside
-  them, the steps the cut holds and the bp the graph lacks, since its own steps
-  inside lie in the pieces' bp. At AMY1, under graph-walks 4's step-walking
-  reader, 129 of 132 unexpanded abridged haplotypes matched their expanded net
-  and coverage exactly; not remeasured on the chains
+  the departures between them are records. Before gfa-to-tabix wrote a row per
+  piece, one row stood for a path's moved pieces in a chunk with the bp of those
+  pieces alone, and a reader had to add what lay between them; leaving that out
+  put AMY1's unexpanded HG03710#1 29 kb short: +167,764 bp against +196,894
+  expanded
+- A departure leaving or rejoining inside a piece keeps all its own bp, and the
+  piece's net leaves out those of its steps: its trailing steps after the leave,
+  its leading steps before the rejoin. The piece's handles on R lie outside
+  every departure's own sequence, so that is all they share. A piece runs along
+  R or against it as both its handles do, so one against R in a chain read
+  forward is inverted ALT, as its steps would be
+- The reader this replaced kept, of a departure with an end inside a piece, only
+  the bp the graph lacks and the own steps the cut held, which it attaches only
+  up to `ATTACH_BP`, and joined two pieces a departure left and rejoined inside
+  into one net. Own steps in no piece of the cut, such as a W line holding none
+  of R or a step on another reference sequence, counted nowhere, and a piece's
+  trailing own steps went into its net even where the departure rejoined
+  reversed and the walks read in full close nothing. On MC chr22 that put 11
+  haplotypes in 29 windows off their expanded net: HG03453#1 at
+  chr22:18,219,008-18,284,544 read +227,316 bp unexpanded against +2,382
+  expanded, HG00329#2 256,134 against 268,533. Unexpanded and expanded now give
+  all 463 haplotypes the same net and coverage in each of those 29 windows, the
+  28 of the forms arbitration and that one
 
 Walks give exact lengths. Each haplotype's summed departures across the truth
 table's span match its assembly in 2,779 of 2,780 scored cases, median gap 0 bp;
