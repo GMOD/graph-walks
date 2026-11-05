@@ -334,18 +334,16 @@ result.forms.map(f => formTag(f, result))
 
 ## Contained cuts
 
-- By default a cut follows each haplotype that leaves the region near it until
-  it rejoins the reference, and keeps the reference out as far as those rejoins
-  reach
-- `contained: true` keeps the reference over the window and its context alone,
-  and splits a walk wherever it steps onto the reference off that stretch. A
-  detour that comes back to the window stays whole, and the cut keeps `context`
-  bp of any other
-- Each split leaves two fragments, and each counts the bp of the walk the cut
-  read past it as `trimmed`
-- A contained cut reads on to the chunk a cut-off walk goes on in only when that
-  chunk is under the window and its context, or holds the far side of a walk
-  that crosses the window
+- By default a cut keeps each walk from its first step on the drawn stretch, the
+  window and its context, to its last, whatever it visits between, and follows
+  nothing past that stretch, so one haplotype's fragment never depends on which
+  others are cut
+- `contained: true` splits a walk wherever it steps onto the reference off the
+  drawn stretch. Each piece between those steps that steps on the stretch is
+  kept from its first such step to its last, so a detour that comes back stays
+  whole, with `context` bp of the walk past either end
+- A fragment counts the bp of its walk the cut read past either end as
+  `trimmedBefore` and `trimmedAfter`
 - At AMY1 haplotypes go from a 4 kb window to the other copies of the gene and
   back. The default cut keeps 9,928 nodes there, and the contained cut 182
 
@@ -397,14 +395,14 @@ const gfa = await rgfaCut(
   takes; gfa-to-tabix's
   [walks-format.md](https://github.com/GMOD/gfa-to-tabix/blob/main/docs/walks-format.md)
   describes the rows
-- A cut reads every chunk under the region, from the chunk before the region's
-  first, or the chunk before a `#long` pass that overlaps the region, whichever
-  is earlier. It decodes each chunk once
-- A file with no `#long` lines, from gfa-to-tabix 1.2, makes the cut read
-  further back when the header's `maxnode` exceeds a chunk
-- A walk the read cuts off goes on in the chunk its row names (`pv:`/`nx:`
-  tags). The cut reads on to that chunk, in up to three rounds and at most four
-  chunks past what it read
+- A cut makes two reads: every chunk under the region, from the chunk before the
+  region's first or the chunk before a `#long` pass that overlaps it, whichever
+  is earlier, each decoded once; and the `~departure` blocks over the same
+  stretch, which return every departure record whose stretch overlaps it
+- A departure inside one piece comes from the piece's steps, and one between
+  pieces from its record, so each comes back once. A departure's own steps are
+  attached where its own bp are under `attachBp`, fetching the chunk it leaves
+  from when the read lacks it, at most `attachFetches` chunks
 
 ## License
 
