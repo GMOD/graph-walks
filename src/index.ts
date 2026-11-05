@@ -46,6 +46,7 @@ export {
   FLOOR_PRESETS,
   LOPSIDED_RATIO,
   NO_CALL_STATE,
+  OTHER_STATE,
   RARER_STATE,
   REFERENCE_STATE,
   STRUCTURAL_BP,
@@ -121,3 +122,5 @@ export type {
 } from './rgfaBed.ts'
 export { rgfaCut } from './rgfaCut.ts'
 export type { RgfaFiles } from './rgfaCut.ts'
+export { formContradictions } from './formsCheck.ts'
+export type { Contradiction, ContradictionKind } from './formsCheck.ts'

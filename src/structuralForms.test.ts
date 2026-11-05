@@ -1,5 +1,6 @@
 import {
   NO_CALL_STATE,
+  OTHER_STATE,
   RARER_STATE,
   REFERENCE_STATE,
   autoFloor,
@@ -134,12 +135,13 @@ test('forms group the haplotypes that match at every informative site', () => {
       hap('C#1'),
       hap('C#2'),
     ],
-    { minCarriers: 3 },
+    { minCarriers: 2 },
   )
   expect(result.informative).toEqual([0])
   expect(result.forms.map(f => [f.key, f.members])).toEqual([
     ['0', ['B#2', 'C#1', 'C#2']],
-    ['-1700', ['A#1', 'A#2', 'B#1']],
+    ['-1700@100', ['A#2', 'B#1']],
+    [OTHER_STATE, ['A#1']],
   ])
   expect(result.rareCarriers).toEqual(['A#1'])
 })
@@ -187,7 +189,7 @@ test('a site wider than 1 kb keeps its changes apart, unsummed', () => {
   )
   expect(result.forms.map(f => [f.key, f.members.length])).toEqual([
     ['0', 4],
-    ['-50000', 4],
+    ['-50000@10000', 4],
   ])
 })
 
@@ -208,7 +210,7 @@ test('a form marks its changes in R order and says them largest first', () => {
   )
   const a2 = result.forms.find(f => f.members.includes('A#2'))!
   expect(a2.marks).toEqual([
-    { ...mark('deletion', 100, 1800, -1700), site: 0, state: '-1700' },
+    { ...mark('deletion', 100, 1800, -1700), site: 0, state: '-1700@100' },
     { ...mark('insertion', 3000, 3000, 6400), site: 1, state: '+6400' },
   ])
   expect(describeForm(a2)).toBe('ins 6.4kb, del 1.7kb')
@@ -318,7 +320,7 @@ test('an abridged departure is a net mark, and its haplotype is listed', () => {
     hap('B#1'),
   ])
   expect(result.forms[1]!.marks).toEqual([
-    { ...mark('net', 10_000, 75_000, -5000), site: 0, state: 'n-5000' },
+    { ...mark('net', 10_000, 75_000, -5000), site: 0, state: 'n-5000@10000' },
   ])
   expect(describeForm(result.forms[1]!)).toBe('net -5kb')
   expect(result.abridged).toEqual(['A#1'])
@@ -370,8 +372,8 @@ test('nested changes are one site, each haplotype stating only its own', () => {
   ])
   expect(result.forms.map(f => [f.key, f.net])).toEqual([
     ['0', 0],
-    ['-1000', -1000],
-    ['-20000', -20_000],
+    ['-1000@5000', -1000],
+    ['-20000@1000', -20_000],
   ])
 })
 
@@ -392,13 +394,14 @@ test('a rare mark over two common sites keeps them apart and states itself at ea
   ])
   expect(result.forms.map(f => [f.key, f.members.length])).toEqual([
     ['0|0', 6],
-    ['-2000|0', 4],
-    ['0|-2000', 3],
+    ['-2000@10000|0', 3],
+    ['0|-2000@30000', 3],
+    [OTHER_STATE, 1],
   ])
   expect(result.rareCarriers).toEqual(['X#1'])
   const kept = forms(input, { minCarriers: 2, foldRareForms: false })
   const x = kept.forms.find(f => f.members.includes('X#1'))!
-  expect(x.states).toEqual(['-15000', '-15000'])
+  expect(x.states).toEqual(['-15000@11000', '-15000@11000'])
   expect(describeForm(x)).toBe('repl 20kb->5kb')
   expect(x.net).toBe(-15_000)
 })
@@ -508,7 +511,7 @@ test('a rare plain mark states itself at every summed site it overlaps', () => {
   )
   expect(
     summedThenWide.forms.find(f => f.members.includes('X#1'))!.states,
-  ).toEqual(['-11000', '-11000'])
+  ).toEqual(['-11000', '-11000@10200'])
 })
 
 test("a form names a rare bridge once when its carriers' medians differ by site", () => {
@@ -519,7 +522,7 @@ test("a form names a rare bridge once when its carriers' medians differ by site"
       ...haps('B', 3, [dep(14_000, 20_000, 0)]),
       ...haps('C', 3, [dep(40_000, 45_000, 0)]),
       hap('X#1', [dep(10_000, 12_000, 0), dep(18_000, 42_000, 4000)]),
-      hap('Y#1', [dep(10_000, 12_000, 30), dep(16_000, 70_000, 33_990)]),
+      hap('Y#1', [dep(10_000, 12_000, 30), dep(16_000, 46_000, 9990)]),
     ],
     { minCarriers: 2 },
   )
@@ -529,38 +532,85 @@ test("a form names a rare bridge once when its carriers' medians differ by site"
   expect(form.net).toBeGreaterThan(-25_000)
 })
 
-test('a rare state folds to the common state nearest in net change', () => {
+test('a rare state folds into a common state its change agrees with, and is rarer where none does', () => {
   const result = forms(
     [
       ...haps('R', 10),
       ...haps('D', 5, [dep(1000, 21_000, 0)]),
       hap('X#1', [dep(1000, 19_800, 0)]),
+      hap('Y#1', [dep(1000, 16_000, 0)]),
+      hap('Y#2', [dep(1000, 16_000, 0)]),
     ],
     { minCarriers: 3 },
   )
   expect(result.forms.map(f => [f.key, f.members.length])).toEqual([
     ['0', 10],
-    ['-20000', 6],
+    ['-20000@1000', 6],
+    [OTHER_STATE, 2],
   ])
-  expect(result.rareCarriers).toEqual(['X#1'])
+  expect(result.forms[1]!.members).toContain('X#1')
+  expect(result.rareCarriers).toEqual(['X#1', 'Y#1', 'Y#2'])
+  const rarer = forms(
+    [
+      ...haps('R', 10),
+      ...haps('D', 5, [dep(1000, 21_000, 0)]),
+      ...haps('Y', 3, [dep(1000, 16_000, 0)]),
+      hap('Z#1', [dep(1000, 2000, 0)]),
+    ],
+    { minCarriers: 4 },
+  )
+  expect(rarer.forms.map(f => [f.key, f.members.length])).toEqual([
+    ['0', 10],
+    ['-20000@1000', 5],
+    [RARER_STATE, 4],
+  ])
+  expect(describeForm(rarer.forms[2]!)).toBe('rarer')
 })
 
-test('a form under minCarriers folds into the form nearest in net', () => {
-  const big = dep(1000, 21_000, 0)
-  const small = dep(40_000, 41_000, 0)
+test('a change at another place in a site is another state, never folded into it', () => {
   const result = forms(
     [
       ...haps('R', 6),
-      ...haps('B', 3, [big]),
-      ...haps('S', 3, [small]),
-      hap('X#1', [big, small]),
+      ...haps('S', 6, [dep(10_000, 30_000, 0)]),
+      ...haps('A', 6, [dep(12_000, 12_000, 14_000)]),
+      ...haps('B', 3, [dep(25_000, 25_000, 14_000)]),
+      hap('J#1', [dep(10_050, 30_050, 0)]),
+    ],
+    { minCarriers: 4 },
+  )
+  expect(result.sites.map(s => [s.refStart, s.refEnd])).toEqual([
+    [10_000, 30_050],
+  ])
+  expect(result.forms.map(f => [f.key, f.members.length])).toEqual([
+    ['-20000@10000', 7],
+    ['0', 6],
+    ['+14000@12000', 6],
+    [OTHER_STATE, 3],
+  ])
+})
+
+test('a haplotype of a form under minCarriers joins a form whose every state fits it, or other', () => {
+  const left = (bp: number) => dep(1000, 1000 + bp, 0)
+  const right = (bp: number) => dep(40_000, 40_000 + bp, 0)
+  const result = forms(
+    [
+      ...haps('A', 3, [left(20_000)]),
+      ...haps('B', 3, [left(21_000), right(5000)]),
+      ...haps('C', 3, [right(21_000)]),
+      hap('X#1', [left(21_000)]),
+      hap('Y#1', [left(5000), right(5000)]),
     ],
     { minCarriers: 2 },
   )
-  expect(memberCounts(result)).toEqual([6, 4, 3])
-  expect(result.placed).toBe(13)
-  expect(result.forms[1]!.members).toContain('X#1')
-  expect(result.rareCarriers).toEqual(['X#1'])
+  expect(result.forms.map(f => [f.key, f.members])).toEqual([
+    ['-20000@1000|0', ['A0#1', 'A1#1', 'A2#1', 'X#1']],
+    ['0|-21000@40000', ['C0#1', 'C1#1', 'C2#1']],
+    ['-21000@1000|-5000@40000', ['B0#1', 'B1#1', 'B2#1']],
+    [OTHER_STATE, ['Y#1']],
+  ])
+  expect(result.rareCarriers).toEqual(['X#1', 'Y#1'])
+  expect(formTag(result.forms[3]!, result)).toBe('other')
+  expect(describeForm(result.forms[3]!)).toBe('other')
 })
 
 test('foldRareForms: false keeps a form under minCarriers apart', () => {
@@ -587,8 +637,8 @@ test('foldRareForms: false keeps a form under minCarriers apart', () => {
   )
   expect(rareState.forms.map(f => [f.key, f.members.length])).toEqual([
     ['0', 10],
-    ['-20000', 5],
-    ['-19000', 1],
+    ['-20000@1000', 5],
+    ['-19000@1000', 1],
   ])
   expect(rareState.rareCarriers).toEqual([])
 })
@@ -649,6 +699,51 @@ test('a mark at a site the walks do not span whole is no call there', () => {
   expect(x.marks).toEqual([])
 })
 
+test('a rare no call is never shown as a call', () => {
+  const inversion = dep(40_000, 50_000, 10_000, { invertedBp: 10_000 })
+  const deletion = dep(70_000, 72_000, 0)
+  const result = forms(
+    [
+      ...haps('V', 6, [inversion]),
+      ...haps('R', 4),
+      ...haps('D', 3, [inversion, deletion]),
+      hap(
+        'G#1',
+        [deletion],
+        [
+          [0, 41_000],
+          [49_000, 100_000],
+        ],
+      ),
+    ],
+    { minCarriers: 3 },
+  )
+  expect(result.forms.map(f => [describeForm(f), f.members.length])).toEqual([
+    ['inv 10kb', 6],
+    ['ref', 4],
+    ['inv 10kb, del 2kb', 3],
+    ['other', 1],
+  ])
+  expect(result.forms[3]!.members).toEqual(['G#1'])
+})
+
+test('a site spans the marks it comes from, and a summed change reaching past it does not widen it', () => {
+  const result = forms(
+    [
+      ...haps('R', 6),
+      ...haps('C', 6, [dep(1000, 1100, 0)]),
+      ...haps('D', 6, [dep(1000, 1030, 0), dep(1090, 1400, 280)]),
+    ],
+    { minCarriers: 3 },
+  )
+  expect(result.sites.map(s => [s.refStart, s.refEnd])).toEqual([[1000, 1100]])
+  expect(result.forms.map(f => [f.key, f.members.length])).toEqual([
+    ['0', 6],
+    ['-60', 6],
+    ['-100', 6],
+  ])
+})
+
 // AMY1's 12 in the sidecar: no call at the array, called in the flank
 test('a haplotype placed somewhere is in a form, one placed nowhere is not', () => {
   const result = forms(
@@ -664,7 +759,7 @@ test('a haplotype placed somewhere is in a form, one placed nowhere is not', () 
   )
   expect(result.forms.map(f => [f.key, f.members.length])).toEqual([
     ['0', 4],
-    ['-10000', 4],
+    ['-10000@60000', 4],
     ['.', 2],
   ])
   expect(describeForm(result.forms[2]!)).toBe('del 2kb, no call')
@@ -689,17 +784,17 @@ test('each mark names its site and state, and formStateAt reads a form at any si
   ])
   expect(result.informative).toEqual([1])
   expect(result.forms[1]!.marks.map(m => [m.site, m.state])).toEqual([
-    [0, '-2000'],
-    [1, '-10000'],
+    [0, '-2000@1000'],
+    [1, '-10000@60000'],
   ])
   expect(
     result.forms.map(f =>
       result.sites.map((_, s) => formStateAt(result, f, s)),
     ),
   ).toEqual([
-    ['-2000', REFERENCE_STATE],
-    ['-2000', '-10000'],
-    ['-2000', NO_CALL_STATE],
+    ['-2000@1000', REFERENCE_STATE],
+    ['-2000@1000', '-10000@60000'],
+    ['-2000@1000', NO_CALL_STATE],
   ])
   const edged = forms(
     [
@@ -911,7 +1006,7 @@ test('the result is plain data', () => {
 // GSTM1 at 462 haplotypes: 306 carry the exact 18,445 bp deletion, the rest
 // R's structure, with SNP bubbles and indels under 50 bp throughout and two
 // carriers of a 400 bp insertion too rare to tell apart
-test('a GSTM1-like window is two forms', () => {
+test('a GSTM1-like window is two forms, and other holds a rare insertion', () => {
   const snps = (i: number) =>
     Array.from({ length: 6 }, (_, k) => {
       const at = 2000 + k * 5000 + (i % 7) * 13
@@ -938,10 +1033,18 @@ test('a GSTM1-like window is two forms', () => {
       window: { start: 0, end: 35_000 },
       floorBp,
     })
-    expect(result.forms.map(f => [f.members.length, describeForm(f)])).toEqual([
-      [306, 'del 18.4kb'],
-      [156, 'ref'],
-    ])
+    expect(result.forms.map(f => [f.members.length, describeForm(f)])).toEqual(
+      floorBp === 50
+        ? [
+            [306, 'del 18.4kb'],
+            [154, 'ref'],
+            [2, 'other'],
+          ]
+        : [
+            [306, 'del 18.4kb'],
+            [156, 'ref'],
+          ],
+    )
     expect(result.minCarriers).toBe(5)
   }
   const at50 = structuralForms(input, {
@@ -950,6 +1053,10 @@ test('a GSTM1-like window is two forms', () => {
   })
   expect(at50.rareCarriers).toEqual(['HG400#1', 'HG401#1'])
   expect(at50.forms[0]!.marks).toEqual([
-    { ...mark('deletion', 7001, 25_447, -18_445), site: 0, state: '-18000' },
+    {
+      ...mark('deletion', 7001, 25_447, -18_445),
+      site: 0,
+      state: '-18000@7000',
+    },
   ])
 })

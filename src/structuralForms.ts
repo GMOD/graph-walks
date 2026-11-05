@@ -44,6 +44,9 @@ export interface SiteMark extends Mark {
  * One state of a site: its key, the median net change of its carriers, and
  * the marks of the carrier with that change. `carriers` are the haplotypes
  * whose own marks give the state, before any folding. `0` is R's structure.
+ * At a site wider than SUMMED_SITE_BP each change keys on its size and its
+ * place, `-20000@1000`: the first start among the marks joined to it by the
+ * half-cover relation that makes marks common.
  */
 export interface SiteState {
   key: string
@@ -55,15 +58,16 @@ export interface SiteState {
 /**
  * A mark is common where at least minCarriers haplotypes share it, two marks
  * shared where each covers at least half of the other on R, and overlapping
- * common marks make one site. A rarer mark, or a summed change holding one,
- * states itself at every site it overlaps without widening any, so one
+ * common marks make one site, whose span is theirs. A rarer mark, or a summed
+ * change holding one, states itself at every site it overlaps, so one
  * haplotype's long departure leaves the sites it crosses apart; rarer marks
- * that overlap no common site make sites of their own by overlap. `covered` counts the placed haplotypes
- * with a call there: walks spanning the site's part inside the window, so a
- * mark beside a gap in them is no call. An `edge` site is one most haplotypes in the window have no call
- * at, which no form key holds. A `shared` site tells no forms apart, since no
- * second state there reaches minCarriers, and every form carries its majority
- * state's marks. Every other site is informative.
+ * that overlap no common site make sites of their own by overlap. `covered`
+ * counts the placed haplotypes with a call there: walks spanning the site's
+ * part inside the window, so a mark beside a gap in them is no call. An
+ * `edge` site is one most haplotypes in the window have no call at, which no
+ * form key holds and no form states anything of. A `shared` site is one where
+ * every form but `other` is in one state, a call. Every other site is
+ * informative.
  */
 export interface Site {
   refStart: number
@@ -75,14 +79,17 @@ export interface Site {
 }
 
 /**
- * Haplotypes with one state at every informative site. `states` holds a
- * SiteState key per informative site, `.` (NO_CALL_STATE) where the form's
- * walks do not span it, and `~` (RARER_STATE) for a rare change where most
- * haplotypes have no call; `key` joins them. `marks` are its states' marks in
- * R order, with those of the state every form shares at a site that tells
- * none apart, and `net` sums them. `onlyShifts` is true where every mark
- * outside those shared sites is a shift and every site has a call: R's
- * length, with a stretch aligned elsewhere.
+ * Haplotypes with one state at every site that is not an edge, each member's
+ * own changes agreeing with it there (formContradictions checks this).
+ * `states` holds a SiteState key per informative site, `.` (NO_CALL_STATE)
+ * where the form's walks do not span it, and `~` (RARER_STATE) for a change
+ * too rare to stand alone that agrees with no common state; `key` joins them.
+ * `marks` are its states' marks in R order, those of shared sites included,
+ * and `net` sums them, counting at each site a piece that two summed sites
+ * share. `onlyShifts` is true where every mark outside the shared sites is a
+ * shift and every site has a call: R's length, with a stretch aligned
+ * elsewhere. The `other` form, key `*` (OTHER_STATE), holds the haplotypes no
+ * common form fits and states nothing of them.
  */
 export interface Form {
   members: string[]
@@ -104,9 +111,10 @@ export interface FormsOptions {
   // samples or `sample#haplotype`s to leave out, such as a second reference
   // carried as a haplotype
   exclude?: string[]
-  // fold states and forms under minCarriers into the nearest common one; true
-  // by default. Off, a rare state at a site that tells forms apart keeps its
-  // own key, so every member's marks are its own there
+  // fold a state under minCarriers into a common state its change agrees
+  // with, and put a haplotype of a form under minCarriers in a common form
+  // whose every state fits it, or in `other`; true by default. Off, every
+  // haplotype keeps its own state at every site
   foldRareForms?: boolean
 }
 
@@ -114,8 +122,8 @@ export interface FormsOptions {
  * The forms a window's haplotypes fall into. `informative` indexes the sites
  * where a second state has minCarriers. `placed` counts the haplotypes in a
  * form, and `unplaced` lists those with no call in the window and no form.
- * `rareCarriers` carry a state or a form too rare to stand alone, folded into
- * the nearest common one, and `abridged` have a `net` mark.
+ * `rareCarriers` carry a state or a form too rare to stand alone, and
+ * `abridged` have a `net` mark.
  */
 export interface StructuralForms {
   sites: Site[]
@@ -143,11 +151,12 @@ const SHIFT_MIN_BP = 1000
 const SHIFT_TOLERANCE = 0.1
 
 // A form's state at a site where it keeps R's structure, where its walks have
-// no call, and where it makes a change too rare to stand alone while most
-// haplotypes have no call
+// no call, where it makes a change too rare to stand alone that agrees with no
+// common state, and the `other` form's, which states nothing
 export const REFERENCE_STATE = '0'
 export const NO_CALL_STATE = '.'
 export const RARER_STATE = '~'
+export const OTHER_STATE = '*'
 
 /**
  * The floor for a window `widthBp` wide: about 10 px at 1,000 px, snapped to a
@@ -244,7 +253,7 @@ interface Joined {
 const deltaOf = (d: Departure) => d.altLength - (d.refEnd - d.refStart)
 
 // Departures nearer than `joinBp` on R joined, keeping their net change
-function join(departures: Departure[], joinBp: number) {
+export function joinDepartures(departures: Departure[], joinBp: number) {
   const out: Joined[] = []
   for (const d of departures) {
     const last = out.at(-1)
@@ -357,7 +366,7 @@ const PLAIN_KINDS = new Set<MarkKind>(['insertion', 'deletion', 'replacement'])
 // The widest site whose plain changes sum into one per haplotype. The gate
 // windows' repeats that walks split run up to 600 bp, and the next wider
 // informative sites, 3.8 kb and up, hold separate changes
-const SUMMED_SITE_BP = 1000
+export const SUMMED_SITE_BP = 1000
 
 /**
  * A haplotype's departures joined and kept where they touch the window, its
@@ -370,7 +379,7 @@ function haplotypePieces(
   joinBp: number,
   window?: FormsOptions['window'],
 ) {
-  const pieces = join(departures, joinBp).filter(
+  const pieces = joinDepartures(departures, joinBp).filter(
     d => !window || (d.refEnd >= window.start && d.refStart <= window.end),
   )
   const pieceOf = new Map<Mark, Joined>()
@@ -390,7 +399,6 @@ function haplotypePieces(
   return {
     marks,
     plain: pieces.filter(d => !d.abridged && !ownKind.has(d)),
-    markOfPiece: new Map([...pieceOf].map(([m, d]) => [d, m])),
   }
 }
 
@@ -444,6 +452,44 @@ function siteChange(pieces: Joined[], floorBp: number): Mark | undefined {
 
 const sumDelta = (marks: Mark[]) => marks.reduce((s, m) => s + m.delta, 0)
 
+/**
+ * Two net changes agree where both are under `floorBp`, or they differ by
+ * under `floorBp`, under a tenth of the larger, or under the last figure a
+ * state key gives a change of `size`: a shift of 32.7 kb keys its net to 1 kb
+ */
+export const agrees = (a: number, b: number, floorBp: number, size = 0) =>
+  Math.max(Math.abs(a), Math.abs(b)) < floorBp ||
+  Math.abs(a - b) <
+    Math.max(
+      floorBp,
+      0.1 * Math.max(Math.abs(a), Math.abs(b)),
+      size > 0 ? figureUnit(size) : 0,
+    )
+
+const sizeOf = (m: Mark) =>
+  m.kind === 'inversion'
+    ? m.refEnd - m.refStart
+    : (m.shiftedBp ?? Math.abs(m.delta))
+
+export const largestChange = (marks: Mark[]) =>
+  marks.reduce((most, m) => Math.max(most, sizeOf(m)), 0)
+
+// Where on R a state's marks lie, as its key names them
+const placesOf = (key: string) =>
+  key
+    .split(';')
+    .map(part => part.split('@')[1] ?? '')
+    .join(';')
+
+// Two sets of marks at one site agree in net change and in largest change
+export const statesAgree = (a: Mark[], b: Mark[], floorBp: number) =>
+  agrees(
+    sumDelta(a),
+    sumDelta(b),
+    floorBp,
+    Math.max(largestChange(a), largestChange(b)),
+  ) && agrees(largestChange(a), largestChange(b), floorBp)
+
 const covers = (h: HaplotypeDepartures, start: number, end: number) =>
   h.covered.some(([a, b]) => a <= start && b >= end)
 
@@ -451,8 +497,10 @@ const overlaps = (h: HaplotypeDepartures, start: number, end: number) =>
   h.covered.some(([a, b]) => a <= end && b >= start)
 
 // Marks of at least `minCarriers` haplotypes, two marks shared where each
-// covers at least half of the other on R, a point taking 1 bp. Marks of one
-// span compare once, and a mark stops gathering sharers at minCarriers
+// covers at least half of the other on R, a point taking 1 bp, and each mark's
+// place: the start of the first span among the marks it is joined to by that
+// relation. Marks of one span compare once, and a mark stops gathering sharers
+// at minCarriers
 function commonMarks(marksBy: Mark[][], minCarriers: number) {
   const bySpan = new Map<
     string,
@@ -484,6 +532,9 @@ function commonMarks(marksBy: Mark[][], minCarriers: number) {
       into.add(hap)
     }
   }
+  const joined = all.map((_, i) => i)
+  const first = (i: number): number =>
+    joined[i] === i ? i : (joined[i] = first(joined[i]!))
   all.forEach((a, i) => {
     const half = (a.end - a.start) / 2
     for (
@@ -496,12 +547,19 @@ function commonMarks(marksBy: Mark[][], minCarriers: number) {
       if (overlap >= half && 2 * overlap >= b.end - b.start) {
         gather(sharers[i]!, b.haps)
         gather(sharers[j]!, a.haps)
+        const [lo, hi] = [first(i), first(j)].sort((x, y) => x - y)
+        joined[hi!] = lo!
       }
     }
   })
-  return new Set(
-    all.flatMap((g, i) => (sharers[i]!.size >= minCarriers ? g.marks : [])),
-  )
+  return {
+    common: new Set(
+      all.flatMap((g, i) => (sharers[i]!.size >= minCarriers ? g.marks : [])),
+    ),
+    place: new Map(
+      all.flatMap((g, i) => g.marks.map(m => [m, all[first(i)]!.start])),
+    ),
+  }
 }
 
 function unionSpans(marks: Mark[]) {
@@ -556,7 +614,10 @@ function sitesOver(
  * Groups haplotypes by the structural changes their walks make over a
  * window. Each haplotype's own marks make its state at a site, so a change
  * nested in another counts once. A state with fewer than minCarriers folds
- * to the common state nearest in net change, and so does a form.
+ * only into a common state its change agrees with (`agrees`, change by change
+ * where the site keys on place), and is `~` where none does; a no call stays
+ * one. A haplotype whose form has fewer than minCarriers joins the largest
+ * common form whose every state fits it, or `other`.
  */
 export function structuralForms(
   input: HaplotypeDepartures[],
@@ -578,13 +639,10 @@ export function structuralForms(
     haplotypePieces(h.departures, floorBp, joinBp, opts.window),
   )
   const marksBy = piecesBy.map(p => p.marks)
-  const sharedMarks =
-    minCarriers > 1
-      ? commonMarks(marksBy, minCarriers)
-      : new Set(marksBy.flat())
+  const { common: sharedMarks, place } = commonMarks(marksBy, minCarriers)
   const spans = siteSpans(marksBy.flat(), sharedMarks)
   const summed = spans.map(([a, b]) => b - a <= SUMMED_SITE_BP)
-  const rawAt = piecesBy.map(({ marks, plain, markOfPiece }) => {
+  const rawAt = piecesBy.map(({ marks, plain }) => {
     const at = new Map<number, Mark[]>()
     const add = (i: number, m: Mark) => {
       at.set(i, [...(at.get(i) ?? []), m])
@@ -608,34 +666,22 @@ export function structuralForms(
       const m = siteChange(pieces, floorBp)
       if (m) {
         add(i, m)
-        if (
-          pieces.every(d => {
-            const own = markOfPiece.get(d)
-            return !own || sharedMarks.has(own)
-          })
-        ) {
-          sharedMarks.add(m)
-        }
       }
     }
     return at
   })
-  const assigned = spans.map(([a, b]): [number, number] => [a, b])
-  for (const at of rawAt) {
-    for (const [i, ms] of at) {
-      const span = spans[i]!
-      for (const m of ms.filter(mark => sharedMarks.has(mark))) {
-        span[0] = Math.min(span[0], m.refStart)
-        span[1] = Math.max(span[1], m.refEnd)
-      }
-    }
-  }
   const marksAt = rawAt.map(
     at =>
       new Map(
         [...at].map(([site, ms]) => {
           ms.sort((a, b) => a.refStart - b.refStart || a.refEnd - b.refEnd)
-          const state = ms.map(m => stateKey(m, floorBp)).join(';')
+          const state = ms
+            .map(m =>
+              summed[site]
+                ? stateKey(m, floorBp)
+                : `${stateKey(m, floorBp)}@${place.get(m)}`,
+            )
+            .join(';')
           return [site, ms.map((m): SiteMark => ({ ...m, site, state }))]
         }),
       ),
@@ -661,13 +707,17 @@ export function structuralForms(
         raw.some((states, i) => !edge[i] && states[j] !== NO_CALL_STATE)),
   )
   const placed = haplotypes.flatMap((_, j) => (isPlaced[j] ? [j] : []))
+  const fits = (j: number, i: number, state: SiteState) => {
+    const own = marksAt[j]!.get(i) ?? []
+    return summed[i]
+      ? statesAgree(state.marks, own, floorBp)
+      : placesOf(state.key) === placesOf(own[0]?.state ?? REFERENCE_STATE) &&
+          state.marks.every((m, k) => statesAgree([m], [own[k]!], floorBp))
+  }
   const rare = new Set<string>()
   const sites: Site[] = []
-  const informative: number[] = []
+  const keyed: number[] = []
   const folded: string[][] = []
-  // the marks of every placed haplotype's state at a site that tells none
-  // apart
-  const shared: SiteMark[] = []
   spans.forEach(([refStart, refEnd], i) => {
     const states = raw[i]!
     const carriers = new Map<string, number[]>()
@@ -700,49 +750,39 @@ export function structuralForms(
         },
       ]
     })
-    const tells =
-      !edge[i] && ranked.length > 1 && ranked[1]![1].length >= minCarriers
     sites.push({
       refStart,
       refEnd,
       edge: edge[i]!,
-      shared: !edge[i] && !tells,
+      shared: false,
       covered: placed.length - (carriers.get(NO_CALL_STATE)?.length ?? 0),
       states: siteStates,
     })
-    if (edge[i]) {
-      return
-    }
-    const majority = ranked[0]?.[0] ?? REFERENCE_STATE
-    const common = siteStates.filter(s => s.carriers.length >= minCarriers)
-    const fold = states.map((state, j) => {
-      const n = carriers.get(state)?.length ?? 0
-      if (n >= minCarriers || !isPlaced[j] || (keepRare && tells)) {
-        return state
-      }
-      if (state !== majority) {
-        rare.add(haplotypes[j]!.haplotype)
-      }
-      if (state !== NO_CALL_STATE && majority === NO_CALL_STATE) {
-        return RARER_STATE
-      }
-      if (state !== NO_CALL_STATE && common.length > 0) {
-        const delta = sumDelta(marksAt[j]!.get(i) ?? [])
-        return nearest(common, s => s.delta, delta).key
-      }
-      return majority
-    })
-    if (tells) {
-      informative.push(i)
-      folded.push(fold)
-    } else {
-      for (const m of siteStates.find(st => st.key === majority)?.marks ?? []) {
-        shared.push(m)
-      }
+    if (!edge[i]) {
+      const common = siteStates.filter(s => s.carriers.length >= minCarriers)
+      keyed.push(i)
+      folded.push(
+        states.map((state, j) => {
+          const stays =
+            keepRare ||
+            !isPlaced[j] ||
+            state === NO_CALL_STATE ||
+            state === REFERENCE_STATE ||
+            (carriers.get(state)?.length ?? 0) >= minCarriers
+          if (!stays) {
+            rare.add(haplotypes[j]!.haplotype)
+          }
+          const into = stays ? [] : common.filter(s => fits(j, i, s))
+          return stays
+            ? state
+            : into.length > 0
+              ? nearest(into, s => s.delta, sumDelta(marksAt[j]!.get(i) ?? []))
+                  .key
+              : RARER_STATE
+        }),
+      )
     }
   })
-  const stateOf = (i: number, key: string) =>
-    sites[informative[i]!]!.states.find(s => s.key === key)
   const byKey = new Map<string, { states: string[]; members: string[] }>()
   for (const j of placed) {
     const states = folded.map(fold => fold[j]!)
@@ -754,40 +794,87 @@ export function structuralForms(
       byKey.set(key, { states, members: [haplotypes[j]!.haplotype] })
     }
   }
-  const forms = [...byKey].map(([key, { states, members }]): Form => {
+  const grouped = [...byKey.values()]
+  const common = keepRare
+    ? grouped
+    : grouped.filter(f => f.members.length >= minCarriers)
+  const kept = common.length > 0 ? common : grouped
+  const matches = (j: number, k: number, key: string) => {
+    const own = folded[k]![j]!
+    const plain = (s: string) => s !== NO_CALL_STATE && s !== RARER_STATE
+    const state = sites[keyed[k]!]!.states.find(s => s.key === key)
+    return (
+      key === own ||
+      (plain(key) && plain(own) && !!state && fits(j, keyed[k]!, state))
+    )
+  }
+  const largestFirst = kept.toSorted(
+    (a, b) => b.members.length - a.members.length,
+  )
+  const keptMembers = new Set(kept.flatMap(f => f.members))
+  const other: string[] = []
+  for (const j of placed) {
+    const name = haplotypes[j]!.haplotype
+    if (!keptMembers.has(name)) {
+      const into = largestFirst.find(f =>
+        f.states.every((key, k) => matches(j, k, key)),
+      )
+      ;(into ? into.members : other).push(name)
+      rare.add(name)
+    }
+  }
+  const told = keyed.map((_, k) => {
+    const first = kept[0]?.states[k]
+    return (
+      first === NO_CALL_STATE ||
+      first === RARER_STATE ||
+      kept.some(f => f.states[k] !== first)
+    )
+  })
+  keyed.forEach((i, k) => {
+    sites[i]!.shared = !told[k]
+  })
+  const informative = keyed.filter((_, k) => told[k])
+  const stateAt = (i: number, key: string) =>
+    sites[i]!.states.find(s => s.key === key)?.marks ?? []
+  const forms = kept.map(({ states, members }): Form => {
     const marks = onceEach(
-      assigned,
+      spans,
       floorBp,
-      states
-        .flatMap((state, i) => stateOf(i, state)?.marks ?? [])
-        .concat(shared),
+      keyed.flatMap((i, k) => stateAt(i, states[k]!)),
     ).sort((a, b) => a.refStart - b.refStart)
     const own = marks.filter(m => !sites[m.site]!.shared)
+    const formStates = states.filter((_, k) => told[k])
     const onlyShifts =
       own.length > 0 &&
       own.every(m => m.kind === 'shift') &&
-      !states.some(s => s === NO_CALL_STATE || s === RARER_STATE)
-    return { members, key, states, marks, net: sumDelta(marks), onlyShifts }
-  })
-  const common = keepRare
-    ? forms
-    : forms.filter(f => f.members.length >= minCarriers)
-  const kept = common.length > 0 ? common : forms
-  if (common.length > 0 && common !== forms) {
-    for (const form of sortForms(forms)) {
-      if (form.members.length < minCarriers) {
-        const into = nearest(common, f => f.net, form.net)
-        for (const m of form.members) {
-          into.members.push(m)
-          rare.add(m)
-        }
-      }
+      !formStates.some(s => s === NO_CALL_STATE || s === RARER_STATE)
+    return {
+      members,
+      key: formStates.join('|'),
+      states: formStates,
+      marks,
+      net: sumDelta(marks),
+      onlyShifts,
     }
-  }
+  })
+  const otherForm: Form[] =
+    other.length > 0
+      ? [
+          {
+            members: other,
+            key: OTHER_STATE,
+            states: informative.map(() => OTHER_STATE),
+            marks: [],
+            net: 0,
+            onlyShifts: false,
+          },
+        ]
+      : []
   return {
     sites,
     informative,
-    forms: sortForms(kept),
+    forms: [...sortForms(forms), ...otherForm],
     placed: placed.length,
     unplaced: haplotypes.flatMap((h, j) => (isPlaced[j] ? [] : [h.haplotype])),
     rareCarriers: haplotypes
@@ -905,45 +992,51 @@ export function markTag(m: Mark | SiteMark) {
 // markTag under its earlier name
 export const changeName = markTag
 
-const sizeOf = (m: Mark) =>
-  m.kind === 'inversion'
-    ? m.refEnd - m.refStart
-    : (m.shiftedBp ?? Math.abs(m.delta))
-
 const counted = (token: string, n: number) =>
   n === 0 ? [] : [n === 1 ? token : `${token} x${n}`]
 
 /**
  * How a form differs from R: each mark's markTag, largest first, then
  * "rarer" and "no call" with their site counts, comma-separated:
- * "ins 6.4kb, del 1.7kb", "del 2kb, no call". "ref" where it makes no change.
+ * "ins 6.4kb, del 1.7kb", "del 2kb, no call". "ref" where it makes no change,
+ * and "other" for the `other` form.
  */
-export function describeForm(form: { marks: Mark[]; states: string[] }) {
+export function describeForm(form: {
+  marks: Mark[]
+  states: string[]
+  key?: string
+}) {
   const tokens = [
     ...form.marks.toSorted((a, b) => sizeOf(b) - sizeOf(a)).map(markTag),
     ...counted('rarer', form.states.filter(s => s === RARER_STATE).length),
     ...counted('no call', form.states.filter(s => s === NO_CALL_STATE).length),
   ]
-  return tokens.length > 0 ? tokens.join(', ') : 'ref'
+  return form.key === OTHER_STATE
+    ? 'other'
+    : tokens.length > 0
+      ? tokens.join(', ')
+      : 'ref'
 }
 
 /**
  * The state key `form` has at `site`, an index into `result.sites`: its key
  * there at an informative site, the state every form carries at a shared one,
- * and undefined at an edge site, which no form key holds
+ * `*` for the `other` form, and undefined at an edge site, which no form key
+ * holds
  */
 export function formStateAt(
   result: Pick<StructuralForms, 'sites' | 'informative'>,
-  form: Pick<Form, 'states' | 'marks'>,
+  form: Pick<Form, 'states' | 'marks'> & { key?: string },
   site: number,
 ) {
   const k = result.informative.indexOf(site)
-  if (k >= 0) {
-    return form.states[k]
-  }
-  return result.sites[site]?.shared
-    ? (form.marks.find(m => m.site === site)?.state ?? REFERENCE_STATE)
-    : undefined
+  return k >= 0
+    ? form.states[k]
+    : !result.sites[site]?.shared
+      ? undefined
+      : form.key === OTHER_STATE
+        ? OTHER_STATE
+        : (form.marks.find(m => m.site === site)?.state ?? REFERENCE_STATE)
 }
 
 /**
@@ -955,7 +1048,7 @@ export function formStateAt(
  * the other rows lacked it.
  */
 export function formTag(
-  form: { marks: (Mark | SiteMark)[]; states: string[] },
+  form: { marks: (Mark | SiteMark)[]; states: string[]; key?: string },
   result?: Pick<StructuralForms, 'sites'>,
 ) {
   const isShared = (m: Mark | SiteMark) =>
@@ -974,5 +1067,9 @@ export function formTag(
           ? 'shared'
           : 'ref'
   const rest = own.length + rarer + uncalled - 1
-  return rest > 0 ? `${head} +${rest}` : head
+  return form.key === OTHER_STATE
+    ? 'other'
+    : rest > 0
+      ? `${head} +${rest}`
+      : head
 }
