@@ -507,6 +507,9 @@ export interface FormsCutOptions {
   // past which the cut throws RegionTooLargeError; no limit by default. Only
   // stepBudget bounds the detail records expansion reads
   byteBudget?: number
+  // the most compressed bytes either cut's departure read fetches, past
+  // which the cut throws DepartureReadError; no limit by default
+  departureByteBudget?: number
   signal?: AbortSignal
 }
 
@@ -551,6 +554,7 @@ export async function formsCut(
     partial = true,
     stepBudget = FORMS_STEP_BUDGET,
     byteBudget,
+    departureByteBudget,
     signal,
   } = opts
   const header: WalkReaderHeader = await reader.header({ signal })
@@ -558,7 +562,7 @@ export async function formsCut(
   const refName =
     (await reader.sequenceFor(sample, region.refName, { signal })) ??
     region.refName
-  const cutOpts = { links: false, byteBudget, signal }
+  const cutOpts = { links: false, byteBudget, departureByteBudget, signal }
   let cut = await reader.cut(refName, region, cutOpts)
   if (expand) {
     const expanded = expandedWalks(cut.fragments, stepBudget, partial, region)

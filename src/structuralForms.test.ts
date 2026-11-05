@@ -435,6 +435,100 @@ test('a mark shared by minCarriers haplotypes, each covering half of the other, 
   ])
 })
 
+test('two marks overlapping by under half of one are not shared', () => {
+  const result = forms(
+    [
+      ...haps('R', 6),
+      ...haps('L', 3, [dep(10_000, 12_000, 0)]),
+      ...haps('G', 3, [dep(30_000, 32_000, 0)]),
+      hap('X#1', [dep(11_000, 31_000, 5000)]),
+      hap('Y#1', [dep(11_500, 15_000, 0)]),
+    ],
+    { minCarriers: 2 },
+  )
+  expect(result.sites.map(s => [s.refStart, s.refEnd])).toEqual([
+    [10_000, 12_000],
+    [30_000, 32_000],
+  ])
+})
+
+test('a rare plain mark from a summed site neither widens it nor merges sites', () => {
+  const result = forms(
+    [
+      ...haps('R', 6),
+      ...haps('L', 3, [dep(10_000, 10_500, 0)]),
+      ...haps('G', 3, [dep(30_000, 31_000, 0)]),
+      hap(
+        'Gap#1',
+        [dep(30_000, 31_000, 0)],
+        [
+          [0, 15_000],
+          [16_000, 100_000],
+        ],
+      ),
+      hap('X#1', [dep(10_200, 50_000, 0)]),
+    ],
+    { minCarriers: 2 },
+  )
+  expect(result.sites.map(s => [s.refStart, s.refEnd])).toEqual([
+    [10_000, 10_500],
+    [30_000, 31_000],
+  ])
+  expect(result.forms.find(f => f.members.includes('Gap#1'))!.key).toBe(
+    '0|-1000',
+  )
+})
+
+test('a rare plain mark states itself at every summed site it overlaps', () => {
+  const twoSummed = forms(
+    [
+      ...haps('R', 6),
+      ...haps('L', 3, [dep(10_000, 10_500, 0)]),
+      ...haps('G', 3, [dep(20_000, 20_500, 0)]),
+      hap('X#1', [dep(10_200, 20_300, 0)]),
+    ],
+    { minCarriers: 2, foldRareForms: false },
+  )
+  expect(twoSummed.sites.map(s => [s.refStart, s.refEnd])).toEqual([
+    [10_000, 10_500],
+    [20_000, 20_500],
+  ])
+  expect(twoSummed.forms.find(f => f.members.includes('X#1'))!.states).toEqual([
+    '-10000',
+    '-10000',
+  ])
+  const summedThenWide = forms(
+    [
+      ...haps('R', 6),
+      ...haps('L', 3, [dep(10_000, 10_500, 0)]),
+      ...haps('G', 3, [dep(20_000, 25_000, 0)]),
+      hap('X#1', [dep(10_200, 21_000, 0)]),
+    ],
+    { minCarriers: 2, foldRareForms: false },
+  )
+  expect(
+    summedThenWide.forms.find(f => f.members.includes('X#1'))!.states,
+  ).toEqual(['-11000', '-11000'])
+})
+
+test("a form names a rare bridge once when its carriers' medians differ by site", () => {
+  const result = forms(
+    [
+      ...haps('R', 6),
+      ...haps('A', 3, [dep(10_000, 15_000, 0)]),
+      ...haps('B', 3, [dep(14_000, 20_000, 0)]),
+      ...haps('C', 3, [dep(40_000, 45_000, 0)]),
+      hap('X#1', [dep(10_000, 12_000, 0), dep(18_000, 42_000, 4000)]),
+      hap('Y#1', [dep(10_000, 12_000, 30), dep(16_000, 70_000, 33_990)]),
+    ],
+    { minCarriers: 2 },
+  )
+  const form = result.forms.find(f => f.members.includes('X#1'))!
+  expect(form.members).toContain('Y#1')
+  expect(form.marks.filter(m => m.refEnd - m.refStart > 20_000)).toHaveLength(1)
+  expect(form.net).toBeGreaterThan(-25_000)
+})
+
 test('a rare state folds to the common state nearest in net change', () => {
   const result = forms(
     [

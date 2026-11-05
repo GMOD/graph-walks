@@ -53,11 +53,12 @@ export interface SiteState {
 }
 
 /**
- * Overlapping marks that at least minCarriers haplotypes share make one site,
- * two marks shared where each covers at least half of the other on R. A rarer
- * mark states itself at every site it overlaps without widening any, so one
- * haplotype's long jump leaves the sites it crosses apart; rarer marks that
- * overlap none make sites of their own the same way. `covered` counts the placed haplotypes
+ * A mark is common where at least minCarriers haplotypes share it, two marks
+ * shared where each covers at least half of the other on R, and overlapping
+ * common marks make one site. A rarer mark, or a summed change holding one,
+ * states itself at every site it overlaps without widening any, so one
+ * haplotype's long departure leaves the sites it crosses apart; rarer marks
+ * that overlap no common site make sites of their own by overlap. `covered` counts the placed haplotypes
  * with a call there: walks spanning the site's part inside the window, so a
  * mark beside a gap in them is no call. An `edge` site is one most haplotypes in the window have no call
  * at, which no form key holds. A `shared` site tells no forms apart, since no
@@ -389,6 +390,7 @@ function haplotypePieces(
   return {
     marks,
     plain: pieces.filter(d => !d.abridged && !ownKind.has(d)),
+    markOfPiece: new Map([...pieceOf].map(([m, d]) => [d, m])),
   }
 }
 
@@ -449,19 +451,39 @@ const overlaps = (h: HaplotypeDepartures, start: number, end: number) =>
   h.covered.some(([a, b]) => a <= end && b >= start)
 
 // Marks of at least `minCarriers` haplotypes, two marks shared where each
-// covers at least half of the other on R, a point taking 1 bp
+// covers at least half of the other on R, a point taking 1 bp. Marks of one
+// span compare once, and a mark stops gathering sharers at minCarriers
 function commonMarks(marksBy: Mark[][], minCarriers: number) {
-  const all = marksBy
-    .flatMap((marks, hap) =>
-      marks.map(m => ({
-        m,
-        hap,
-        start: m.refStart,
-        end: Math.max(m.refEnd, m.refStart + 1),
-      })),
-    )
-    .sort((a, b) => a.start - b.start)
-  const sharers = all.map(a => new Set([a.hap]))
+  const bySpan = new Map<
+    string,
+    { start: number; end: number; marks: Mark[]; haps: Set<number> }
+  >()
+  marksBy.forEach((marks, hap) => {
+    for (const m of marks) {
+      const start = m.refStart
+      const end = Math.max(m.refEnd, m.refStart + 1)
+      const key = `${start} ${end}`
+      const group = bySpan.get(key) ?? {
+        start,
+        end,
+        marks: [],
+        haps: new Set(),
+      }
+      group.marks.push(m)
+      group.haps.add(hap)
+      bySpan.set(key, group)
+    }
+  })
+  const all = [...bySpan.values()].sort((a, b) => a.start - b.start)
+  const sharers = all.map(g => new Set(g.haps))
+  const gather = (into: Set<number>, from: Set<number>) => {
+    for (const hap of from) {
+      if (into.size >= minCarriers) {
+        return
+      }
+      into.add(hap)
+    }
+  }
   all.forEach((a, i) => {
     const half = (a.end - a.start) / 2
     for (
@@ -472,13 +494,13 @@ function commonMarks(marksBy: Mark[][], minCarriers: number) {
       const b = all[j]!
       const overlap = Math.min(a.end, b.end) - b.start
       if (overlap >= half && 2 * overlap >= b.end - b.start) {
-        sharers[i]!.add(b.hap)
-        sharers[j]!.add(a.hap)
+        gather(sharers[i]!, b.haps)
+        gather(sharers[j]!, a.haps)
       }
     }
   })
   return new Set(
-    all.flatMap((a, i) => (sharers[i]!.size >= minCarriers ? [a.m] : [])),
+    all.flatMap((g, i) => (sharers[i]!.size >= minCarriers ? g.marks : [])),
   )
 }
 
@@ -509,7 +531,10 @@ function siteSpans(marks: Mark[], common: Set<Mark>) {
 }
 
 // The indices of the sites `m` overlaps
-function sitesOver(sites: [number, number][], m: Mark) {
+function sitesOver(
+  sites: [number, number][],
+  m: Pick<Mark, 'refStart' | 'refEnd'>,
+) {
   let lo = 0
   let hi = sites.length
   while (lo < hi) {
@@ -525,20 +550,6 @@ function sitesOver(sites: [number, number][], m: Mark) {
     over.push(i)
   }
   return over
-}
-
-function siteIndex(sites: [number, number][], m: Pick<Mark, 'refStart'>) {
-  let lo = 0
-  let hi = sites.length - 1
-  while (lo < hi) {
-    const mid = (lo + hi + 1) >> 1
-    if (sites[mid]![0] <= m.refStart) {
-      lo = mid
-    } else {
-      hi = mid - 1
-    }
-  }
-  return lo
 }
 
 /**
@@ -573,7 +584,7 @@ export function structuralForms(
       : new Set(marksBy.flat())
   const spans = siteSpans(marksBy.flat(), sharedMarks)
   const summed = spans.map(([a, b]) => b - a <= SUMMED_SITE_BP)
-  const rawAt = piecesBy.map(({ marks, plain }) => {
+  const rawAt = piecesBy.map(({ marks, plain, markOfPiece }) => {
     const at = new Map<number, Mark[]>()
     const add = (i: number, m: Mark) => {
       at.set(i, [...(at.get(i) ?? []), m])
@@ -587,20 +598,29 @@ export function structuralForms(
     }
     const plainAt = new Map<number, Joined[]>()
     for (const d of plain) {
-      const i = siteIndex(spans, { refStart: d.refEnd })
-      if (summed[i] && spans[i]![0] <= d.refEnd && spans[i]![1] >= d.refStart) {
-        plainAt.set(i, [...(plainAt.get(i) ?? []), d])
+      for (const i of sitesOver(spans, d)) {
+        if (summed[i]) {
+          plainAt.set(i, [...(plainAt.get(i) ?? []), d])
+        }
       }
     }
     for (const [i, pieces] of plainAt) {
       const m = siteChange(pieces, floorBp)
       if (m) {
         add(i, m)
-        sharedMarks.add(m)
+        if (
+          pieces.every(d => {
+            const own = markOfPiece.get(d)
+            return !own || sharedMarks.has(own)
+          })
+        ) {
+          sharedMarks.add(m)
+        }
       }
     }
     return at
   })
+  const assigned = spans.map(([a, b]): [number, number] => [a, b])
   for (const at of rawAt) {
     for (const [i, ms] of at) {
       const span = spans[i]!
@@ -736,6 +756,8 @@ export function structuralForms(
   }
   const forms = [...byKey].map(([key, { states, members }]): Form => {
     const marks = onceEach(
+      assigned,
+      floorBp,
       states
         .flatMap((state, i) => stateOf(i, state)?.marks ?? [])
         .concat(shared),
@@ -780,10 +802,18 @@ export function structuralForms(
 }
 
 // A rarer mark over several sites states itself at each, and counts once
-function onceEach(marks: SiteMark[]) {
+function onceEach(
+  spans: [number, number][],
+  floorBp: number,
+  marks: SiteMark[],
+) {
   const seen = new Set<string>()
   return marks.filter(m => {
-    const key = `${m.kind} ${m.refStart} ${m.refEnd} ${m.delta}`
+    const over = sitesOver(spans, m)
+    const key =
+      over.length > 1
+        ? `${m.kind} ${stateKey(m, floorBp)} ${over.join(',')}`
+        : `${m.kind} ${m.refStart} ${m.refEnd} ${m.delta}`
     const fresh = !seen.has(key)
     seen.add(key)
     return fresh

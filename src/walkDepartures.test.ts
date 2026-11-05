@@ -6,7 +6,7 @@ import {
   formsCut,
   walkDepartures,
 } from './walkDepartures.ts'
-import { WalkReader } from './walkReader.ts'
+import { DepartureReadError, WalkReader } from './walkReader.ts'
 import { walkCut } from './walkRows.ts'
 
 import type { WalkDeparture } from './walkDeparture.ts'
@@ -529,5 +529,17 @@ describe('a forms cut', () => {
     expect(
       await formsCut(reader('abridged.R'), region, { byteBudget: 1e9 }),
     ).toEqual(await formsCut(reader('abridged.R'), region))
+  })
+
+  test('throws DepartureReadError past its departure byte budget', async () => {
+    const window = { refName: 'chr1', start: 50, end: 55 }
+    await expect(
+      formsCut(reader('span.GRCh38'), window, { departureByteBudget: 1 }),
+    ).rejects.toBeInstanceOf(DepartureReadError)
+    expect(
+      await formsCut(reader('span.GRCh38'), window, {
+        departureByteBudget: 1e9,
+      }),
+    ).toEqual(await formsCut(reader('span.GRCh38'), window))
   })
 })
