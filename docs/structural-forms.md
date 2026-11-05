@@ -42,11 +42,14 @@ fragments' ends, in chains:
   the window or a second contig over the same locus, is no call there
 - An abridged fragment's bp lie between the R its handles reach, so the
   departure holding it is exact in net, and only placement inside it is lost.
-  Its pieces need not be consecutive: the pieces of other chunks between them,
-  the departures within them and the abridged fragments abutting them join its
-  net, each with the bp it adds, since an abridged row's bp count the moved
-  pieces alone. Leaving them out put AMY1's unexpanded HG03710#1 29 kb short:
-  +167,764 bp against +196,894 expanded
+  Each abridged row is one piece, from its hapOffset to hapOffset + bp, so a
+  piece of another chunk between two moved pieces is a fragment of its own and
+  the departures between them are records. Abridged fragments that abut join one
+  net, as do two a departure across W lines leaves and rejoins strictly inside,
+  with its missing bp. Before gfa-to-tabix wrote a row per piece, one row stood
+  for a path's moved pieces in a chunk with the bp of those pieces alone, and a
+  reader had to add what lay between them; leaving that out put AMY1's
+  unexpanded HG03710#1 29 kb short: +167,764 bp against +196,894 expanded
 - A departure with one end inside abridged pieces keeps only the own bp outside
   them, the steps the cut holds and the bp the graph lacks, since its own steps
   inside lie in the pieces' bp. At AMY1, under graph-walks 4's step-walking
@@ -213,7 +216,7 @@ rule gives that 5 kb window 50 bp and the five windows above 1 kb.
   whole 60-65 kb chunk, and at LPA only 153 haplotypes can be scored at all (406
   expanded)
 - An expanded MHC cut keeps 9.4 M steps, past `WALK_BUDGETS`' 4 M, so `formsCut`
-  has its own budget
+  has its own budget, which its cuts keep to in place of the reader's default
 - Expansion costs a second cut over the same chunks, since only the first lists
   the abridged walks and their steps
 - `partial: false` reads every abridged walk or none. Where reading them all

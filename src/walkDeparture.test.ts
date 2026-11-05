@@ -4,6 +4,7 @@ import {
   departureRowKey,
   departureStretch,
   parseDepartureRow,
+  placementChoice,
   squeezer,
 } from './walkDeparture.ts'
 
@@ -23,7 +24,7 @@ const ends = (
 
 test('a record row parses to its ends, own sequence and contig position', () => {
   const cols =
-    'GRCh38#0#chr1~departure\t19\t81\tdeparture\tHG002#1#ctg\t20\t30\t12\t20\t+\t80\t-'.split(
+    'GRCh38#0#chr1~departure\t19\t81\tdeparture\tHG002#1#ctg\t20\t30\t12\t20\t+\t1\t80\t-\t3'.split(
       '\t',
     )
   expect(parseDepartureRow(cols)).toEqual({
@@ -33,13 +34,30 @@ test('a record row parses to its ends, own sequence and contig position', () => 
     missingBp: 12,
     leavePos: 20,
     leaveReversed: false,
+    leavePasses: 1,
     rejoinPos: 80,
     rejoinReversed: true,
+    rejoinPasses: 3,
     fromSteps: false,
   })
+  expect(placementChoice(parseDepartureRow(cols))).toBe(true)
   expect(departureRowKey(cols)).toBe(
-    'departure\tHG002#1#ctg\t20\t30\t12\t20\t+\t80\t-',
+    'departure\tHG002#1#ctg\t20\t30\t12\t20\t+\t1\t80\t-\t3',
   )
+})
+
+test('a record row without pass counts is refused, not misread', () => {
+  const cols =
+    'GRCh38#0#chr1~departure\t19\t81\tdeparture\tHG002#1#ctg\t20\t30\t12\t20\t+\t80\t-'.split(
+      '\t',
+    )
+  expect(() => parseDepartureRow(cols)).toThrow(/not a walk format 6 row/)
+})
+
+test('a departure is a placement choice where either end lies on a node the reference passes more than once', () => {
+  expect(placementChoice({ leavePasses: 1, rejoinPasses: 1 })).toBe(false)
+  expect(placementChoice({ leavePasses: 2, rejoinPasses: 1 })).toBe(true)
+  expect(placementChoice({ leavePasses: 1, rejoinPasses: 2 })).toBe(true)
 })
 
 test('a departure is a strand switch, a jump back, own sequence between adjacent steps or a jump forward', () => {

@@ -44,7 +44,8 @@ const DETAIL_READS = 16
 // piece its read lacks
 const ATTACH_FETCHES = 8
 
-// The budgets the JBrowse graph plugin and BandageJS cut a browser's window by
+// The budgets a cut keeps to unless its caller passes others: what a browser
+// window can hold. Infinity lifts one
 export const WALK_BUDGETS = {
   stepBudget: 4_000_000,
   byteBudget: 8_000_000,
@@ -163,14 +164,15 @@ export interface WalkCutOptions {
   signal?: AbortSignal
   // which walks to decode, by `sample#haplotype#contig`; undefined is all
   keep?: (name: string) => boolean
-  // the most steps a cut keeps; Infinity, the default, has no limit
+  // the most steps a cut keeps, WALK_BUDGETS' by default; Infinity has no
+  // limit
   stepBudget?: number
-  // the most compressed bytes a cut fetches from the windows' chunks;
-  // Infinity, the default, has no limit. The detail records `expand` reads
-  // count only against stepBudget
+  // the most compressed bytes a cut fetches from the windows' chunks,
+  // WALK_BUDGETS' by default; Infinity has no limit. The detail records
+  // `expand` reads count only against stepBudget
   byteBudget?: number
-  // the most compressed bytes the departure read fetches; Infinity, the
-  // default, has no limit
+  // the most compressed bytes the departure read fetches, WALK_BUDGETS' by
+  // default; Infinity has no limit
   departureByteBudget?: number
   // the most bp of own sequence a departure gets its steps attached for,
   // ATTACH_BP by default
@@ -301,9 +303,9 @@ export class WalkReader {
       signal,
       keep,
       context = WALK_CONTEXT,
-      stepBudget = Infinity,
-      byteBudget = Infinity,
-      departureByteBudget = Infinity,
+      stepBudget = WALK_BUDGETS.stepBudget,
+      byteBudget = WALK_BUDGETS.byteBudget,
+      departureByteBudget = WALK_BUDGETS.departureByteBudget,
       attachBp = ATTACH_BP,
       attachFetches = ATTACH_FETCHES,
       links = true,
@@ -377,8 +379,10 @@ export class WalkReader {
       end: region.end + context,
     }
     const filtered = keep !== undefined
-    // the expanded walks' rows, with the R of their chunk
+    // the detail records of the expanded walks, each once, with the R of
+    // their chunk; a path's abridged pieces in a chunk share one
     let details: { ref: ChunkRef; row: WalkRow }[] = []
+    const detailsRead = new Set<string>()
     // each chunk read is decoded once, into its rows, nodes and the links
     // between pieces, and a cut over its node limit stops there
     const decode = (
@@ -394,8 +398,13 @@ export class WalkReader {
       let ref: ChunkRef | undefined
       for (const row of chunkCut.rows) {
         if (row.abridged && expand?.(row.name)) {
-          ref ??= chunkRef(chunkRows)
-          details.push({ ref, row })
+          const { refName: sequence, start } = row.abridged.detail
+          const key = `${sequence}\t${start}`
+          if (!detailsRead.has(key)) {
+            detailsRead.add(key)
+            ref ??= chunkRef(chunkRows)
+            details.push({ ref, row })
+          }
         } else {
           rows.push(row)
         }

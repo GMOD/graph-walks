@@ -175,27 +175,20 @@ function fragmentItem(f: WalkFragment, length: (id: number) => number): Item {
  * departures leaving its last step, rejoining its first or lying inside it,
  * fragments that abut, and a departure touching no fragment on its own. What
  * the read did not see lies between chains, so each reads on its own, and R
- * that two chains reach has no call. Abridged fragments, each a net over the
- * pieces a writer moved out of a chunk, take in whatever of the path lies
- * within those pieces: the fragments of pieces in other chunks between
- * them, abridged fragments abutting them, and the departures whose both
- * ends lie in them, whose own steps the pieces hold and whose missing bp
- * they do not. A departure with one end in them keeps the bp of its own
+ * that two chains reach has no call. An abridged fragment is a net over one
+ * piece a writer moved out of a chunk, from its row's hapOffset to hapOffset
+ * + bp on the contig. Abridged fragments that abut join into one net, as do
+ * two that a departure leaves and rejoins strictly inside, across a contig's
+ * W lines, with the departure's missing bp added: the pieces hold its own
+ * steps. A departure with one end inside one keeps the bp of its own
  * outside: those the graph lacks and the steps the cut holds.
  */
 function pathChains(items: Item[], length: (id: number) => number) {
-  const overlaps = (a: Item, b: Item) =>
-    a.hap[0] < b.hap[1] && a.hap[1] > b.hap[0]
   const touches = (a: Item, b: Item) =>
     a.hap[0] <= b.hap[1] && a.hap[1] >= b.hap[0]
-  // An abridged row's bp count its moved pieces alone, so a group's contig
-  // extent grows by what it takes in, as the pieces of other chunks between
-  // the moved ones lie within it
-  const extend = (g: Item, item: Item, bp: number) => {
-    g.hap = [
-      Math.min(g.hap[0], item.hap[0]),
-      Math.max(g.hap[1] + bp, item.hap[1]),
-    ]
+  // a group's stretch of the contig and of R, and `bp` more of the path
+  const join = (g: Item, item: Item, bp: number) => {
+    g.hap = [Math.min(g.hap[0], item.hap[0]), Math.max(g.hap[1], item.hap[1])]
     g.lo = least(g.lo, item.lo)
     g.hi = most(g.hi, item.hi)
     g.bp += bp
@@ -203,31 +196,25 @@ function pathChains(items: Item[], length: (id: number) => number) {
   const abridged = (item: Item) =>
     'fragment' in item && item.fragment.abridged !== undefined
   let groups = items.filter(abridged).map(i => ({ ...i }))
-  let rest = items.filter(i => !abridged(i))
+  const fragments = items.filter(i => 'fragment' in i && !abridged(i))
+  let departures = items.filter(i => !('fragment' in i))
   // the group whose pieces hold the step at `hap` on the contig, past their
   // first step and before their last: a departure leaving their last step
   // or rejoining their first has its own bp outside them, and stays exact
   const holder = (hap: number) =>
     groups.find(g => g.hap[0] < hap && hap < g.hap[1])
   for (let changed = groups.length > 0; changed;) {
-    const before = rest.length + groups.length
-    rest = rest.filter(item => {
-      if ('fragment' in item) {
-        const g = groups.find(g => overlaps(item, g))
-        if (g) {
-          extend(g, item, item.bp)
-        }
-        return !g
-      }
-      const d = item.departure
-      const a = holder(d.hapStart)
-      const b = holder(d.hapStart + d.ownBp)
-      if (a && b) {
+    const before = departures.length + groups.length
+    departures = departures.filter(item => {
+      const d = 'departure' in item ? item.departure : undefined
+      const a = d && holder(d.hapStart)
+      const b = d && holder(d.hapStart + d.ownBp)
+      if (d && a && b) {
         if (b !== a) {
-          extend(a, b, b.bp)
+          join(a, b, b.bp)
           groups = groups.filter(g => g !== b)
         }
-        extend(a, item, d.missingBp)
+        join(a, item, d.missingBp)
       }
       return !(a && b)
     })
@@ -235,13 +222,13 @@ function pathChains(items: Item[], length: (id: number) => number) {
     for (const g of groups.toSorted((a, b) => a.hap[0] - b.hap[0])) {
       const last = merged.at(-1)
       if (last && touches(last, g)) {
-        extend(last, g, g.bp)
+        join(last, g, g.bp)
       } else {
         merged.push(g)
       }
     }
     groups = merged
-    changed = rest.length + groups.length < before
+    changed = departures.length + groups.length < before
   }
   // where each item starts and ends on the contig
   const edges = (item: Item): [number, number] =>
@@ -252,7 +239,7 @@ function pathChains(items: Item[], length: (id: number) => number) {
   // leave at a fragment's last step or inside it, its rejoin at the first,
   // or two fragments abutting. In start order, an item touches the chain so
   // far when it starts no later than the chain's furthest end
-  const all = [...groups, ...rest]
+  const all = [...groups, ...fragments, ...departures]
     .map(item => ({ item, edges: edges(item) }))
     .sort((a, b) => a.edges[0] - b.edges[0])
   const chains: Item[][] = []
@@ -502,13 +489,15 @@ export interface FormsCutOptions {
   // before the second cut where that takes the cut past stepBudget; true by
   // default, which reads them fewest steps first while the budget lasts
   partial?: boolean
+  // the most steps the cut keeps with the abridged walks it reads in full,
+  // FORMS_STEP_BUDGET by default; each cut keeps at least FORMS_STEP_BUDGET
   stepBudget?: number
   // the most compressed bytes either cut fetches from the region's chunks,
-  // past which the cut throws RegionTooLargeError; no limit by default. Only
-  // stepBudget bounds the detail records expansion reads
+  // past which the cut throws RegionTooLargeError; WALK_BUDGETS' by default.
+  // Only stepBudget bounds the detail records expansion reads
   byteBudget?: number
   // the most compressed bytes either cut's departure read fetches, past
-  // which the cut throws DepartureReadError; no limit by default
+  // which the cut throws DepartureReadError; WALK_BUDGETS' by default
   departureByteBudget?: number
   signal?: AbortSignal
 }
@@ -562,7 +551,13 @@ export async function formsCut(
   const refName =
     (await reader.sequenceFor(sample, region.refName, { signal })) ??
     region.refName
-  const cutOpts = { links: false, byteBudget, departureByteBudget, signal }
+  const cutOpts = {
+    links: false,
+    stepBudget: Math.max(stepBudget, FORMS_STEP_BUDGET),
+    byteBudget,
+    departureByteBudget,
+    signal,
+  }
   let cut = await reader.cut(refName, region, cutOpts)
   if (expand) {
     const expanded = expandedWalks(cut.fragments, stepBudget, partial, region)

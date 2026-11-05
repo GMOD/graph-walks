@@ -6,8 +6,9 @@ import type { WalkRow } from './walkRows.ts'
 // lengths of the nodes its routes visit; `route` rows, each a way off R; a
 // `walk` row per piece of every other path, naming the routes it takes in
 // order and, where R holds a node more than once, the occurrence a step
-// takes; and an `abridged` row per path whose pieces the writer moved to a
-// detail record. A handle is 2 * id + 1 when reversed.
+// takes; and an `abridged` row per piece the writer moved to a detail
+// record. A `ref` row's `passes` say how many times the reference passes each
+// of its steps' nodes. A handle is 2 * id + 1 when reversed.
 
 const NONE = -1
 
@@ -22,6 +23,8 @@ export interface PlacedNode {
   start: number
   end: number
   rank: number
+  // how many times the reference's paths pass the node, 0 off them
+  passes: number
 }
 
 const idOf = (handle: number) => (handle - (handle & 1)) / 2
@@ -57,6 +60,18 @@ function tokens(field: string, previous: { id: number }, out: number[]) {
 
 function numbers(field: string) {
   return field === '.' ? [] : field.split(',').map(Number)
+}
+
+// A ref row's `passes`: how many times the reference's paths pass each
+// step's node, `.` when every one is 1
+function passCounts(cols: string[], n: number) {
+  const field = cols[11]
+  const counts =
+    field === '.' ? new Array<number>(n).fill(1) : numbers(field ?? '')
+  if (counts.length !== n || counts.some(c => !Number.isInteger(c) || c < 1)) {
+    throw new WalkRowError(`a ref row's passes do not count its ${n} steps`)
+  }
+  return counts
 }
 
 // A link the way round the converter writes it, so a link and its reverse
@@ -435,13 +450,23 @@ function sliceBases(
   }
 }
 
-// The row of an `abridged` line, as a two-step walk from the handle on R it
-// starts on to the one it ends on, each at the occurrence its `@k` names,
-// else the first and the one nearest it. Its detail record is filed under
-// `seq~cs`, one Tabix leaf bin apart.
+// The row of an `abridged` line, one piece, as a two-step walk from the
+// handle on R it starts on to the one it ends on, each at the occurrence its
+// `@k` names, else the first and the one nearest it. Its detail record, which
+// holds the path's moved pieces in the chunk, is filed under `seq~cs`, one
+// Tabix leaf bin apart.
 const DETAIL_SPACING = 16384
 
 function abridgedRow(cols: string[], path: RefPath): WalkRow {
+  const count = (k: number) => {
+    const n = Number(cols[k])
+    if (cols[k] === '' || !Number.isInteger(n) || n < 0) {
+      throw new WalkRowError(
+        `not an abridged row of one piece: ${cols.join('\t')}`,
+      )
+    }
+    return n
+  }
   const anchor = cols[0]!
   const [h0, k0] = parseCopy(cols[10]!)
   const [h1, k1] = parseCopy(cols[11]!)
@@ -452,10 +477,6 @@ function abridgedRow(cols: string[], path: RefPath): WalkRow {
       : k1 === NONE
         ? path.nearest(h1, i0)
         : path.copy(h1, k1)
-  const pieces = numbers(cols[7]!)
-  for (let k = 1; k < pieces.length; k++) {
-    pieces[k]! += pieces[k - 1]!
-  }
   const at = (i: number | undefined) =>
     i === undefined ? Number.NaN : path.starts[i]!
   const againstAt = (i: number | undefined, h: number) =>
@@ -464,8 +485,8 @@ function abridgedRow(cols: string[], path: RefPath): WalkRow {
     chunkStart: +cols[1]!,
     name: cols[4]!,
     fragStart: +cols[5]!,
-    hapOffset: +cols[6]!,
-    piece: pieces[0]!,
+    hapOffset: count(6),
+    piece: count(7),
     n: 2,
     steps: {
       ids: Int32Array.from([h0, h1], idOf),
@@ -474,9 +495,8 @@ function abridgedRow(cols: string[], path: RefPath): WalkRow {
       against: Uint8Array.from([againstAt(i0, h0), againstAt(i1, h1)]),
     },
     abridged: {
-      pieces,
-      steps: +cols[8]!,
-      bp: +cols[9]!,
+      steps: count(8),
+      bp: count(9),
       detail: {
         refName: `${anchor}~${cols[1]!}`,
         start: +cols[12]! * DETAIL_SPACING,
@@ -537,6 +557,7 @@ export function decodeChunk(
   for (const cols of ref ? [] : refRows(rows)) {
     const handles = tokens(cols[9]!, { id: 0 }, [])
     const nodeLengths = numbers(cols[10]!)
+    const passes = passCounts(cols, handles.length)
     const hapOffset = +cols[6]!
     const first = path.starts.length
     path.add(handles, nodeLengths, hapOffset)
@@ -548,7 +569,13 @@ export function decodeChunk(
       const id = idOf(handles[k]!)
       const length = nodeLengths[k]!
       lengths.set(id, length)
-      const node = { refName: cols[4]!, start, end: start + length, rank: 0 }
+      const node = {
+        refName: cols[4]!,
+        start,
+        end: start + length,
+        rank: 0,
+        passes: passes[k]!,
+      }
       if (out.nodes.has(id)) {
         out.revisits.push({ id, ...node })
       } else {
@@ -630,7 +657,13 @@ export function decodeChunk(
           const id = idOf(h)
           if (!placed(id)) {
             const length = lengths.get(id) ?? 0
-            out.nodes.set(id, { refName: name, start: 0, end: length, rank: 1 })
+            out.nodes.set(id, {
+              refName: name,
+              start: 0,
+              end: length,
+              rank: 1,
+              passes: 0,
+            })
           }
         }
       }
@@ -774,6 +807,7 @@ export function placeAndLink(
                   start: offset,
                   end: offset + length,
                   rank: 1,
+                  passes: 0,
                 })
               }
             }
@@ -799,6 +833,7 @@ export function referenceNodes(rows: string[][]) {
     }
     const handles = tokens(cols[9]!, { id: 0 }, [])
     const nodeLengths = numbers(cols[10]!)
+    const passes = passCounts(cols, handles.length)
     let start = +cols[6]!
     for (let k = 0; k < handles.length; k++) {
       const length = nodeLengths[k]!
@@ -808,6 +843,7 @@ export function referenceNodes(rows: string[][]) {
         start,
         end: start + length,
         rank: 0,
+        passes: passes[k]!,
       })
       start += length
     }

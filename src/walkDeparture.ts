@@ -1,8 +1,11 @@
+import { WalkRowError } from './walkChunk.ts'
+
 // A departure: where a path's consecutive steps on the reference sequence S
 // are not adjacent there, from a walk file's `departure` records or computed
 // from a piece's steps (gfa-to-tabix's docs/walks-format.md, ADR 0009). Each
 // end is the step's breakpoint on S, where the path's sequence stops
-// following S, and whether the step runs against S's orientation at its pass.
+// following S, whether the step runs against S's orientation at its pass, and
+// how many times the reference passes the step's node.
 
 export interface WalkDeparture {
   name: string
@@ -14,8 +17,12 @@ export interface WalkDeparture {
   missingBp: number
   leavePos: number
   leaveReversed: boolean
+  // how many times the reference's paths pass the end's node: above 1, the
+  // pass is the writer's placement choice, and so is the departure
+  leavePasses: number
   rejoinPos: number
   rejoinReversed: boolean
+  rejoinPasses: number
   // computed from a piece's steps by the cut, rather than read from a record
   fromSteps: boolean
   // the own steps the cut holds, in the path's order; fewer bp than ownBp
@@ -105,18 +112,49 @@ export function departureStretch(d: Ends): [number, number] {
   return [lo, Math.max(lo, leaveBase, rejoinBase) + 1]
 }
 
+/**
+ * Whether a departure's place on the reference is the writer's choice: an
+ * end lies on a node the reference passes more than once, so another pass
+ * would put it elsewhere or make it none, as where a path follows one copy
+ * of a collapsed repeat and the placement hops between copies
+ */
+export function placementChoice(
+  d: Pick<WalkDeparture, 'leavePasses' | 'rejoinPasses'>,
+) {
+  return d.leavePasses > 1 || d.rejoinPasses > 1
+}
+
+const count = (field: string | undefined, row: string[]) => {
+  const n = Number(field)
+  if (field === undefined || field === '' || !Number.isInteger(n) || n < 0) {
+    throw new WalkRowError(`not a walk format 6 row: ${row.join('\t')}`)
+  }
+  return n
+}
+
+const strand = (field: string | undefined, row: string[]) => {
+  if (field !== '+' && field !== '-') {
+    throw new WalkRowError(`not a walk format 6 row: ${row.join('\t')}`)
+  }
+  return field === '-'
+}
+
 // A record row's columns, `departure path hapStart ownBp missingBp leavePos
-// leaveStrand rejoinPos rejoinStrand`, from its kind at `from`
+// leaveStrand leavePasses rejoinPos rejoinStrand rejoinPasses`, from its kind
+// at `from`; a row that is not one throws
 export function parseDepartureRow(cols: string[], from = 3): WalkDeparture {
+  const n = (k: number) => count(cols[from + k], cols)
   return {
     name: cols[from + 1]!,
-    hapStart: +cols[from + 2]!,
-    ownBp: +cols[from + 3]!,
-    missingBp: +cols[from + 4]!,
-    leavePos: +cols[from + 5]!,
-    leaveReversed: cols[from + 6] === '-',
-    rejoinPos: +cols[from + 7]!,
-    rejoinReversed: cols[from + 8] === '-',
+    hapStart: n(2),
+    ownBp: n(3),
+    missingBp: n(4),
+    leavePos: n(5),
+    leaveReversed: strand(cols[from + 6], cols),
+    leavePasses: n(7),
+    rejoinPos: n(8),
+    rejoinReversed: strand(cols[from + 9], cols),
+    rejoinPasses: n(10),
     fromSteps: false,
   }
 }

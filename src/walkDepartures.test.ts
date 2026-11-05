@@ -29,6 +29,7 @@ function graphNodes() {
       start,
       end: start + length,
       rank: 0,
+      passes: 1,
       onWindow: true,
     })
     start += length
@@ -39,6 +40,7 @@ function graphNodes() {
       start: 0,
       end: length,
       rank: 1,
+      passes: 0,
       onWindow: false,
     })
   }
@@ -106,8 +108,10 @@ function record(
     missingBp,
     leavePos: +leave.slice(1),
     leaveReversed: leave.startsWith('-'),
+    leavePasses: 1,
     rejoinPos: +rejoin.slice(1),
     rejoinReversed: rejoin.startsWith('-'),
+    rejoinPasses: 1,
     fromSteps: false,
   }
 }
@@ -198,7 +202,7 @@ test('steps off R past either end of a walk are no departure', () => {
 })
 
 test('an abridged walk is its net change over its anchors on R', () => {
-  const abridged = { pieces: [0], steps: 4000, bp: 1200, detail }
+  const abridged = { steps: 4000, bp: 1200, detail }
   const [a] = departuresOf([walk('A#1#c', '+2 +5', { abridged })])
   expect(a).toEqual({
     haplotype: 'A#1',
@@ -288,7 +292,7 @@ test("a departure across a contig's W lines counts the sequence the graph lacks 
 })
 
 test('an abridged fragment is net between its handles, and the departures either side stay exact', () => {
-  const abridged = { pieces: [1], steps: 900, bp: 1500, detail }
+  const abridged = { steps: 900, bp: 1500, detail }
   const [a] = departuresOf(
     [
       walk('A#1#c', '+1 +51'),
@@ -317,26 +321,32 @@ test('an abridged fragment is net between its handles, and the departures either
   })
 })
 
-test('a departure within an abridged stretch joins its net, with the bp the graph lacks', () => {
-  const abridged = { pieces: [1, 3], steps: 900, bp: 1200, detail }
+// A contig's W lines: an abridged piece over 2 and 3 running 100 bp of its
+// own after them to its line's end, 50 bp no line covers, and an abridged
+// piece of the next line running 100 bp of its own before 4
+test('two abridged pieces a departure leaves and rejoins strictly inside join one net, with the bp the graph lacks', () => {
   const [a] = departuresOf(
     [
-      walk('A#1#c', '+2 +4', { hapStart: 100, abridged }),
-      walk('A#1#c', '+3', { hapStart: 600 }),
+      walk('A#1#c', '+2 +3', {
+        hapStart: 100,
+        abridged: { steps: 3, bp: 700, detail },
+      }),
+      walk('A#1#c', '+4 +4', {
+        hapStart: 850,
+        abridged: { steps: 2, bp: 1100, detail },
+      }),
+      walk('A#1#c', '+5 +6', { hapStart: 1950 }),
     ],
-    [
-      record('A#1#c', 600, 0, '+600', '+600'),
-      record('A#1#c', 700, 50, '+700', '+700', 50),
-    ],
+    [record('A#1#c', 700, 250, '+700', '+700', 50)],
   )
   expect(a).toEqual({
     haplotype: 'A#1',
-    covered: [[100, 1700]],
+    covered: [[100, 1900]],
     departures: [
       {
         refStart: 100,
         refEnd: 1700,
-        altLength: 1350,
+        altLength: 700 + 50 + 1100,
         ...plain,
         abridged: true,
       },
@@ -345,7 +355,7 @@ test('a departure within an abridged stretch joins its net, with the bp the grap
 })
 
 test('a departure leaving from inside abridged pieces keeps only the own bp outside them', () => {
-  const abridged = { pieces: [1], steps: 900, bp: 1500, detail }
+  const abridged = { steps: 900, bp: 1500, detail }
   const [a] = departuresOf(
     [
       walk('A#1#c', '+2 +4', { hapStart: 120, abridged }),
@@ -403,24 +413,28 @@ test("a fragment's ends lie where their pass does, where R passes a node again",
   })
 })
 
-test("abridged pieces with another chunk's piece between them count its bp in their net", () => {
-  const abridged = { pieces: [0, 2], steps: 3, bp: 1400, detail }
-  const [a] = departuresOf(
-    [
-      walk('A#1#c', '+1 +4', { abridged }),
-      walk('A#1#c', '+2 +3', { hapStart: 100 }),
-      walk('A#1#c', '+5 +6', { hapStart: 2000 }),
-    ],
-    [record('A#1#c', 1700, 300, '+1700', '+1700')],
-  )
+// An abridged row stands for one piece, from its hapOffset to hapOffset +
+// bp, with its first and last steps on R as two steps, so pieces 0 and 2 abridged with piece 1 between them in another chunk
+// are two nets, and piece 1 reads as itself between them
+test('each abridged piece is a net over its own stretch, and a piece between two reads as itself', () => {
+  const [a] = departuresOf([
+    walk('A#1#c', '+1 +1', { abridged: { steps: 1, bp: 100, detail } }),
+    walk('A#1#c', '+2 +3', { hapStart: 100 }),
+    walk('A#1#c', '+4 +4', {
+      hapStart: 700,
+      abridged: { steps: 4, bp: 1300, detail },
+    }),
+    walk('A#1#c', '+5 +6', { hapStart: 2000 }),
+  ])
   expect(a).toEqual({
     haplotype: 'A#1',
     covered: [[0, 1900]],
     departures: [
+      { refStart: 0, refEnd: 100, altLength: 100, ...plain, abridged: true },
       {
-        refStart: 0,
+        refStart: 700,
         refEnd: 1700,
-        altLength: 2000,
+        altLength: 1300,
         ...plain,
         abridged: true,
       },
@@ -429,7 +443,7 @@ test("abridged pieces with another chunk's piece between them count its bp in th
 })
 
 test("a departure leaving abridged pieces' last step keeps its own bp whole", () => {
-  const abridged = { pieces: [0], steps: 2, bp: 600, detail }
+  const abridged = { steps: 2, bp: 600, detail }
   const [a] = departuresOf(
     [walk('A#1#c', '+1 +2', { abridged })],
     [record('A#1#c', 600, 5020, '+600', '+50000', 5000)],

@@ -30,6 +30,7 @@ export {
   departureKind,
   departureStretch,
   parseDepartureRow,
+  placementChoice,
   squeezer,
 } from './walkDeparture.ts'
 export type { DepartureKind, Hole, WalkDeparture } from './walkDeparture.ts'

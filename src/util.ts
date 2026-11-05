@@ -10,6 +10,10 @@ export interface GraphTables {
     starts: Float64Array
     ranks: Int32Array
     refNames: string[]
+    // how many times the reference's paths pass each node, 0 off them: above
+    // 1, a step's pass there is the writer's placement choice; absent from
+    // tables another source builds
+    passes?: Int32Array
   }
   links: {
     from: Int32Array
@@ -38,7 +42,8 @@ export interface GraphTables {
 
 // A WalkDeparture per row: its ends as breakpoints on the reference, with
 // `leaveReversed` and `rejoinReversed` 1 where the step runs against the
-// reference's orientation; `fromSteps` 1 where the cut computed it from a
+// reference's orientation, and `leavePasses` and `rejoinPasses` how many
+// times the reference passes each end's node; `fromSteps` 1 where the cut computed it from a
 // piece's steps rather than a record; and its own steps the cut holds, as
 // node indices at `offsets[k]` to `offsets[k + 1]`
 export interface DepartureTable {
@@ -48,8 +53,10 @@ export interface DepartureTable {
   missingBp: Float64Array
   leavePos: Float64Array
   leaveReversed: Uint8Array
+  leavePasses: Int32Array
   rejoinPos: Float64Array
   rejoinReversed: Uint8Array
+  rejoinPasses: Int32Array
   fromSteps: Uint8Array
   offsets: Int32Array
   steps: Int32Array

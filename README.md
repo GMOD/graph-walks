@@ -84,9 +84,9 @@ const { tables, refName, sample } = await reader.cutRegion(
 | --------------------- | ----------------------------------------------------------------------------------- |
 | `keep`                | Which walks to decode, by `sample#haplotype#contig`; every one by default           |
 | `context`             | bp of reference kept past each end of the region; default 1000                      |
-| `stepBudget`          | The most steps a cut keeps, departures' own steps included; no limit by default     |
-| `byteBudget`          | The most compressed bytes the walk read fetches; no limit by default                |
-| `departureByteBudget` | The most compressed bytes the departure read fetches; no limit by default           |
+| `stepBudget`          | The most steps a cut keeps, departures' own steps included; 4,000,000 by default    |
+| `byteBudget`          | The most compressed bytes the walk read fetches; 8 MB by default                    |
+| `departureByteBudget` | The most compressed bytes the departure read fetches; 2 MB by default               |
 | `attachBp`            | The most bp of own sequence a departure gets its steps attached for; default 65,536 |
 | `attachFetches`       | The most chunks fetched for own steps the read lacks; default 8                     |
 | `nodeLimit`           | The most nodes a cut keeps; no limit by default                                     |
@@ -109,8 +109,9 @@ const { tables, refName, sample } = await reader.cutRegion(
   not a `RegionTooLargeError`: a departure's record is filed over its whole
   stretch, so zooming in does not lower that read. A collapsed repeat that
   haplotypes hop between the copies of is the usual cause
-- `WALK_BUDGETS` holds the budgets and `attachBp` the JBrowse plugin and
-  BandageJS cut by
+- `WALK_BUDGETS` holds the default budgets and `attachBp`, what a browser window
+  holds; a caller that wants no limit passes `Infinity`, so one that passes
+  nothing never fetches an unbounded read
 
 ## Fragments
 
@@ -164,6 +165,14 @@ for (const d of departures) {
   strands differ; `back`, the walk jumps back over reference it walks again;
   `adjacent`, sequence of its own between adjacent steps; `forward`, a jump
   forward over reference it leaves out. The tools make no further call
+- `leavePasses` and `rejoinPasses` say how many times the reference passes each
+  end's node. `placementChoice(d)` is true where either is above 1: the writer
+  chose which pass the step takes, so the departure is its choice, not a jump
+  the walk makes, as where a walk follows one copy of a collapsed repeat the
+  reference passes several times. A node's `passes` in `graph.nodes`, and the
+  tables' `nodes.passes`, say the same of each step on the reference; the
+  header's `revisited` counts the nodes passed more than once, 0 where every
+  departure in the file is a fact of the graph
 - A departure of at most `attachBp` of own sequence carries its own steps in
   `steps`, from the pieces the cut read; for a record whose leave piece lies
   outside the read, the cut fetches that chunk, at most `attachFetches` chunks a
@@ -172,19 +181,20 @@ for (const d of departures) {
   at the window's edge whole, and counts them against `stepBudget`
 - `graph.tables(kept, fragments, departures)` keeps them as the `departures`
   table: `names`, `hapStarts`, `ownBp`, `missingBp`, `leavePos`,
-  `leaveReversed`, `rejoinPos`, `rejoinReversed`, `fromSteps`, and each one's
-  own steps as node indices at `offsets[k]` to `offsets[k + 1]` of `steps`, with
-  `reversed`
+  `leaveReversed`, `leavePasses`, `rejoinPos`, `rejoinReversed`, `rejoinPasses`,
+  `fromSteps`, and each one's own steps as node indices at `offsets[k]` to
+  `offsets[k + 1]` of `steps`, with `reversed`
 
 ## Abridged walks
 
 - In a chunk over its budget, gfa-to-tabix moves the costliest paths' rows to
-  detail records and leaves one `abridged` row per path. A satellite array in a
-  pggb graph is the usual case
+  detail records and leaves one `abridged` row per moved piece. A satellite
+  array in a pggb graph is the usual case
 - The cut makes a separate fragment for each such row, with an `abridged` field:
-  its `steps` and `bp`, its `pieces`, and the `detail` record that holds them.
-  The fragment's two steps are the handles on the reference where the walk
-  leaves and rejoins, and `hapStart`/`hapEnd` span its `bp`
+  the piece's `steps` and `bp`, and the `detail` record that holds it with the
+  path's other moved pieces in the chunk. The fragment's two steps are the
+  piece's first and last handles on the reference, and `hapStart`/`hapEnd` are
+  exactly where the piece lies on its contig
 - `graph.tables(kept, fragments, departures)` keeps them as `abridgedSteps` and
   `abridgedBp` columns, NaN for every other walk
 - With `expand` naming a walk, the cut reads its detail records and cuts it in

@@ -2,9 +2,11 @@ import { TabixIndexedFile } from '@gmod/tabix'
 
 import { graphTablesGFA } from './testing.ts'
 import { RegionTooLargeError, panSNHaplotype } from './util.ts'
-import { departureKind } from './walkDeparture.ts'
+import { WalkRowError } from './walkChunk.ts'
+import { departureKind, placementChoice } from './walkDeparture.ts'
 import {
   DepartureReadError,
+  WALK_BUDGETS,
   WalkFormatError,
   WalkReader,
   readInOrder,
@@ -505,10 +507,18 @@ test('a region cut over its node limit says how far to zoom in', async () => {
 // A walk file from rows written space-separated, served in chunk order or
 // reversed, which notes the chunk of each chunk row it serves
 function inline(lines: string[], reversed = false, served: number[] = []) {
+  return new WalkReader(inlineSource(lines, reversed, served))
+}
+
+function inlineSource(
+  lines: string[],
+  reversed = false,
+  served: number[] = [],
+): TabixSource {
   const rows = lines.map(line => line.split(' ').join('\t'))
   const header = rows.filter(row => row.startsWith('#'))
   const body = rows.filter(row => !row.startsWith('#'))
-  return new WalkReader({
+  return {
     getHeaderLines: () => Promise.resolve(header),
     getLines: (refName, start, end, { lineCallback }) => {
       const hits = body.filter(row => {
@@ -524,7 +534,7 @@ function inline(lines: string[], reversed = false, served: number[] = []) {
       return Promise.resolve()
     },
     getReferenceSequenceNames: () => Promise.resolve(['R#0#chr']),
-  })
+  }
 }
 
 // Eight 4 bp reference nodes in 16 bp chunks:
@@ -543,11 +553,11 @@ const tinyHeader = [
 ]
 const pieces = [
   ...tinyHeader,
-  'R#0#chr 0 1 ref R#0#chr 0 0 0 4 2,2,2,2 4,4,4,4',
+  'R#0#chr 0 1 ref R#0#chr 0 0 0 4 2,2,2,2 4,4,4,4 .',
   'R#0#chr 0 1 walk H1#1#c 0 0 0 2 2 .',
   'R#0#chr 0 1 walk H1#1#c 0 12 2 2 6 .',
   'R#0#chr 0 1 walk H2#1#c 0 8 1 1 4 .',
-  'R#0#chr 16 17 ref R#0#chr 0 16 1 4 10,2,2,2 4,4,4,4',
+  'R#0#chr 16 17 ref R#0#chr 0 16 1 4 10,2,2,2 4,4,4,4 .',
   'R#0#chr 16 17 walk H1#1#c 0 8 1 1 12 .',
   'R#0#chr 16 17 walk H1#1#c 0 20 3 4 10 .',
   'R#0#chr 16 17 walk H2#1#c 0 0 0 2 10 .',
@@ -555,11 +565,11 @@ const pieces = [
 ]
 const stays = [
   ...tinyHeader,
-  'R#0#chr 0 1 ref R#0#chr 0 0 0 4 2,2,2,2 4,4,4,4',
+  'R#0#chr 0 1 ref R#0#chr 0 0 0 4 2,2,2,2 4,4,4,4 .',
   'R#0#chr 0 1 nodes 6 4',
   'R#0#chr 0 1 route 4 8 -6',
   'R#0#chr 0 1 walk H1#1#c 0 0 0 5 2 0',
-  'R#0#chr 16 17 ref R#0#chr 0 16 1 4 10,2,2,2 4,4,4,4',
+  'R#0#chr 16 17 ref R#0#chr 0 16 1 4 10,2,2,2 4,4,4,4 .',
   'R#0#chr 16 17 nodes 2 4',
   'R#0#chr 16 17 route 12 -8 10',
   'R#0#chr 16 17 walk H1#1#c 0 20 1 4 10 .',
@@ -604,10 +614,10 @@ describe.each([
 test('the same walks in pieces of their own cut whole, with the jumps as records', async () => {
   const records = [
     ...pieces,
-    'R#0#chr~departure 7 21 departure H1#1#c 8 0 0 8 + 20 +',
-    'R#0#chr~departure 8 24 departure H1#1#c 12 0 0 24 + 8 +',
-    'R#0#chr~departure 4 24 departure H2#1#c 8 0 0 24 + 4 +',
-    'R#0#chr~departure 7 25 departure H2#1#c 12 0 0 8 + 24 +',
+    'R#0#chr~departure 7 21 departure H1#1#c 8 0 0 8 + 1 20 + 1',
+    'R#0#chr~departure 8 24 departure H1#1#c 12 0 0 24 + 1 8 + 1',
+    'R#0#chr~departure 4 24 departure H2#1#c 8 0 0 24 + 1 4 + 1',
+    'R#0#chr~departure 7 25 departure H2#1#c 12 0 0 8 + 1 24 + 1',
   ]
   const { tables } = await inline(records).cutRegion(
     { refName: 'chr', start: 4, end: 20 },
@@ -638,6 +648,74 @@ test("a route's own steps inside one piece are a departure computed from the ste
   ])
 })
 
+// Four 4 bp reference nodes, the second of which the reference passes twice,
+// its other pass elsewhere; H#1 runs 9 between 2 and 3:
+//   R  >1>2>3>4, passes 1,2,1,1
+//   H  >1>2>9>3>4
+test("a departure computed from steps takes its ends' pass counts from the ref rows", async () => {
+  const { graph, kept, fragments, departures } = await inline([
+    '#walks format:i:6 chunk:i:16 maxnode:i:4 revisited:i:1',
+    '#reference R',
+    '#haplotype H#1',
+    'R#0#chr 0 1 ref R#0#chr 0 0 0 4 2,2,2,2 4,4,4,4 1,2,1,1',
+    'R#0#chr 0 1 nodes 9 4',
+    'R#0#chr 0 1 route 4 14 -12',
+    'R#0#chr 0 1 walk H#1#h 0 0 0 5 2 0',
+  ]).cut('R#0#chr', { start: 0, end: 16 }, { context: 0 })
+  expect(
+    departures.map(d => [
+      d.leavePos,
+      d.leavePasses,
+      d.rejoinPos,
+      d.rejoinPasses,
+      d.fromSteps,
+    ]),
+  ).toEqual([[8, 2, 8, 1, true]])
+  expect(departures.map(placementChoice)).toEqual([true])
+  const tables = graph.tables(kept, fragments, departures)
+  expect(
+    tables.nodes.names.map((name, i) => `${name}:${tables.nodes.passes![i]}`),
+  ).toEqual(['9:0', '1:1', '2:2', '3:1', '4:1'])
+  expect([...tables.departures.leavePasses]).toEqual([2])
+})
+
+test('a cut keeps to WALK_BUDGETS unless its caller lifts them', async () => {
+  const bytes = { walks: 100, departures: WALK_BUDGETS.departureByteBudget + 1 }
+  const source: TabixSource = {
+    ...inlineSource(copyJump),
+    bytesForRegions: regions =>
+      Promise.resolve(
+        regions[0]!.refName.endsWith('~departure')
+          ? bytes.departures
+          : bytes.walks,
+      ),
+  }
+  const window = { start: 16, end: 32 }
+  await expect(
+    new WalkReader(source).cut('R#0#chr', window),
+  ).rejects.toBeInstanceOf(DepartureReadError)
+  const lifted = await new WalkReader(source).cut('R#0#chr', window, {
+    departureByteBudget: Infinity,
+  })
+  expect(lifted.departures).toHaveLength(2)
+  bytes.departures = 1
+  bytes.walks = WALK_BUDGETS.byteBudget + 1
+  await expect(
+    new WalkReader(source).cut('R#0#chr', window),
+  ).rejects.toBeInstanceOf(RegionTooLargeError)
+})
+
+test('a ref row whose passes do not count its steps is refused', async () => {
+  const error = await inline([
+    '#walks format:i:6 chunk:i:16 maxnode:i:4',
+    '#reference R',
+    'R#0#chr 0 1 ref R#0#chr 0 0 0 4 2,2,2,2 4,4,4,4',
+  ])
+    .cut('R#0#chr', { start: 0, end: 16 }, { context: 0 })
+    .catch((e: unknown) => e)
+  expect(error).toBeInstanceOf(WalkRowError)
+})
+
 // Twelve 4 bp reference nodes in 16 bp chunks; H#1 goes from 7 to 11, in
 // chunk 32, and back to 6:
 //   W R  0 chr >1>2>3>4>5>6>7>8>9>10>11>12
@@ -646,14 +724,14 @@ const copyJump = [
   '#walks format:i:6 chunk:i:16 maxnode:i:4',
   '#reference R',
   '#haplotype H#1',
-  'R#0#chr 0 1 ref R#0#chr 0 0 0 4 2,2,2,2 4,4,4,4',
-  'R#0#chr 16 17 ref R#0#chr 0 16 1 4 10,2,2,2 4,4,4,4',
+  'R#0#chr 0 1 ref R#0#chr 0 0 0 4 2,2,2,2 4,4,4,4 .',
+  'R#0#chr 16 17 ref R#0#chr 0 16 1 4 10,2,2,2 4,4,4,4 .',
   'R#0#chr 16 17 walk H#1#h 0 0 0 3 10 .',
   'R#0#chr 16 17 walk H#1#h 0 16 2 3 12 .',
-  'R#0#chr 32 33 ref R#0#chr 0 32 2 4 18,2,2,2 4,4,4,4',
+  'R#0#chr 32 33 ref R#0#chr 0 32 2 4 18,2,2,2 4,4,4,4 .',
   'R#0#chr 32 33 walk H#1#h 0 12 1 1 22 .',
-  'R#0#chr~departure 27 41 departure H#1#h 12 0 0 28 + 40 +',
-  'R#0#chr~departure 19 45 departure H#1#h 16 0 0 44 + 20 +',
+  'R#0#chr~departure 27 41 departure H#1#h 12 0 0 28 + 1 40 + 1',
+  'R#0#chr~departure 19 45 departure H#1#h 16 0 0 44 + 1 20 + 1',
 ]
 const copyJumpCut = async (
   start: number,
@@ -710,7 +788,7 @@ const eightChunks = [
   ...Array.from(
     { length: 8 },
     (_, c) =>
-      `R#0#chr ${16 * c} ${16 * c + 1} ref R#0#chr 0 ${16 * c} ${c} 4 ${8 * c + 2},2,2,2 4,4,4,4`,
+      `R#0#chr ${16 * c} ${16 * c + 1} ref R#0#chr 0 ${16 * c} ${c} 4 ${8 * c + 2},2,2,2 4,4,4,4 .`,
   ),
 ]
 
@@ -828,9 +906,13 @@ async function expandedCut(walks: WalkReader, signal?: AbortSignal) {
 }
 
 test('detail records read at once, finishing in reverse, cut as reads one at a time do', async () => {
-  const details = (await twoRefs('abridged.R')).fragments.filter(
-    f => f.abridged,
-  ).length
+  const pieces = (await twoRefs('abridged.R')).fragments.flatMap(f =>
+    f.abridged
+      ? [`${f.abridged.detail.refName} ${f.abridged.detail.start}`]
+      : [],
+  )
+  const details = new Set(pieces).size
+  expect(details).toBeLessThan(pieces.length)
   let queue = Promise.resolve()
   let reading = 0
   let most = 0

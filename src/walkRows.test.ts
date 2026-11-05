@@ -331,7 +331,13 @@ function graph() {
     context: 0,
   })
   const node = (id: number, rank: number, refName: string, start: number) => {
-    g.placeNode(id, { rank, refName, start, end: start + 100 })
+    g.placeNode(id, {
+      rank,
+      refName,
+      start,
+      end: start + 100,
+      passes: rank === 0 ? 1 : 0,
+    })
   }
   node(1, 0, 'GRCh38#0#chr1', 0)
   node(2, 0, 'GRCh38#0#chr1', 100)
@@ -389,23 +395,55 @@ test('a node is placed once', () => {
     refName: 'GRCh38#0#chr1',
     start: 100,
     end: 200,
+    passes: 1,
     onWindow: true,
   })
 })
 
 test("a node's reference position wins, whichever chunk is read first", () => {
   const g = graph()
-  g.placeNode(7, { rank: 1, refName: 'HG002#1#chr1', start: 0, end: 100 })
-  g.placeNode(7, { rank: 0, refName: 'GRCh38#0#chr1', start: 200, end: 300 })
-  g.placeNode(7, { rank: 1, refName: 'HG002#1#chr1', start: 0, end: 100 })
-  g.placeNode(8, { rank: 0, refName: 'GRCh38#0#chr1', start: 900, end: 1000 })
-  g.placeNode(8, { rank: 0, refName: 'GRCh38#0#chr1', start: 150, end: 250 })
+  g.placeNode(7, {
+    rank: 1,
+    refName: 'HG002#1#chr1',
+    start: 0,
+    end: 100,
+    passes: 0,
+  })
+  g.placeNode(7, {
+    rank: 0,
+    refName: 'GRCh38#0#chr1',
+    start: 200,
+    end: 300,
+    passes: 1,
+  })
+  g.placeNode(7, {
+    rank: 1,
+    refName: 'HG002#1#chr1',
+    start: 0,
+    end: 100,
+    passes: 0,
+  })
+  g.placeNode(8, {
+    rank: 0,
+    refName: 'GRCh38#0#chr1',
+    start: 900,
+    end: 1000,
+    passes: 1,
+  })
+  g.placeNode(8, {
+    rank: 0,
+    refName: 'GRCh38#0#chr1',
+    start: 150,
+    end: 250,
+    passes: 1,
+  })
   expect([g.nodes.get(7), g.nodes.get(8)]).toEqual([
     {
       rank: 0,
       refName: 'GRCh38#0#chr1',
       start: 200,
       end: 300,
+      passes: 1,
       onWindow: true,
     },
     {
@@ -413,6 +451,7 @@ test("a node's reference position wins, whichever chunk is read first", () => {
       refName: 'GRCh38#0#chr1',
       start: 150,
       end: 250,
+      passes: 1,
       onWindow: true,
     },
   ])
@@ -425,6 +464,7 @@ test("a node's pass over the window wins over the reference's other passes, whic
     refName: 'GRCh38#0#chr1',
     start,
     end: start + 100,
+    passes: 3,
   })
   g.placeNode(9, at(0))
   g.placeNode(9, at(200))
@@ -548,8 +588,10 @@ test('a departure between the pieces of one run comes from the records, not the 
     missingBp: 0,
     leavePos: 200,
     leaveReversed: false,
+    leavePasses: 1,
     rejoinPos: 300,
     rejoinReversed: false,
+    rejoinPasses: 1,
     fromSteps: false,
   }
   const { fragments, departures, unattached } = walkCut(
@@ -576,8 +618,10 @@ test("a record's own steps come from its leave piece, and a leave piece the cut 
     missingBp: 0,
     leavePos: 200,
     leaveReversed: false,
+    leavePasses: 1,
     rejoinPos: 300,
     rejoinReversed: false,
+    rejoinPasses: 1,
     fromSteps: false,
   })
   const rejoinOnly = walkRow(
@@ -610,7 +654,13 @@ test("a record's own steps come from its leave piece, and a leave piece the cut 
 
 test('a contained cut splits a walk where it steps onto the reference off the window', () => {
   const g = graph()
-  g.placeNode(8, { rank: 1, refName: 'HG002#3#chr1', start: 0, end: 100 })
+  g.placeNode(8, {
+    rank: 1,
+    refName: 'HG002#3#chr1',
+    start: 0,
+    end: 100,
+    passes: 0,
+  })
   const runs = joinPieces([
     run(g, 'GRCh38#0#chr1', 0, [1, 2, 3, 4]),
     // takes 2 and 3, goes back to 1 and takes 2 again, then 4

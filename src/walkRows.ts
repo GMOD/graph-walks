@@ -32,18 +32,17 @@ export interface WalkRow {
     against?: Uint8Array
   }
   chunkStart: number
-  // an `abridged` row, standing for its path's pieces in the chunk: `steps`
-  // holds the handles on R it starts and ends on
+  // an `abridged` row, standing for one piece: `steps` holds the handles on
+  // R it starts and ends on
   abridged?: Abridged
 }
 
 /**
- * A path's pieces in a chunk that the writer moved to a detail record: their
- * piece numbers, steps and bp, and the record's sequence and position, which a
- * cut that expands the path reads
+ * A piece the writer moved to a detail record: its steps and its bp, so that
+ * it runs from its row's hapOffset to hapOffset + bp on the contig, and the
+ * record's sequence and position, which a cut that expands the path reads
  */
 export interface Abridged {
-  pieces: number[]
   steps: number
   bp: number
   detail: { refName: string; start: number }
@@ -54,6 +53,8 @@ export interface WalkNode {
   start: number
   end: number
   rank: number
+  // how many times the reference's paths pass the node, 0 off them
+  passes: number
   // on the reference inside the window plus the cut's context
   onWindow: boolean
 }
@@ -83,6 +84,9 @@ export interface WalkHeader {
   haplotypes: string[]
   long: LongPass[]
   holes: Hole[]
+  // how many nodes the reference's paths pass more than once: 0 states
+  // every position and departure in the file as a fact of the graph
+  revisited?: number
 }
 
 function integerTag(line: string, tag: string) {
@@ -119,6 +123,7 @@ export function walkHeader(lines: string[]): WalkHeader {
       header.format ??= integerTag(line, 'format')
       header.chunk ??= integerTag(line, 'chunk')
       header.maxNode ??= integerTag(line, 'maxnode')
+      header.revisited ??= integerTag(line, 'revisited')
     }
   }
   return header
@@ -370,6 +375,7 @@ export function walkCut(
     const node = nodes.get(id)
     return node === undefined ? 0 : node.end - node.start
   }
+  const passesOf = (id: number) => nodes.get(id)?.passes ?? 0
   const onR = (run: WalkRun, i: number) => !Number.isNaN(run.refStarts[i])
   // bp of a run's steps before each, and after its last
   const prefixes = new Map<WalkRun, Float64Array>()
@@ -593,8 +599,10 @@ export function walkCut(
                 missingBp: 0,
                 leavePos,
                 leaveReversed,
+                leavePasses: passesOf(ids[last]!),
                 rejoinPos,
                 rejoinReversed,
+                rejoinPasses: passesOf(ids[i]!),
                 fromSteps: true,
               }
               if (i > last + 1 && ownBp <= attachBp) {
@@ -885,7 +893,8 @@ export class WalkGraph {
     const refs = new Int32Array(held.length)
     const starts = new Float64Array(held.length)
     const ranks = new Int32Array(held.length)
-    held.forEach(({ id, refName, start, end, rank }, i) => {
+    const passes = new Int32Array(held.length)
+    held.forEach(({ id, refName, start, end, rank, passes: n }, i) => {
       index.set(id, i)
       names.push(String(id))
       let ref = refIndex.get(refName)
@@ -898,6 +907,7 @@ export class WalkGraph {
       refs[i] = ref
       starts[i] = start
       ranks[i] = rank
+      passes[i] = n
     })
     // a kept node with no row of its own is named, and not drawn
     const nodeIndex = (id: number) => {
@@ -951,7 +961,7 @@ export class WalkGraph {
       reversed.set(rev, at)
     })
     return {
-      nodes: { names, lengths, refs, starts, ranks, refNames },
+      nodes: { names, lengths, refs, starts, ranks, refNames, passes },
       links: { from, to, strands },
       walks: {
         names: walks.map(f => f.name),
@@ -1009,10 +1019,12 @@ function departureTable(
     missingBp: Float64Array.from(departures, d => d.missingBp),
     leavePos: Float64Array.from(departures, d => d.leavePos),
     leaveReversed: Uint8Array.from(departures, d => (d.leaveReversed ? 1 : 0)),
+    leavePasses: Int32Array.from(departures, d => d.leavePasses),
     rejoinPos: Float64Array.from(departures, d => d.rejoinPos),
     rejoinReversed: Uint8Array.from(departures, d =>
       d.rejoinReversed ? 1 : 0,
     ),
+    rejoinPasses: Int32Array.from(departures, d => d.rejoinPasses),
     fromSteps: Uint8Array.from(departures, d => (d.fromSteps ? 1 : 0)),
     offsets,
     steps,
