@@ -41,7 +41,7 @@ const hap = (
   haplotype: string,
   departures: Departure[] = [],
   covered: [number, number][] = [[WINDOW.start, WINDOW.end]],
-): HaplotypeDepartures => ({ haplotype, covered, departures, open: false })
+): HaplotypeDepartures => ({ haplotype, covered, departures })
 
 // `count` haplotypes named from `prefix`, each with the same departures
 const haps = (prefix: string, count: number, departures: Departure[] = []) =>

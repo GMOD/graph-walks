@@ -7,10 +7,11 @@ import {
   walkDepartures,
 } from './walkDepartures.ts'
 import { WalkReader } from './walkReader.ts'
+import { walkCut } from './walkRows.ts'
 
-import type { GraphTables } from './util.ts'
+import type { WalkDeparture } from './walkDeparture.ts'
 import type { HaplotypeDepartures } from './walkDepartures.ts'
-import type { WalkFragment, WalkNode } from './walkRows.ts'
+import type { Abridged, WalkNode, WalkRun } from './walkRows.ts'
 
 const R = 'GRCh38#0#chr1'
 
@@ -44,65 +45,105 @@ function graphNodes() {
   return nodes
 }
 
-// `+3` steps forward through node 3, `-3` against it
-function fragment(
+const refStartOf = (nodes: Map<number, WalkNode>, id: number) => {
+  const node = nodes.get(id)
+  return node?.rank === 0 ? node.start : NaN
+}
+
+// A walk's run through the cut: `+3` steps forward through node 3, `-3`
+// against it, from `hapStart` on its contig
+function walk(
   name: string,
   steps: string,
-  more: Partial<WalkFragment> = {},
-): WalkFragment {
+  more: { hapStart?: number; abridged?: Abridged } = {},
+): WalkRun {
+  const nodes = graphNodes()
   const parsed = steps
     .split(' ')
     .map(s => [+s.slice(1), s.startsWith('-')] as const)
   return {
     name,
     fragStart: 0,
-    hapStart: 0,
-    hapEnd: 0,
+    hapOffset: more.hapStart ?? 0,
+    firstPiece: 0,
+    pieceStarts: [],
+    pieceChunks: [0],
     ids: Int32Array.from(parsed, ([id]) => id),
     rev: Uint8Array.from(parsed, ([, rev]) => (rev ? 1 : 0)),
-    trimmedBefore: 0,
-    trimmedAfter: 0,
-    ...more,
+    refStarts: Float64Array.from(parsed, ([id]) => refStartOf(nodes, id)),
+    against: Uint8Array.from(parsed, ([, rev]) => (rev ? 1 : 0)),
+    ...(more.abridged ? { abridged: more.abridged } : {}),
   }
 }
 
-const departuresOf = (...fragments: WalkFragment[]) =>
-  walkDepartures({ fragments, nodes: graphNodes() }, R)
+// A record of `name`'s departure: `ownBp` of its own from `hapStart` on its
+// contig, between the leave and rejoin breakpoints, `+700` along R at 700
+// and `-600` against it
+function record(
+  name: string,
+  hapStart: number,
+  ownBp: number,
+  leave: string,
+  rejoin: string,
+  missingBp = 0,
+): WalkDeparture {
+  return {
+    name,
+    hapStart,
+    ownBp,
+    missingBp,
+    leavePos: +leave.slice(1),
+    leaveReversed: leave.startsWith('-'),
+    rejoinPos: +rejoin.slice(1),
+    rejoinReversed: rejoin.startsWith('-'),
+    fromSteps: false,
+  }
+}
+
+// The cut of these runs over the whole of R, the departures inside each run
+// computed from its steps and `records` those between runs, read for forms
+function departuresOf(runs: WalkRun[], records: WalkDeparture[] = []) {
+  const nodes = graphNodes()
+  const { fragments, departures } = walkCut(runs, nodes, R, records)
+  return walkDepartures({ fragments, departures, nodes }, R)
+}
 
 const plain = {
   invertedBp: 0,
   repeatedBp: 0,
 }
 
+const detail = { refName: `${R}~0`, start: 0 }
+
 test('a walk along R departs nowhere and covers what it reaches', () => {
-  expect(departuresOf(fragment('A#1#c', '+1 +2 +3'))).toEqual([
-    { haplotype: 'A#1', covered: [[0, 700]], departures: [], open: false },
+  expect(departuresOf([walk('A#1#c', '+1 +2 +3')])).toEqual([
+    { haplotype: 'A#1', covered: [[0, 700]], departures: [] },
   ])
 })
 
 test('a skipped stretch of R is a deletion with no ALT', () => {
-  const [a] = departuresOf(fragment('A#1#c', '+1 +3'))
+  const [a] = departuresOf([walk('A#1#c', '+1 +3')])
   expect(a!.departures).toEqual([
     { refStart: 100, refEnd: 600, altLength: 0, ...plain },
   ])
 })
 
 test('steps off R between abutting R steps insert at a point', () => {
-  const [a] = departuresOf(fragment('A#1#c', '+1 +50 +2'))
+  const [a] = departuresOf([walk('A#1#c', '+1 +50 +2')])
   expect(a!.departures).toEqual([
     { refStart: 100, refEnd: 100, altLength: 300, ...plain },
   ])
 })
 
 test('steps off R in place of a stretch of R replace it', () => {
-  const [a] = departuresOf(fragment('A#1#c', '+1 +50 +3'))
+  const [a] = departuresOf([walk('A#1#c', '+1 +50 +3')])
   expect(a!.departures).toEqual([
     { refStart: 100, refEnd: 600, altLength: 300, ...plain },
   ])
 })
 
 test('a stretch of R walked against it is ALT and inverted', () => {
-  const [a] = departuresOf(fragment('A#1#c', '+2 -3 +4'))
+  const [a] = departuresOf([walk('A#1#c', '+2 -3 +4')])
   expect(a!.departures).toEqual([
     {
       refStart: 600,
@@ -115,7 +156,7 @@ test('a stretch of R walked against it is ALT and inverted', () => {
 })
 
 test('a step back along R is a tandem copy at the junction', () => {
-  const [a] = departuresOf(fragment('A#1#c', '+1 +2 +3 +2 +3 +4'))
+  const [a] = departuresOf([walk('A#1#c', '+1 +2 +3 +2 +3 +4')])
   expect(a!.departures).toEqual([
     {
       refStart: 700,
@@ -130,24 +171,23 @@ test('a step back along R is a tandem copy at the junction', () => {
 })
 
 test('a walk reading R mostly reversed is read the other way round', () => {
-  const [a] = departuresOf(fragment('A#1#c', '-4 -50 -2 -1'))
+  const [a] = departuresOf([walk('A#1#c', '-4 -50 -2 -1')])
   expect(a!.departures).toEqual([
     { refStart: 600, refEnd: 700, altLength: 300, ...plain },
   ])
   expect(a!.covered).toEqual([[0, 1700]])
 })
 
+test('steps off R past either end of a walk are no departure', () => {
+  expect(departuresOf([walk('A#1#c', '+51 +1 +2 +52')])).toEqual([
+    { haplotype: 'A#1', covered: [[0, 600]], departures: [] },
+  ])
+  expect(departuresOf([walk('B#1#c', '+50 +52')])).toEqual([])
+})
+
 test('an abridged walk is its net change over its anchors on R', () => {
-  const [a] = departuresOf(
-    fragment('A#1#c', '+2 +5', {
-      abridged: {
-        pieces: [0],
-        steps: 4000,
-        bp: 1200,
-        detail: { refName: `${R}~0`, start: 0 },
-      },
-    }),
-  )
+  const abridged = { pieces: [0], steps: 4000, bp: 1200, detail }
+  const [a] = departuresOf([walk('A#1#c', '+2 +5', { abridged })])
   expect(a).toEqual({
     haplotype: 'A#1',
     covered: [[100, 1800]],
@@ -160,34 +200,16 @@ test('an abridged walk is its net change over its anchors on R', () => {
         abridged: true,
       },
     ],
-    open: false,
   })
 })
 
-test('steps off R past either end leave the walk open there', () => {
-  const [a] = departuresOf(fragment('A#1#c', '+51 +1 +2 +52'))
-  expect(a).toEqual({
-    haplotype: 'A#1',
-    covered: [[0, 600]],
-    departures: [],
-    open: true,
-  })
-  const [b] = departuresOf(fragment('B#1#c', '+50 +52'))
-  expect(b).toEqual({
-    haplotype: 'B#1',
-    covered: [],
-    departures: [],
-    open: true,
-  })
-})
-
-test("a haplotype's fragments join into one list, the reference's are left out", () => {
-  const result = departuresOf(
-    fragment(R, '+1 +2 +3 +4 +5 +6'),
-    fragment('A#1#c1', '+4 +6'),
-    fragment('A#1#c2', '+1 +50 +2'),
-    fragment('A#2#c1', '+1 +2'),
-  )
+test("a haplotype's paths join into one list, the reference's are left out", () => {
+  const result = departuresOf([
+    walk(R, '+1 +2 +3 +4 +5 +6'),
+    walk('A#1#c1', '+4 +6'),
+    walk('A#1#c2', '+1 +50 +2'),
+    walk('A#2#c1', '+1 +2'),
+  ])
   expect(
     result.map(h => [h.haplotype, h.covered, h.departures.length]),
   ).toEqual([
@@ -207,13 +229,13 @@ test("a haplotype's fragments join into one list, the reference's are left out",
   ])
 })
 
-test('R that two walks of a haplotype cover, or a junction between them, has no call', () => {
-  const [overlapping, abutting] = departuresOf(
-    fragment('A#1#c1', '+1 +2 +3 +4'),
-    fragment('A#1#c2', '+3 +4 +5'),
-    fragment('A#2#c1', '+1 +2'),
-    fragment('A#2#c2', '+3 +4'),
-  )
+test('R that two paths of a haplotype cover, or a junction between them, has no call', () => {
+  const [overlapping, abutting] = departuresOf([
+    walk('A#1#c1', '+1 +2 +3 +4'),
+    walk('A#1#c2', '+3 +4 +5'),
+    walk('A#2#c1', '+1 +2'),
+    walk('A#2#c2', '+3 +4'),
+  ])
   expect(overlapping!.covered).toEqual([
     [0, 600],
     [1700, 1800],
@@ -224,58 +246,47 @@ test('R that two walks of a haplotype cover, or a junction between them, has no 
   ])
 })
 
-test('tables give the same departures as fragments', () => {
-  const names = ['1', '2', '3', '50']
-  const tables: Omit<GraphTables, 'departures'> = {
-    nodes: {
-      names,
-      lengths: Int32Array.from([100, 500, 100, 300]),
-      refs: Int32Array.from([0, 0, 0, -1]),
-      starts: Float64Array.from([0, 100, 600, 0]),
-      ranks: Int32Array.from([0, 0, 0, 1]),
-      refNames: [R],
+test('a departure with no step on the window is read from its record alone', () => {
+  expect(departuresOf([], [record('A#1#c', 500, 0, '+100', '+1700')])).toEqual([
+    {
+      haplotype: 'A#1',
+      covered: [[100, 1700]],
+      departures: [{ refStart: 100, refEnd: 1700, altLength: 0, ...plain }],
     },
-    links: {
-      from: new Int32Array(),
-      to: new Int32Array(),
-      strands: new Uint8Array(),
+  ])
+  expect(departuresOf([], [record('B#1#c', 500, 0, '-700', '-100')])).toEqual([
+    {
+      haplotype: 'B#1',
+      covered: [[100, 700]],
+      departures: [{ refStart: 100, refEnd: 700, altLength: 0, ...plain }],
     },
-    walks: {
-      names: ['A#1#c', 'B#1#c'],
-      starts: Float64Array.from([0, 0]),
-      ends: Float64Array.from([0, 0]),
-      offsets: Int32Array.from([0, 3, 5]),
-      steps: Int32Array.from([0, 3, 2, 0, 2]),
-      reversed: Uint8Array.from([0, 0, 0, 0, 0]),
-      abridgedSteps: Float64Array.from([NaN, 900]),
-      abridgedBp: Float64Array.from([NaN, 150]),
-    },
-  }
-  expect(walkDepartures(tables, R).map(h => h.departures)).toEqual([
-    [{ refStart: 100, refEnd: 600, altLength: 300, ...plain }],
-    [
-      {
-        refStart: 0,
-        refEnd: 700,
-        altLength: 150,
-        ...plain,
-        abridged: true,
-      },
-    ],
   ])
 })
 
-test('an abridged fragment between two others is net between their R steps', () => {
-  const abridged = {
-    pieces: [1],
-    steps: 900,
-    bp: 1500,
-    detail: { refName: `${R}~0`, start: 0 },
-  }
+test("a departure across a contig's W lines counts the sequence the graph lacks as its own", () => {
   const [a] = departuresOf(
-    fragment('A#1#c', '+1 +51', { hapStart: 0, hapEnd: 120 }),
-    fragment('A#1#c', '+2 +4', { hapStart: 120, hapEnd: 1620, abridged }),
-    fragment('A#1#c', '+51 +5 +6', { hapStart: 1620, hapEnd: 1840 }),
+    [walk('A#1#c', '+1 +2'), walk('A#1#c', '+3 +4', { hapStart: 5600 })],
+    [record('A#1#c', 600, 5000, '+600', '+600', 5000)],
+  )
+  expect(a).toEqual({
+    haplotype: 'A#1',
+    covered: [[0, 1700]],
+    departures: [{ refStart: 600, refEnd: 600, altLength: 5000, ...plain }],
+  })
+})
+
+test('an abridged fragment is net between its handles, with the own steps beside it', () => {
+  const abridged = { pieces: [1], steps: 900, bp: 1500, detail }
+  const [a] = departuresOf(
+    [
+      walk('A#1#c', '+1 +51'),
+      walk('A#1#c', '+2 +4', { hapStart: 120, abridged }),
+      walk('A#1#c', '+51 +5 +6', { hapStart: 1620 }),
+    ],
+    [
+      record('A#1#c', 100, 20, '+100', '+100'),
+      record('A#1#c', 1620, 20, '+1700', '+1700'),
+    ],
   )
   expect(a).toEqual({
     haplotype: 'A#1',
@@ -289,7 +300,33 @@ test('an abridged fragment between two others is net between their R steps', () 
         abridged: true,
       },
     ],
-    open: false,
+  })
+})
+
+test('a departure within an abridged stretch joins its net', () => {
+  const abridged = { pieces: [1, 3], steps: 900, bp: 1200, detail }
+  const [a] = departuresOf(
+    [
+      walk('A#1#c', '+2 +4', { hapStart: 100, abridged }),
+      walk('A#1#c', '+3', { hapStart: 600 }),
+    ],
+    [
+      record('A#1#c', 600, 0, '+600', '+600'),
+      record('A#1#c', 700, 0, '+700', '+700'),
+    ],
+  )
+  expect(a).toEqual({
+    haplotype: 'A#1',
+    covered: [[100, 1700]],
+    departures: [
+      {
+        refStart: 100,
+        refEnd: 1700,
+        altLength: 1300,
+        ...plain,
+        abridged: true,
+      },
+    ],
   })
 })
 
@@ -356,32 +393,5 @@ describe('a forms cut', () => {
         }),
       ),
     ).toEqual(whole)
-  })
-
-  test("keeps an abridged walk's net exact when a piece of it lies in another chunk", async () => {
-    // X#1's pieces 0 and 2 are abridged in chunk 0, and piece 1 between them
-    // walks R in chunk 10
-    const window = { refName: 'c', start: 0, end: 36 }
-    const [abridged, expanded] = await Promise.all(
-      [false, true].map(async expand =>
-        byHaplotype(
-          await formsCut(reader('interleaved.R'), window, { expand }),
-        ),
-      ),
-    )
-    const x = abridged!['X#1']!
-    expect(net(expanded!['X#1']!)).toBe(84)
-    expect(net(x)).toBe(84)
-    expect(x.open).toBe(false)
-    expect(x.covered).toEqual(expanded!['X#1']!.covered)
-  })
-
-  test('throws RegionTooLargeError past its byte budget', async () => {
-    await expect(
-      formsCut(reader('abridged.R'), region, { byteBudget: 1 }),
-    ).rejects.toBeInstanceOf(RegionTooLargeError)
-    expect(
-      await formsCut(reader('abridged.R'), region, { byteBudget: 1e9 }),
-    ).toEqual(await formsCut(reader('abridged.R'), region))
   })
 })

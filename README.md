@@ -230,8 +230,10 @@ result.forms.map(f => formTag(f, result))
   `RegionTooLargeError` before any read. The budget covers the region's chunks,
   not the detail records an expanded cut reads, which only the step budget
   bounds
-- `walkDepartures` reads the same departures off any cut's fragments and
-  `graph.nodes`, or off its tables
+- `formsCut` reads each haplotype's departures off the cut's `departures`, every
+  one over the region, and its fragments' ends, so a haplotype that leaves the
+  region and rejoins the reference far away, or jumps over it whole, is a
+  departure with no step on it; `walkDepartures` does the same for any cut
 - `structuralForms` groups the haplotypes that make the same changes at every
   informative site. Each change is a `Mark`: an insertion, deletion,
   replacement, inversion, shift, duplication or `net`, the last for an abridged

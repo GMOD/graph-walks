@@ -5,7 +5,7 @@ import {
   panSNSample,
 } from './util.ts'
 
-import type { GraphTables } from './util.ts'
+import type { WalkDeparture } from './walkDeparture.ts'
 import type { WalkReader, WalkReaderHeader } from './walkReader.ts'
 import type { WalkFragment, WalkNode } from './walkRows.ts'
 
@@ -30,170 +30,119 @@ export interface Departure {
 
 /**
  * A `sample#haplotype`'s departures, by refStart. `covered` spans the R
- * exactly one of its walks reaches, each span within one walk, and `open`
- * says one of them leaves R and never rejoins in the cut, so it has no call
- * past that end.
+ * exactly one of its paths reaches, each span within one path.
  */
 export interface HaplotypeDepartures {
   haplotype: string
   covered: [number, number][]
   departures: Departure[]
-  open: boolean
 }
 
-export type DepartureSource =
-  | { fragments: WalkFragment[]; nodes: Map<number, WalkNode> }
-  | Pick<GraphTables, 'nodes' | 'walks'>
-
-interface Walk {
-  name: string
-  hapStart: number
-  hapEnd: number
-  steps: number
-  id: (k: number) => number
-  rev: (k: number) => boolean
-  abridgedBp?: number
-  // the walk's bp a cut read but kept out of this one, before and after it
-  trimmed: [number, number]
+// A cut's fragments, its departures and its nodes, as WalkReader.cut returns
+// them
+export interface DepartureSource {
+  fragments: WalkFragment[]
+  departures: WalkDeparture[]
+  nodes: Map<number, WalkNode>
 }
 
-interface Lookup {
-  walks: Walk[]
-  // R position of a node on R, NaN off it
-  refStart: (id: number) => number
-  length: (id: number) => number
+// What a path does along its contig: follows R over [lo, hi), along or
+// against it; runs `bp` of its own; or runs `bp` the writer abridged between
+// R's bases lo and hi
+type Event =
+  | { kind: 'on'; lo: number; hi: number; reversed: boolean }
+  | { kind: 'own'; bp: number }
+  | { kind: 'abridged'; lo: number; hi: number; bp: number }
+
+// A point on a path's contig: where it is on R until (a fragment's last step
+// or a departure's leave, `order` 0), from (a fragment's first step or a
+// departure's rejoin, 1), or where an abridged stretch starts (2). `own` is
+// the bp of the path's own that follow a leave, or precede a rejoin whose
+// leave lies in an abridged stretch
+interface Anchor {
+  hap: number
+  order: 0 | 1 | 2
+  pos: number
+  reversed: boolean
+  exit?: true
+  own?: number
+  abridged?: { lo: number; hi: number; bp: number }
 }
 
-function fromFragments(
-  fragments: WalkFragment[],
-  nodes: Map<number, WalkNode>,
-  refName: string,
-): Lookup {
-  return {
-    walks: fragments.map(f => ({
-      name: f.name,
-      hapStart: f.hapStart,
-      hapEnd: f.hapEnd,
-      steps: f.ids.length,
-      id: k => f.ids[k]!,
-      rev: k => f.rev[k] === 1,
-      abridgedBp: f.abridged?.bp,
-      trimmed: [f.trimmedBefore, f.trimmedAfter],
-    })),
-    refStart: id => {
-      const node = nodes.get(id)
-      return node?.rank === 0 && node.refName === refName ? node.start : NaN
-    },
-    length: id => {
-      const node = nodes.get(id)
-      return node ? node.end - node.start : 0
-    },
-  }
-}
-
-function fromTables(
-  { nodes, walks }: Pick<GraphTables, 'nodes' | 'walks'>,
-  refName: string,
-): Lookup {
-  const ref = nodes.refNames.indexOf(refName)
-  return {
-    walks: walks.names.map((name, p) => {
-      const from = walks.offsets[p]!
-      const bp = walks.abridgedBp?.[p]
-      return {
-        name,
-        hapStart: walks.starts[p]!,
-        hapEnd: walks.ends[p]!,
-        steps: walks.offsets[p + 1]! - from,
-        id: k => walks.steps[from + k]!,
-        rev: k => walks.reversed[from + k] === 1,
-        abridgedBp: bp === undefined || Number.isNaN(bp) ? undefined : bp,
-        trimmed: [0, 0],
-      }
-    }),
-    refStart: id =>
-      nodes.ranks[id] === 0 && nodes.refs[id] === ref ? nodes.starts[id]! : NaN,
-    length: id => nodes.lengths[id] ?? 0,
-  }
-}
+// A fragment or departure as the bp of its contig it holds, the R it reaches
+// and the bp of the path it stands for
+type Item = {
+  hap: [number, number]
+  lo: number
+  hi: number
+  bp: number
+} & ({ fragment: WalkFragment } | { departure: WalkDeparture })
 
 const onR = (start: number) => !Number.isNaN(start)
+// the lower and the higher of two positions, those off R left out
+const least = (a: number, b: number) =>
+  onR(a) ? (onR(b) ? Math.min(a, b) : a) : b
+const most = (a: number, b: number) =>
+  onR(a) ? (onR(b) ? Math.max(a, b) : a) : b
 
 /**
- * A path's walks in order, those that abut on the haplotype joined. An
- * abridged walk's pieces need not be consecutive: where the path steps onto
- * another chunk's R and back, the pieces between lie in that chunk. A walk
- * starting before the abridged pieces' bp run out is one of those, so its
- * whole run, trimmed bp included, joins the abridged walk's bp.
+ * Each haplotype's departures from R, `refName`, read off a cut: its
+ * departures, every one over the drawn stretch, give where each path leaves
+ * R and rejoins it and how much of its own it runs between, and its
+ * fragments' first and last steps give where it is on R otherwise. A
+ * fragment with the departures at its ends is a chain, as is a departure
+ * touching no fragment, such as one jumping over the window; each reads in
+ * its own orientation, mostly reversed reading reversed, and a stretch of R
+ * walked against it reads as inverted, a jump back as a tandem copy, and
+ * sequence between a contig's W lines as the path's own. R that two chains
+ * of a haplotype reach, such as a contig's second visit to the window, has
+ * no call. An abridged fragment's bp, with those of the fragments and
+ * departures lying within them, are a net change between the R its handles
+ * reach. The walks on R's own haplotype are left out.
  */
-function chains(walks: Walk[]) {
-  const sorted = walks.toSorted((a, b) =>
-    a.name < b.name ? -1 : a.name > b.name ? 1 : a.hapStart - b.hapStart,
-  )
-  const out: Walk[][] = []
-  let end = NaN
-  let runEnd = -Infinity
-  for (const walk of sorted) {
-    const chain = out.at(-1)
-    const last = chain?.at(-1)
-    if (chain && last?.name === walk.name) {
-      if (last.abridgedBp !== undefined && walk.hapStart < end) {
-        const start = walk.hapStart - walk.trimmed[0]
-        const stop = walk.hapEnd + walk.trimmed[1]
-        const added = Math.max(0, stop - Math.max(start, runEnd))
-        runEnd = Math.max(runEnd, stop)
-        end += added
-        chain[chain.length - 1] = {
-          ...last,
-          abridgedBp: last.abridgedBp + added,
-        }
-        continue
-      }
-      if (walk.hapStart === end) {
-        chain.push(walk)
-        end = walk.hapEnd
-        runEnd = -Infinity
-        continue
-      }
-    }
-    out.push([walk])
-    end = walk.hapEnd
-    runEnd = -Infinity
+export function walkDepartures(
+  { fragments, departures, nodes }: DepartureSource,
+  refName: string,
+) {
+  const refStart = (id: number) => {
+    const node = nodes.get(id)
+    return node?.rank === 0 && node.refName === refName ? node.start : NaN
   }
-  return out
-}
-
-/**
- * Each haplotype's departures from R, `refName`, read off a cut's fragments
- * and `graph.nodes`, or off its tables. Fragments of a path that abut on the
- * haplotype read as one walk, and one that steps along R mostly reversed
- * reads reversed. Steps off R before a walk's first forward step on R or
- * after its last leave it open there. An abridged fragment's bp, with those
- * of any pieces between its own that lie in other chunks, lie between the R
- * steps either side of it, so the departure holding it is exact in net. At
- * either end of a walk it has no R step beyond it and stops at its anchors,
- * which is exact only where the walk enters or leaves R there. The walks on
- * R's own haplotype are left out.
- */
-export function walkDepartures(source: DepartureSource, refName: string) {
-  const { walks, refStart, length } =
-    'fragments' in source
-      ? fromFragments(source.fragments, source.nodes, refName)
-      : fromTables(source, refName)
+  const length = (id: number) => {
+    const node = nodes.get(id)
+    return node ? node.end - node.start : 0
+  }
   const reference = panSNHaplotype(refName) ?? refName
+  const byPath = new Map<string, Item[]>()
+  const add = (name: string, item: Item) => {
+    byPath.set(name, [...(byPath.get(name) ?? []), item])
+  }
+  for (const f of fragments) {
+    add(f.name, fragmentItem(f, refStart, length))
+  }
+  for (const d of departures) {
+    add(d.name, {
+      hap: [d.hapStart, d.hapStart + d.ownBp],
+      lo: Math.min(d.leavePos, d.rejoinPos),
+      hi: Math.max(d.leavePos, d.rejoinPos),
+      bp: d.ownBp,
+      departure: d,
+    })
+  }
   const byHaplotype = new Map<string, HaplotypeDepartures>()
-  for (const chain of chains(walks)) {
-    const { name } = chain[0]!
+  for (const [name, items] of byPath) {
     const haplotype = panSNHaplotype(name) ?? panSNSample(name)
     if (haplotype === reference || name === refName) {
       continue
     }
     let h = byHaplotype.get(haplotype)
     if (!h) {
-      h = { haplotype, covered: [], departures: [], open: false }
+      h = { haplotype, covered: [], departures: [] }
       byHaplotype.set(haplotype, h)
     }
-    readChain(chain, refStart, length, h)
+    for (const chain of pathChains(items, refStart, length)) {
+      readPath(chain, h)
+    }
   }
   const out = [...byHaplotype.values()]
   for (const h of out) {
@@ -203,146 +152,344 @@ export function walkDepartures(source: DepartureSource, refName: string) {
   return out
 }
 
-function readChain(
-  chain: Walk[],
+function fragmentItem(
+  f: WalkFragment,
   refStart: (id: number) => number,
   length: (id: number) => number,
-  h: HaplotypeDepartures,
+): Item {
+  const n = f.ids.length
+  const a = f.ids[0]!
+  const b = f.ids[n - 1]!
+  const sa = refStart(a)
+  const sb = refStart(b)
+  const lo = least(sa, sb)
+  const hi = most(sa + length(a), sb + length(b))
+  return f.abridged
+    ? { hap: [f.hapStart, f.hapEnd], lo, hi, bp: f.abridged.bp, fragment: f }
+    : {
+        hap: [f.hapStart - f.trimmedBefore, f.hapEnd + f.trimmedAfter],
+        lo,
+        hi,
+        bp: f.hapEnd + f.trimmedAfter - f.hapStart + f.trimmedBefore,
+        fragment: f,
+      }
+}
+
+/**
+ * A path's chains, each its events in the path's order: a fragment with the
+ * departures leaving its last step and rejoining its first, fragments that
+ * abut, and a departure touching no fragment on its own. What the read did
+ * not see lies between chains, so each reads on its own, and R that two
+ * chains reach has no call. Abridged fragments, each a net over the pieces
+ * a writer moved out of a chunk, take in whatever of the path lies within
+ * those pieces: the fragments of pieces in other chunks between them,
+ * abridged fragments abutting them, and the departures whose both ends lie
+ * in them, whose own steps the pieces hold and whose missing bp they do not.
+ * A departure with one end in them keeps the bp of its own outside: those
+ * the graph lacks and the steps the cut holds.
+ */
+function pathChains(
+  items: Item[],
+  refStart: (id: number) => number,
+  length: (id: number) => number,
 ) {
-  let forwardBp = 0
-  let reversedBp = 0
-  for (const walk of chain) {
-    for (let k = 0; walk.abridgedBp === undefined && k < walk.steps; k++) {
-      const id = walk.id(k)
-      if (onR(refStart(id))) {
-        if (walk.rev(k)) {
-          reversedBp += length(id)
-        } else {
-          forwardBp += length(id)
+  const overlaps = (a: Item, b: Item) =>
+    a.hap[0] < b.hap[1] && a.hap[1] > b.hap[0]
+  const touches = (a: Item, b: Item) =>
+    a.hap[0] <= b.hap[1] && a.hap[1] >= b.hap[0]
+  const extend = (g: Item, item: Item, bp: number) => {
+    g.hap = [Math.min(g.hap[0], item.hap[0]), Math.max(g.hap[1], item.hap[1])]
+    g.lo = least(g.lo, item.lo)
+    g.hi = most(g.hi, item.hi)
+    g.bp += bp
+  }
+  const abridged = (item: Item) =>
+    'fragment' in item && item.fragment.abridged !== undefined
+  let groups = items.filter(abridged).map(i => ({ ...i }))
+  let rest = items.filter(i => !abridged(i))
+  // the group whose pieces hold the step at `hap` on the contig, or whose
+  // first or last step it is: own bp beside an abridged stretch join its net
+  const holder = (hap: number) =>
+    groups.find(g => g.hap[0] <= hap && hap <= g.hap[1])
+  for (let changed = groups.length > 0; changed;) {
+    const before = rest.length + groups.length
+    rest = rest.filter(item => {
+      if ('fragment' in item) {
+        const g = groups.find(g => overlaps(item, g))
+        if (g) {
+          extend(g, item, item.bp)
         }
+        return !g
+      }
+      const d = item.departure
+      const a = holder(d.hapStart)
+      const b = holder(d.hapStart + d.ownBp)
+      if (a && b) {
+        if (b !== a) {
+          extend(a, b, b.bp)
+          groups = groups.filter(g => g !== b)
+        }
+        extend(a, item, d.missingBp)
+      }
+      return !(a && b)
+    })
+    const merged: Item[] = []
+    for (const g of groups.toSorted((a, b) => a.hap[0] - b.hap[0])) {
+      const last = merged.at(-1)
+      if (last && touches(last, g)) {
+        extend(last, g, g.bp)
+      } else {
+        merged.push(g)
+      }
+    }
+    groups = merged
+    changed = rest.length + groups.length < before
+  }
+  // where each item starts and ends on the contig
+  const edges = (item: Item): [number, number] =>
+    'fragment' in item && !item.fragment.abridged
+      ? [item.fragment.hapStart, item.fragment.hapEnd]
+      : item.hap
+  const all = [...groups, ...rest]
+  const parent = new Map(all.map(item => [item, item]))
+  const find = (item: Item): Item => {
+    const p = parent.get(item) ?? item
+    return p === item ? item : find(p)
+  }
+  const union = (a: Item, b: Item) => parent.set(find(a), find(b))
+  // items meet where one's contig stretch touches another's: a departure's
+  // leave at a fragment's last step or inside it, its rejoin at the first,
+  // or two fragments abutting
+  const meets = (a: [number, number], b: [number, number]) =>
+    a[0] <= b[1] && a[1] >= b[0]
+  all.forEach((item, i) => {
+    for (const other of all.slice(i + 1)) {
+      if (meets(edges(item), edges(other))) {
+        union(item, other)
+      }
+    }
+  })
+  const chains = new Map<Item, Item[]>()
+  for (const item of all) {
+    const root = find(item)
+    chains.set(root, [...(chains.get(root) ?? []), item])
+  }
+  return [...chains.values()].map(chain =>
+    chainEvents(chain, holder, refStart, length),
+  )
+}
+
+function chainEvents(
+  items: Item[],
+  holder: (hap: number) => Item | undefined,
+  refStart: (id: number) => number,
+  length: (id: number) => number,
+) {
+  const anchors: Anchor[] = []
+  for (const item of items) {
+    if ('fragment' in item) {
+      const f = item.fragment
+      if (f.abridged) {
+        if (onR(item.lo) && onR(item.hi)) {
+          anchors.push({
+            hap: item.hap[0],
+            order: 2,
+            pos: item.lo,
+            reversed: false,
+            abridged: { lo: item.lo, hi: item.hi, bp: item.bp },
+          })
+        }
+        continue
+      }
+      const n = f.ids.length
+      const a = f.ids[0]!
+      const b = f.ids[n - 1]!
+      const ra = f.rev[0] === 1
+      const rb = f.rev[n - 1] === 1
+      if (onR(refStart(a))) {
+        const pos = ra ? refStart(a) + length(a) : refStart(a)
+        anchors.push({ hap: f.hapStart, order: 1, pos, reversed: ra })
+      }
+      if (onR(refStart(b))) {
+        const pos = rb ? refStart(b) : refStart(b) + length(b)
+        anchors.push({ hap: f.hapEnd, order: 0, pos, reversed: rb, exit: true })
+      }
+    } else {
+      const d = item.departure
+      const leaveIn = holder(d.hapStart) !== undefined
+      const rejoinIn = holder(d.hapStart + d.ownBp) !== undefined
+      const own =
+        leaveIn || rejoinIn
+          ? d.missingBp +
+            (d.steps?.ids.reduce((sum, id) => sum + length(id), 0) ?? 0)
+          : d.ownBp
+      if (!leaveIn) {
+        anchors.push({
+          hap: d.hapStart,
+          order: 0,
+          pos: d.leavePos,
+          reversed: d.leaveReversed,
+          own,
+        })
+      }
+      if (!rejoinIn) {
+        anchors.push({
+          hap: d.hapStart + d.ownBp,
+          order: 1,
+          pos: d.rejoinPos,
+          reversed: d.rejoinReversed,
+          ...(leaveIn ? { own } : {}),
+        })
       }
     }
   }
-  const flip = reversedBp > forwardBp
+  anchors.sort((a, b) => a.hap - b.hap || a.order - b.order)
+  const events: Event[] = []
+  const on = (from: number, to: number, reversed: boolean): Event => ({
+    kind: 'on',
+    lo: Math.min(from, to),
+    hi: Math.max(from, to),
+    reversed,
+  })
+  // the open stretch on R: where it began, and the furthest fragment end seen
+  // along it
+  let cur: { pos: number; reversed: boolean } | undefined
+  let end: number | undefined
+  const close = () => {
+    if (cur) {
+      events.push(on(cur.pos, end ?? cur.pos, cur.reversed))
+    }
+    cur = undefined
+    end = undefined
+  }
+  for (const a of anchors) {
+    if (cur && !a.abridged && cur.reversed !== a.reversed) {
+      close()
+    }
+    if (a.abridged) {
+      close()
+      events.push({ kind: 'abridged', ...a.abridged })
+    } else if (a.order === 1) {
+      if (a.own !== undefined) {
+        events.push({ kind: 'own', bp: a.own })
+      }
+      cur ??= { pos: a.pos, reversed: a.reversed }
+    } else if (a.exit) {
+      end = a.pos
+    } else {
+      cur ??= { pos: a.pos, reversed: a.reversed }
+      end = a.pos
+      close()
+      events.push({ kind: 'own', bp: a.own ?? 0 })
+    }
+  }
+  close()
+  return events
+}
+
+/**
+ * A path's departures in the forward view: its stretches along R in order,
+ * reversed where it walks R mostly against its orientation, each stretch
+ * against it or of its own between two along it making one departure.
+ */
+function readPath(events: Event[], h: HaplotypeDepartures) {
+  let bias = 0
+  for (const e of events) {
+    if (e.kind === 'on') {
+      bias += (e.reversed ? 1 : -1) * (e.hi - e.lo || 1)
+    }
+  }
+  const flip = bias > 0
   let first = NaN
   let prevEnd = NaN
   let reach = -Infinity
   let alt = 0
   let inverted = 0
-  // set while an abridged fragment's bp are in `alt`: its anchors' far end
-  // on R, and `alt` there
+  // set while an abridged stretch's bp are in `alt`: the far end of the R
+  // its handles reach
   let abridgedEnd = NaN
-  let altAtAbridgedEnd = 0
-  for (const walk of flip ? chain.toReversed() : chain) {
-    const n = walk.steps
-    if (walk.abridgedBp !== undefined) {
-      const a = walk.id(0)
-      const b = walk.id(n - 1)
-      const sa = refStart(a)
-      const sb = refStart(b)
-      if (!onR(sa) || !onR(sb)) {
-        h.open = true
-        continue
-      }
+  for (const e of flip ? events.toReversed() : events) {
+    if (e.kind === 'own') {
+      alt += e.bp
+    } else if (e.kind === 'abridged') {
       if (Number.isNaN(prevEnd)) {
-        first = Math.min(sa, sb)
-        prevEnd = first
-        alt = 0
+        first = e.lo
+        prevEnd = e.lo
       }
-      alt += walk.abridgedBp
-      abridgedEnd = Math.max(sa + length(a), sb + length(b))
-      altAtAbridgedEnd = alt
-      continue
-    }
-    for (let k = 0; k < n; k++) {
-      const step = flip ? n - 1 - k : k
-      const id = walk.id(step)
-      const reversed = walk.rev(step) !== flip
-      const start = refStart(id)
-      const len = length(id)
-      if (onR(start) && !reversed) {
-        if (Number.isNaN(prevEnd)) {
-          first = start
-        } else if (!Number.isNaN(abridgedEnd)) {
-          h.departures.push({
-            refStart: prevEnd,
-            refEnd: Math.max(start, prevEnd),
-            altLength: alt + Math.max(0, prevEnd - start),
-            invertedBp: 0,
-            repeatedBp: 0,
-            abridged: true,
-          })
-          abridgedEnd = NaN
-        } else if (start !== prevEnd || alt > 0) {
-          const repeated = start < prevEnd ? prevEnd - start : 0
-          h.departures.push({
-            refStart: prevEnd,
-            refEnd: repeated > 0 ? prevEnd : start,
-            altLength: alt + repeated,
-            invertedBp: inverted,
-            repeatedBp: repeated,
-            ...(repeated > 0 ? { copied: [start, prevEnd] } : {}),
-          })
-        }
-        prevEnd = start + len
-        reach = Math.max(reach, prevEnd)
-        alt = 0
-        inverted = 0
-      } else if (Number.isNaN(prevEnd)) {
-        h.open = true
-      } else {
-        alt += len
-        if (onR(start)) {
-          inverted += len
-        }
+      alt += e.bp
+      abridgedEnd = e.hi
+    } else if (e.reversed !== flip) {
+      alt += e.hi - e.lo
+      inverted += e.hi - e.lo
+    } else {
+      const start = e.lo
+      if (Number.isNaN(prevEnd)) {
+        first = start
+      } else if (!Number.isNaN(abridgedEnd)) {
+        h.departures.push({
+          refStart: prevEnd,
+          refEnd: Math.max(start, prevEnd),
+          altLength: alt + Math.max(0, prevEnd - start),
+          invertedBp: 0,
+          repeatedBp: 0,
+          abridged: true,
+        })
+        abridgedEnd = NaN
+      } else if (start !== prevEnd || alt > 0) {
+        const repeated = start < prevEnd ? prevEnd - start : 0
+        h.departures.push({
+          refStart: prevEnd,
+          refEnd: repeated > 0 ? prevEnd : start,
+          altLength: alt + repeated,
+          invertedBp: inverted,
+          repeatedBp: repeated,
+          ...(repeated > 0 ? { copied: [start, prevEnd] } : {}),
+        })
       }
+      prevEnd = e.hi
+      reach = Math.max(reach, e.hi)
+      alt = 0
+      inverted = 0
     }
   }
   if (!Number.isNaN(abridgedEnd)) {
     h.departures.push({
       refStart: prevEnd,
       refEnd: Math.max(abridgedEnd, prevEnd),
-      altLength: altAtAbridgedEnd,
+      altLength: alt,
       invertedBp: 0,
       repeatedBp: 0,
       abridged: true,
     })
     reach = Math.max(reach, abridgedEnd)
-    alt -= altAtAbridgedEnd
   }
-  if (Number.isNaN(first)) {
-    h.open = true
-  } else {
+  if (!Number.isNaN(first)) {
     h.covered.push([first, reach])
-  }
-  if (alt > 0) {
-    h.open = true
   }
 }
 
 /**
- * The stretches of R that exactly one of a haplotype's walks covers, each
- * within one walk. Where two walks overlap, such as a second contig over the
+ * The stretches of R that exactly one of a haplotype's paths covers, each
+ * within one path. Where two paths overlap, such as a second contig over the
  * same locus, the haplotype holds two copies of that stretch and no call;
- * where one walk ends and the next starts, as across a record break whose
- * bases the graph lacks, no call crosses the junction.
+ * where one path ends and the next starts, no call crosses the junction.
  */
 function coveredOnce(spans: [number, number][]) {
   const points = [...new Set(spans.flat())].sort((a, b) => a - b)
   const out: [number, number][] = []
-  let lastWalk = -1
+  let lastPath = -1
   for (let k = 0; k + 1 < points.length; k++) {
     const a = points[k]!
     const b = points[k + 1]!
-    const walks = spans.flatMap(([s, e], i) => (s <= a && e >= b ? [i] : []))
+    const paths = spans.flatMap(([s, e], i) => (s <= a && e >= b ? [i] : []))
     const last = out.at(-1)
-    if (walks.length !== 1) {
-      lastWalk = -1
-    } else if (last && walks[0] === lastWalk && last[1] === a) {
+    if (paths.length !== 1) {
+      lastPath = -1
+    } else if (last && paths[0] === lastPath && last[1] === a) {
       last[1] = b
     } else {
       out.push([a, b])
-      lastWalk = walks[0]!
+      lastPath = paths[0]!
     }
   }
   return out
@@ -389,13 +536,14 @@ export class ExpansionTooLargeError extends RegionTooLargeError {
 }
 
 /**
- * Every haplotype's departures over a region, for structuralForms. The cut is
- * uncontained, so a departure crossing an edge is followed to where it
- * rejoins, and lists no links. Abridged walks are read in full, those with
- * the fewest steps first, while the cut stays under `stepBudget`; any left
- * keep their net change only. `partial: false` reads every abridged walk or
- * throws ExpansionTooLargeError. A haplotype the header names with no walk in
- * the cut is listed with nothing covered. A region the index estimates past
+ * Every haplotype's departures over a region, for structuralForms, from a
+ * cut without links: its departures hold every one over the region, those
+ * leaving it and rejoining far away or jumping over it whole included.
+ * Abridged walks are read in full, those with the fewest steps first, while
+ * the cut stays under `stepBudget`; any left keep their net change only.
+ * `partial: false` reads every abridged walk or throws
+ * ExpansionTooLargeError. A haplotype the header names with no walk in the
+ * cut is listed with nothing covered. A region the index estimates past
  * `byteBudget` throws the reader's RegionTooLargeError before any read.
  */
 export async function formsCut(
@@ -427,13 +575,17 @@ export async function formsCut(
     }
   }
   const haplotypes = walkDepartures(
-    { fragments: cut.fragments, nodes: cut.graph.nodes },
+    {
+      fragments: cut.fragments,
+      departures: cut.departures,
+      nodes: cut.graph.nodes,
+    },
     refName,
   )
   const seen = new Set(haplotypes.map(h => h.haplotype))
   for (const haplotype of header.haplotypes) {
     if (!seen.has(haplotype)) {
-      haplotypes.push({ haplotype, covered: [], departures: [], open: false })
+      haplotypes.push({ haplotype, covered: [], departures: [] })
     }
   }
   return haplotypes
