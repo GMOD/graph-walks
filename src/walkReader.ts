@@ -316,7 +316,11 @@ export class WalkReader {
     } = opts
     const header = await this.header({ signal })
     const { chunk } = header
-    const from = walkQueryStart(header, refName, region.start, region.end)
+    const drawn = {
+      start: Math.max(0, region.start - context),
+      end: region.end + context,
+    }
+    const from = walkQueryStart(header, refName, drawn.start, drawn.end)
     const sibling = `${refName}~departure`
     // the drawn stretch reaches at most a node past the window's context
     const reach = header.maxNode ?? chunk
@@ -546,7 +550,7 @@ export class WalkReader {
     try {
       const [records] = await Promise.all([
         readDepartures(),
-        readChunks(from, region.end),
+        readChunks(from, drawn.end),
       ])
       const tooManyRead = stepBudgetError(
         rows,

@@ -155,7 +155,7 @@ test('a cut lists each departure over the window, with the own steps it holds', 
 test("a node longer than a chunk is read back as far as the header's maxnode reaches", async () => {
   const text = await gfa(reader('maxnode.GRCh38'), 2100, 2500)
   expect(text).toMatch(/^S\t1\t/m)
-  expect(text).toMatch(/^W\tGRCh38\t0\tchr1\t0\t3200\t>1>2$/m)
+  expect(text).toMatch(/^W\tGRCh38\t0\tchr1\t0\t3800\t>1>2>4$/m)
   expect(walkNames(text)).toEqual(['GRCh38#0#chr1', 'HG002#1#chr1'])
 })
 
@@ -995,12 +995,26 @@ test('readInOrder keeps at most its limit reading, and uses results in order', a
 // gfa-to-tabix --walks --chunk 10 of >1>2>9>10 against a reference >1 to >10
 // of 10 bp nodes: HG002#1#ctg leaves the reference after 20 and rejoins at 80,
 // and its record is filed over the stretch between
+// The drawn stretch is the window and its context, so a cut keeps the same
+// reference whether the context is asked for or the window widened by it, on
+// both sides and past the chunks under the window itself
+test('a cut reads the chunks under its context, not only under its window', async () => {
+  const walks = reader('skip.GRCh38')
+  const reference = async (start: number, end: number, context: number) =>
+    (
+      await walks.cut('GRCh38#0#chr1', { start, end }, { context })
+    ).fragments.find(f => f.name === 'GRCh38#0#chr1')?.refStarts
+  expect(await reference(32, 38, 5)).toEqual(await reference(27, 43, 0))
+  expect(await reference(32, 38, 15)).toEqual(await reference(17, 53, 0))
+})
+
 test('a window inside a jump finds the jump in the departure read', async () => {
   const walks = reader('skip.GRCh38')
-  const { fragments, departures } = await walks.cut('GRCh38#0#chr1', {
-    start: 31,
-    end: 60,
-  })
+  const { fragments, departures } = await walks.cut(
+    'GRCh38#0#chr1',
+    { start: 31, end: 60 },
+    { context: 0 },
+  )
   expect(fragments.map(f => f.name)).toEqual(['GRCh38#0#chr1'])
   expect(departures.map(departure)).toEqual([
     ['HG002#1#ctg', 20, 0, 0, '20+', '80+', 'forward', 'record', undefined],
