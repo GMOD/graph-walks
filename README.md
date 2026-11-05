@@ -30,15 +30,10 @@ npm install @jbrowse/graph-walks @gmod/tabix
 ```ts
 import { TabixIndexedFile } from '@gmod/tabix'
 import { WalkReader, walksKept } from '@jbrowse/graph-walks'
-import { RemoteFile } from 'generic-filehandle2'
 
-const url =
-  'https://jbrowse.org/demos/hprc/hprc-v2.1-mc-grch38-f5s.GRCh38.walks.bed.gz'
+const path = 'hprc-v2.1-mc-grch38.GRCh38.walks.bed.gz'
 const reader = new WalkReader(
-  new TabixIndexedFile({
-    filehandle: new RemoteFile(url),
-    tbiFilehandle: new RemoteFile(`${url}.tbi`),
-  }),
+  new TabixIndexedFile({ path, tbiPath: `${path}.tbi` }),
 )
 
 const refName = 'GRCh38#0#chr6'
@@ -50,6 +45,9 @@ const { graph, kept, fragments, departures } = await reader.cut(
 const tables = graph.tables(kept, fragments, departures)
 ```
 
+- `path` is a walk file gfa-to-tabix 3.0 or later wrote; over HTTP, pass
+  `filehandle` and `tbiFilehandle` from generic-filehandle2's `RemoteFile`. The
+  HPRC files jbrowse.org hosts are format 5, which graph-walks 4 reads
 - `tables` lists the nodes with their lengths and reference positions, the links
   between them, each walk's steps, and every departure from the reference over
   the window ([Departures](#departures)). `graphTablesGFA` in
@@ -62,6 +60,29 @@ const tables = graph.tables(kept, fragments, departures)
   read from the walk file's first block
 - `reader.referenceSequences()` lists the sequences a region can be on, in full
   PanSN: `GRCh38#0#chr6`
+
+## Changes in 5
+
+graph-walks 5 reads walk format 6 only and changes the API:
+
+- `cut` returns `departures`, every departure from the reference over the window
+  once, in place of `skips`, `open` and `across`; a fragment runs from its
+  walk's first step on the window to its last, with no follow rounds, crossings
+  or stop kinds. `WalkGraph.tables` takes the departures
+- Removed: `CROSSING_BP`, `WalkChunk`, `WalkCrossing`, `WalkGap`, `WalkSkip`,
+  `WalkStop`, `WalkStopTable`; `WalkFragment`, `WalkRow`, `GraphTables` and
+  `HaplotypeDepartures` lost fields, and `keptStepsError` takes the departures
+  as its second argument
+- Budgets default to `WALK_BUDGETS`, so a cut that read without limit now throws
+  `RegionTooLargeError` or `DepartureReadError` past them; pass `Infinity` to
+  lift one
+- A departure states how many times the reference passes each end's node, and
+  `placementChoice` says where its position was the writer's choice
+- Structural forms state nothing a member's own walks contradict: a rare state
+  folds only into one it agrees with, a no call never folds, a member no common
+  form fits goes to `other` (key `*`), and a change at a site wider than 1 kb
+  keys on its place. `formContradictions` checks a result against the members'
+  departures
 
 ## A region by contig
 
