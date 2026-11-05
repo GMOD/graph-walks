@@ -1,3 +1,4 @@
+import { formContradictions } from './formsCheck.ts'
 import {
   NO_CALL_STATE,
   OTHER_STATE,
@@ -633,6 +634,50 @@ test('a common change is placed where most of its carriers put it', () => {
     ['-10000@10011', 20],
     ['-12000@10011', 1],
   ])
+})
+
+// P inserts 61 bp at 5,000 and Q replaces 24 bp there with 85: one size
+// at two places, neither covering half of the other, that start together
+test('one size at two places starting together is two states', () => {
+  const input = [
+    ...haps('R', 10),
+    ...haps('D', 10, [dep(4000, 8000, 0)]),
+    ...haps('P', 10, [dep(5000, 5000, 61)]),
+    ...haps('Q', 10, [dep(5000, 5024, 85)]),
+  ]
+  const result = forms(input)
+  expect(result.sites[0]!.states.map(s => [s.key, s.carriers.length])).toEqual([
+    ['+61@5000-5001', 10],
+    ['+61@5000-5024', 10],
+    ['-4000@4000', 10],
+    ['0', 10],
+  ])
+  expect(formContradictions(input, result, { window: WINDOW })).toEqual([])
+})
+
+// F's 71 bp span gains 68 bp; L's 109 bp and S's 39 bp from the same start
+// gain 66, and each covers half of F, but neither half of the other
+test("a place's spans each cover half of every other, so any carrier of a state stands for it", () => {
+  const input = [
+    ...haps('R', 20),
+    ...haps('D', 10, [dep(4000, 8000, 0)]),
+    ...haps('F', 10, [dep(5000, 5071, 139)]),
+    ...haps('L', 3, [dep(5000, 5109, 175)]),
+    hap('S#1', [dep(5000, 5039, 105)]),
+  ]
+  for (const foldRareForms of [true, false]) {
+    const result = forms(input, { minCarriers: 3, foldRareForms })
+    expect(
+      result.sites[0]!.states.map(s => [s.key, s.carriers.length]),
+    ).toEqual([
+      ['0', 20],
+      ['+68@5000', 10],
+      ['-4000@4000', 10],
+      ['+66@5000-5071', 3],
+      ['+66@5000-5039', 1],
+    ])
+    expect(formContradictions(input, result, { window: WINDOW })).toEqual([])
+  }
 })
 
 test('a haplotype of a form under minCarriers joins a form whose every state fits it, or other', () => {

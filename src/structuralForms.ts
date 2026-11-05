@@ -45,8 +45,11 @@ export interface SiteMark extends Mark {
  * the marks of the carrier with that change. `carriers` are the haplotypes
  * whose own marks give the state, before any folding. `0` is R's structure.
  * At a site wider than SUMMED_SITE_BP each change keys on its size and its
- * place, `-20000@1000`: the start of the span carried most among the common
- * spans that half-cover it, or its own start where it is rarer (commonMarks).
+ * place, `-20000@1000`: the first span of the common spans it joins, each
+ * covering half of every other, or its own span where it is rarer
+ * (commonMarks), written as its start, or as `1000-21000` where a place of
+ * the same size starts there too. So every carrier's marks pair one-to-one
+ * with `marks`, each pair covering half of each other.
  */
 export interface SiteState {
   key: string
@@ -147,8 +150,10 @@ export const FLOOR_PRESETS = [50, 1000, 10_000] as const
 // reads as a deletion or insertion: 6,460 bp to 94 bp
 export const LOPSIDED_RATIO = 0.05
 
-const SHIFT_MIN_BP = 1000
-const SHIFT_TOLERANCE = 0.1
+// The smallest deletion a shift pairs, and how far apart in size its two
+// sides may be, as a share of the larger
+export const SHIFT_MIN_BP = 1000
+export const SHIFT_TOLERANCE = 0.1
 
 // A form's state at a site where it keeps R's structure, where its walks have
 // no call, where it makes a change too rare to stand alone that agrees with no
@@ -474,13 +479,6 @@ const sizeOf = (m: Mark) =>
 export const largestChange = (marks: Mark[]) =>
   marks.reduce((most, m) => Math.max(most, sizeOf(m)), 0)
 
-// Where on R a state's marks lie, as its key names them
-const placesOf = (key: string) =>
-  key
-    .split(';')
-    .map(part => part.split('@')[1] ?? '')
-    .join(';')
-
 // Two sets of marks at one site agree in net change and in largest change
 export const statesAgree = (a: Mark[], b: Mark[], floorBp: number) =>
   agrees(
@@ -513,11 +511,46 @@ const spanOf = (m: Pick<Mark, 'refStart' | 'refEnd'>): Span => ({
   end: Math.max(m.refEnd, m.refStart + 1),
 })
 
+// Whether `as` and `bs` pair one-to-one with `pairs` true of every pair
+function pairOneToOne<T>(as: T[], bs: T[], pairs: (a: T, b: T) => boolean) {
+  const holder = bs.map(() => -1)
+  const place = (i: number, seen: Set<number>): boolean =>
+    bs.some((b, j) => {
+      let placed = false
+      if (!seen.has(j) && pairs(as[i]!, b)) {
+        seen.add(j)
+        placed = holder[j]! < 0 || place(holder[j]!, seen)
+        if (placed) {
+          holder[j] = i
+        }
+      }
+      return placed
+    })
+  return as.length === bs.length && as.every((_, i) => place(i, new Set()))
+}
+
+// The first of `spans`, sorted by start, starting at or after `from`
+const firstFrom = (spans: Span[], from: number) => {
+  let lo = 0
+  let hi = spans.length
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (spans[mid]!.start < from) {
+      lo = mid + 1
+    } else {
+      hi = mid
+    }
+  }
+  return lo
+}
+
 // Marks of at least `minCarriers` haplotypes, two marks shared where they
-// half-cover each other, and each common mark's place: the start of the span
-// carried most, earlier first, that half-covers it and no span carried more
-// already places. A rarer mark places only itself, at its own start. Marks of
-// one span compare once, and a mark stops gathering sharers at minCarriers
+// half-cover each other, and each mark's place: spans every two of which
+// half-cover each other, named by the first. The common spans take places
+// most carried first, each joining the place whose spans it all half-covers
+// with the most carriers, earlier first, or starting its own, and a rarer
+// mark's place is its own span. Marks of one span compare once, and a mark
+// stops gathering sharers at minCarriers
 function commonMarks(marksBy: Mark[][], minCarriers: number) {
   const bySpan = new Map<string, Span & { marks: Mark[]; haps: Set<number> }>()
   marksBy.forEach((marks, hap) => {
@@ -555,52 +588,49 @@ function commonMarks(marksBy: Mark[][], minCarriers: number) {
     }
   })
   const common = all.filter((_, i) => sharers[i]!.size >= minCarriers)
-  // places by start; a span that half-covers another is at most twice as
-  // long, so a place it half-covers starts no earlier than twice its length
+  // a span that half-covers another is at most twice as long, so a place
+  // whose first span it half-covers starts no earlier than twice its length
   // before it
-  const places: (Span & { carriers: number })[] = []
-  const placeOf = new Map<Span, number>()
+  const places: (Span & { spans: Span[]; carriers: number })[] = []
+  const placeOf = new Map<Span, Span>()
   for (const g of common.toSorted(
     (a, b) => b.haps.size - a.haps.size || a.start - b.start,
   )) {
-    const from = g.start - 2 * (g.end - g.start)
-    let lo = 0
-    let hi = places.length
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1
-      if (places[mid]!.start < from) {
-        lo = mid + 1
-      } else {
-        hi = mid
-      }
-    }
-    let best: (Span & { carriers: number }) | undefined
-    for (let k = lo; k < places.length && places[k]!.start <= g.end; k++) {
+    let best: (typeof places)[number] | undefined
+    for (
+      let k = firstFrom(places, g.start - 2 * (g.end - g.start));
+      k < places.length && places[k]!.start <= g.end;
+      k++
+    ) {
       const p = places[k]!
       if (
-        halfCover(p, g) &&
         (!best ||
           p.carriers > best.carriers ||
-          (p.carriers === best.carriers && p.start < best.start))
+          (p.carriers === best.carriers && p.start < best.start)) &&
+        p.spans.every(span => halfCover(span, g))
       ) {
         best = p
       }
     }
     if (best) {
-      placeOf.set(g, best.start)
+      best.spans.push(g)
+      best.carriers += g.haps.size
+      placeOf.set(g, best)
     } else {
-      placeOf.set(g, g.start)
-      places.splice(lo, 0, {
+      const place = {
         start: g.start,
         end: g.end,
+        spans: [g],
         carriers: g.haps.size,
-      })
+      }
+      places.splice(firstFrom(places, g.start), 0, place)
+      placeOf.set(g, place)
     }
   }
   return {
     common: new Set(common.flatMap(g => g.marks)),
     place: new Map(
-      all.flatMap(g => g.marks.map(m => [m, placeOf.get(g) ?? g.start])),
+      all.flatMap(g => g.marks.map(m => [m, placeOf.get(g) ?? g])),
     ),
   }
 }
@@ -657,8 +687,9 @@ function sitesOver(
  * Groups haplotypes by the structural changes their walks make over a
  * window. Each haplotype's own marks make its state at a site, so a change
  * nested in another counts once. A state with fewer than minCarriers folds
- * only into a common state its change agrees with (`agrees`, change by change
- * where the site keys on place), and is `~` where none does; a no call stays
+ * only into a common state its change agrees with (`agrees`; where the site
+ * keys on place, change by change, each pair covering half of each other),
+ * and is `~` where none does; a no call stays
  * one. A haplotype whose form has fewer than minCarriers joins the largest
  * common form whose every state fits it, or `other`.
  */
@@ -713,17 +744,27 @@ export function structuralForms(
     }
     return at
   })
+  // a mark's state at a site keyed on place: its size at its place's start,
+  // or at its place's span where the same size has another place starting
+  // there
+  const placeEnds = new Map<string, Set<number>>()
+  for (const m of marksBy.flat()) {
+    const p = place.get(m)!
+    const key = `${stateKey(m, floorBp)}@${p.start}`
+    placeEnds.set(key, (placeEnds.get(key) ?? new Set()).add(p.end))
+  }
+  const placedKey = (m: Mark) => {
+    const p = place.get(m)!
+    const key = `${stateKey(m, floorBp)}@${p.start}`
+    return placeEnds.get(key)!.size > 1 ? `${key}-${p.end}` : key
+  }
   const marksAt = rawAt.map(
     at =>
       new Map(
         [...at].map(([site, ms]) => {
           ms.sort((a, b) => a.refStart - b.refStart || a.refEnd - b.refEnd)
           const state = ms
-            .map(m =>
-              summed[site]
-                ? stateKey(m, floorBp)
-                : `${stateKey(m, floorBp)}@${place.get(m)}`,
-            )
+            .map(m => (summed[site] ? stateKey(m, floorBp) : placedKey(m)))
             .join(';')
           return [site, ms.map((m): SiteMark => ({ ...m, site, state }))]
         }),
@@ -754,8 +795,12 @@ export function structuralForms(
     const own = marksAt[j]!.get(i) ?? []
     return summed[i]
       ? statesAgree(state.marks, own, floorBp)
-      : placesOf(state.key) === placesOf(own[0]?.state ?? REFERENCE_STATE) &&
-          state.marks.every((m, k) => statesAgree([m], [own[k]!], floorBp))
+      : pairOneToOne(
+          state.marks,
+          own,
+          (a, b) =>
+            halfCover(spanOf(a), spanOf(b)) && statesAgree([a], [b], floorBp),
+        )
   }
   const rare = new Set<string>()
   const sites: Site[] = []
