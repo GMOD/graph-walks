@@ -202,8 +202,9 @@ for (const d of departures) {
 - The cut makes a separate fragment for each such row, with an `abridged` field:
   the piece's `steps` and `bp`, and the `detail` record that holds it with the
   path's other moved pieces in the chunk. The fragment's two steps are the
-  piece's first and last handles on the reference, and `hapStart`/`hapEnd` are
-  exactly where the piece lies on its contig
+  piece's first and last handles on the reference, `hapStart`/`hapEnd` are
+  exactly where the stretch between them lies on its contig, and `steps` counts
+  all the piece's steps, its own before and after that stretch included
 - `graph.tables(kept, fragments, departures)` keeps them as `abridgedSteps` and
   `abridgedBp` columns, NaN for every other walk
 - With `expand` naming a walk, the cut reads its detail records and cuts it in

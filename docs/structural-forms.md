@@ -42,19 +42,22 @@ fragments' ends, in chains:
   the window or a second contig over the same locus, is no call there
 - An abridged fragment's bp lie between the R its handles reach, so the
   departure holding it is exact in net, and only placement inside it is lost.
-  Each abridged row is one piece, from its hapOffset to hapOffset + bp, so a
-  piece of another chunk between two moved pieces is a fragment of its own and
-  the departures between them are records. Before gfa-to-tabix wrote a row per
-  piece, one row stood for a path's moved pieces in a chunk with the bp of those
-  pieces alone, and a reader had to add what lay between them; leaving that out
-  put AMY1's unexpanded HG03710#1 29 kb short: +167,764 bp against +196,894
-  expanded
-- A departure leaving or rejoining inside a piece keeps all its own bp, and the
-  piece's net leaves out those of its steps: its trailing steps after the leave,
-  its leading steps before the rejoin. The piece's handles on R lie outside
-  every departure's own sequence, so that is all they share. A piece runs along
-  R or against it as both its handles do, so one against R in a chain read
-  forward is inverted ALT, as its steps would be
+  Each abridged row is one piece's stretch from its first step on R to its last,
+  from its hapOffset to hapOffset + bp, so a piece of another chunk between two
+  moved pieces is a fragment of its own and the departures between them are
+  records. Before gfa-to-tabix wrote a row per piece, one row stood for a path's
+  moved pieces in a chunk with the bp of those pieces alone, and a reader had to
+  add what lay between them; leaving that out put AMY1's unexpanded HG03710#1 29
+  kb short: +167,764 bp against +196,894 expanded
+- Every departure record leaves at a piece's last step on R and rejoins at a
+  piece's first, where an abridged row's stretch ends, so a record keeps all its
+  own bp and shares none with a piece's net, and a piece's own steps at its
+  contig's start or end, which no record covers, are no change. While rows
+  covered the whole piece, graph-walks cut each by the records ending inside it,
+  which left those at a contig's ends in the net: L#1 and M#1 in
+  `test_data/contigends.R` read +30 bp unexpanded against 0 expanded. A piece
+  runs along R or against it as both its handles do, so one against R in a chain
+  read forward is inverted ALT, as its steps would be
 - The reader this replaced kept, of a departure with an end inside a piece, only
   the bp the graph lacks and the own steps the cut held, which it attaches only
   up to `ATTACH_BP`, and joined two pieces a departure left and rejoined inside

@@ -28,4 +28,5 @@ build unabridged unabridged.R.gfa --refs R --chunk 10
 build abridged unabridged.R.gfa --refs R --chunk 10 --abridge-bytes 1
 build interleaved interleaved.R.gfa --refs R --chunk 10 --stay 0 --abridge-steps 3
 build ownends ownends.R.gfa --refs R --chunk 10 --abridge-bytes 1
+build contigends contigends.R.gfa --refs R --chunk 10 --abridge-bytes 1
 build hprc-chrM hprc-chrM.GRCh38.gfa --refs GRCh38 --sequences

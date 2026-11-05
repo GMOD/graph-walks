@@ -38,9 +38,11 @@ export interface WalkRow {
 }
 
 /**
- * A piece the writer moved to a detail record: its steps and its bp, so that
- * it runs from its row's hapOffset to hapOffset + bp on the contig, and the
- * record's sequence and position, which a cut that expands the path reads
+ * A piece the writer moved to a detail record: all its steps, which reading
+ * the record decodes; the bp of its stretch from its first step on R to its
+ * last, which runs from its row's hapOffset to hapOffset + bp on the contig;
+ * and the record's sequence and position, which a cut that expands the path
+ * reads
  */
 export interface Abridged {
   steps: number
@@ -306,8 +308,8 @@ export interface WalkFragment {
   against: Uint8Array
   trimmedBefore: number
   trimmedAfter: number
-  // set on the fragment of an abridged row, from where it leaves R to where it
-  // rejoins, which runs `abridged.bp` on the haplotype
+  // set on the fragment of an abridged row, from the piece's first step on R
+  // to its last, which runs `abridged.bp` on the haplotype
   abridged?: Abridged
 }
 

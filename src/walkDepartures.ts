@@ -95,10 +95,9 @@ const most = (a: number, b: number) =>
  * walked against it reads as inverted, a jump back as a tandem copy, and
  * sequence between a contig's W lines as the path's own. R that two chains
  * of a haplotype reach, such as a contig's second visit to the window, has
- * no call. An abridged fragment's bp, less the own bp of the departures
- * leaving or rejoining inside it, are a net change between the R its handles
- * reach, along R or against it as both handles are. The walks on R's own
- * haplotype are left out.
+ * no call. An abridged fragment's bp are a net change between the R its
+ * handles reach, along R or against it as both handles are. The walks on R's
+ * own haplotype are left out.
  */
 export function walkDepartures(
   { fragments, departures, nodes }: DepartureSource,
@@ -175,20 +174,13 @@ function fragmentItem(f: WalkFragment, length: (id: number) => number): Item {
  * departures leaving its last step, rejoining its first or lying inside it,
  * fragments that abut, and a departure touching no fragment on its own. What
  * the read did not see lies between chains, so each reads on its own, and R
- * that two chains reach has no call. An abridged fragment is a net over one
- * piece a writer moved out of a chunk, from its row's hapOffset to hapOffset
- * + bp on the contig. A departure keeps all its own bp, so a piece it leaves
- * inside ends at its leave and one it rejoins inside starts at its rejoin:
- * those steps of the piece are the departure's own.
+ * that two chains reach has no call. An abridged fragment is a net over the
+ * stretch of one piece a writer moved out of a chunk, from its first step on
+ * R to its last, its row's hapOffset to hapOffset + bp on the contig. Every
+ * departure record leaves at a piece's last step on R and rejoins at a
+ * piece's first, so its own bp and the stretch share no base.
  */
 function pathChains(items: Item[], length: (id: number) => number) {
-  const departures = items.filter(i => 'departure' in i)
-  const pieces = items.flatMap(item =>
-    'fragment' in item && item.fragment.abridged
-      ? [ownTrimmed(item, departures)]
-      : [],
-  )
-  const fragments = items.filter(i => 'fragment' in i && !i.fragment.abridged)
   // where each item starts and ends on the contig
   const edges = (item: Item): [number, number] =>
     'fragment' in item && !item.fragment.abridged
@@ -198,7 +190,7 @@ function pathChains(items: Item[], length: (id: number) => number) {
   // leave at a fragment's last step or inside it, its rejoin at the first,
   // or two fragments abutting. In start order, an item touches the chain so
   // far when it starts no later than the chain's furthest end
-  const all = [...pieces, ...fragments, ...departures]
+  const all = items
     .map(item => ({ item, edges: edges(item) }))
     .sort((a, b) => a.edges[0] - b.edges[0])
   const chains: Item[][] = []
@@ -216,26 +208,6 @@ function pathChains(items: Item[], length: (id: number) => number) {
     chainEnd = Math.max(chainEnd, end)
   }
   return chains.map(chain => chainEvents(chain, length))
-}
-
-// An abridged piece without the own steps of the departures that leave or
-// rejoin inside it: its steps on R lie outside every departure's own
-// sequence, so those are its leading and trailing steps
-function ownTrimmed(piece: Item, departures: Item[]): Item {
-  let [start, end] = piece.hap
-  for (const { hap } of departures) {
-    if (hap[0] > start && hap[0] < end) {
-      end = hap[0]
-    }
-    if (hap[1] > start && hap[1] < end) {
-      start = hap[1]
-    }
-  }
-  return {
-    ...piece,
-    hap: [start, end],
-    bp: piece.bp - (start - piece.hap[0]) - (piece.hap[1] - end),
-  }
 }
 
 function chainEvents(items: Item[], length: (id: number) => number) {

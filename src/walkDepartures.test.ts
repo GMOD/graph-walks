@@ -3,6 +3,7 @@ import { TabixIndexedFile } from '@gmod/tabix'
 import { RegionTooLargeError } from './util.ts'
 import {
   ExpansionTooLargeError,
+  FORMS_STEP_BUDGET,
   formsCut,
   walkDepartures,
 } from './walkDepartures.ts'
@@ -334,17 +335,18 @@ const netAndCover = (hs: HaplotypeDepartures[]) =>
 
 // A contig's W lines: an abridged piece over 2 and 3 running 100 bp of its
 // own after them to its line's end, 50 bp no line covers, and an abridged
-// piece of the next line running 100 bp of its own before 4
-test('a departure across W lines leaving and rejoining inside abridged pieces is exact, and each piece a net without its own bp', () => {
+// piece of the next line running 100 bp of its own before 4. Each row spans
+// its piece from its first step on R to its last, and the record the own bp
+test('a departure across W lines between abridged pieces is exact, and each piece a net over its stretch on R', () => {
   const [a] = departuresOf(
     [
       walk('A#1#c', '+2 +3', {
         hapStart: 100,
-        abridged: { steps: 3, bp: 700, detail },
+        abridged: { steps: 3, bp: 600, detail },
       }),
       walk('A#1#c', '+4 +4', {
-        hapStart: 850,
-        abridged: { steps: 2, bp: 1100, detail },
+        hapStart: 950,
+        abridged: { steps: 2, bp: 1000, detail },
       }),
       walk('A#1#c', '+5 +6', { hapStart: 1950 }),
     ],
@@ -367,8 +369,8 @@ test('a departure across W lines leaving and rejoining inside abridged pieces is
   })
 })
 
-test('a departure leaving inside an abridged piece keeps its own bp, and the piece ends at its leave', () => {
-  const abridged = { steps: 900, bp: 1500, detail }
+test('a departure leaving an abridged piece keeps its own bp, and the piece ends at its leave', () => {
+  const abridged = { steps: 900, bp: 1480, detail }
   const [a] = departuresOf(
     [
       walk('A#1#c', '+2 +4', { hapStart: 120, abridged }),
@@ -383,12 +385,12 @@ test('a departure leaving inside an abridged piece keeps its own bp, and the pie
 })
 
 // A path 1 2 then 300 bp off R in node 50 and 2,000 in node 52, rejoining at
-// 5: its first piece, 1 2 50, abridged, leaves R inside it, and 52 lies in a
-// piece the cut does not read
-test("a departure leaving inside an abridged piece's trailing own steps nets as the path read in full", () => {
+// 5: its first piece, 1 2 50, abridged, leaves R at 2, its row spans 1 2,
+// and 52 lies in a piece the cut does not read
+test("a departure over an abridged piece's trailing own steps nets as the path read in full", () => {
   const unexpanded = departuresOf(
     [
-      walk('A#1#c', '+1 +2', { abridged: { steps: 3, bp: 900, detail } }),
+      walk('A#1#c', '+1 +2', { abridged: { steps: 3, bp: 600, detail } }),
       walk('A#1#c', '+5 +6', { hapStart: 2900 }),
     ],
     [record('A#1#c', 600, 2300, '+600', '+1700')],
@@ -402,9 +404,9 @@ test("a departure leaving inside an abridged piece's trailing own steps nets as 
 
 // The same path leaving R for good, rejoining it reversed past the window:
 // its own bp lie on no stretch of R read here
-test('a departure leaving inside an abridged piece and rejoining reversed nets as the path read in full', () => {
+test('a departure leaving an abridged piece and rejoining reversed nets as the path read in full', () => {
   const unexpanded = departuresOf(
-    [walk('A#1#c', '+1 +2', { abridged: { steps: 3, bp: 900, detail } })],
+    [walk('A#1#c', '+1 +2', { abridged: { steps: 3, bp: 600, detail } })],
     [record('A#1#c', 600, 2300, '+600', '-1700')],
   )
   const expanded = departuresOf(
@@ -415,14 +417,15 @@ test('a departure leaving inside an abridged piece and rejoining reversed nets a
 })
 
 // A path 1 2, 2,000 bp in node 52 and 300 in node 50, then 3 4 and 5 6: the
-// piece 50 3 4 is abridged and the departure from 2 rejoins inside it
-test("a departure rejoining inside an abridged piece's leading own steps nets as the path read in full", () => {
+// piece 50 3 4 is abridged, its row spans 3 4, and the departure from 2
+// rejoins at 3
+test("a departure over an abridged piece's leading own steps nets as the path read in full", () => {
   const unexpanded = departuresOf(
     [
       walk('A#1#c', '+1 +2'),
       walk('A#1#c', '+3 +4', {
-        hapStart: 2600,
-        abridged: { steps: 3, bp: 1400, detail },
+        hapStart: 2900,
+        abridged: { steps: 3, bp: 1100, detail },
       }),
       walk('A#1#c', '+5 +6', { hapStart: 4000 }),
     ],
@@ -435,16 +438,16 @@ test("a departure rejoining inside an abridged piece's leading own steps nets as
   expect(netAndCover(unexpanded)).toEqual(netAndCover(expanded))
 })
 
-// A piece 51 2 3 50, 20 bp of its own before R and 300 after, with a
-// departure rejoining at its start's R and one leaving after 3, each running
-// 2,000 bp more in node 52 outside it
+// A piece 51 2 3 50, 20 bp of its own before R and 300 after, its row
+// spanning 2 3, with a departure rejoining at 2 and one leaving after 3, each
+// running 2,000 bp more in node 52 outside it
 test('departures at both ends of one abridged piece net as the path read in full', () => {
   const unexpanded = departuresOf(
     [
       walk('A#1#c', '+1'),
       walk('A#1#c', '+2 +3', {
-        hapStart: 2100,
-        abridged: { steps: 4, bp: 920, detail },
+        hapStart: 2120,
+        abridged: { steps: 4, bp: 600, detail },
       }),
       walk('A#1#c', '+4 +5', { hapStart: 5020 }),
     ],
@@ -623,12 +626,12 @@ describe('a forms cut', () => {
     expect(x.covered).toEqual(expanded!['X#1']!.covered)
   })
 
-  // X#1 and Z#1 leave R inside an abridged piece whose last steps are their
-  // own, V#1 and T#1 rejoin across W lines inside one whose first steps are
+  // X#1 and Z#1 leave R from an abridged piece whose last steps are their
+  // own, V#1 and T#1 rejoin across W lines into one whose first steps are
   // their own, Q#1 through a W line no piece holds, P#1 through a step on
   // another reference sequence, and S#1 rejoins reversed into a piece
   // against R
-  test('reads each haplotype to the net and coverage its walks give in full when a departure leaves or rejoins inside an abridged piece, or a piece runs against R', async () => {
+  test('reads each haplotype to the net and coverage its walks give in full when a departure covers own steps of an abridged piece, or a piece runs against R', async () => {
     const window = { refName: 'c', start: 0, end: 36 }
     const [abridged, expanded] = await Promise.all(
       [false, true].map(async expand =>
@@ -656,6 +659,34 @@ describe('a forms cut', () => {
       ['Y#1', 40],
       ['Z#1', 10],
     ])
+  })
+
+  // L#1 starts with 30 bp of its own before R's 3 and M#1 ends with them
+  // after it, at their contigs' ends, where no departure record covers them;
+  // their pieces there are abridged
+  test("reads each haplotype to the net and coverage its walks give in full when an abridged piece holds its contig's first or last steps", async () => {
+    const window = { refName: 'c', start: 0, end: 36 }
+    const [abridged, expanded] = await Promise.all(
+      [0, FORMS_STEP_BUDGET].map(async stepBudget =>
+        (await formsCut(reader('contigends.R'), window, { stepBudget }))
+          .map(h => ({
+            haplotype: h.haplotype,
+            net: net(h),
+            covered: h.covered,
+            abridged: h.departures.some(d => d.abridged),
+          }))
+          .sort((a, b) => (a.haplotype < b.haplotype ? -1 : 1)),
+      ),
+    )
+    expect(abridged!.map(h => [h.haplotype, h.abridged])).toEqual([
+      ['L#1', true],
+      ['M#1', true],
+    ])
+    expect(expanded).toEqual([
+      { haplotype: 'L#1', net: 0, covered: [[12, 36]], abridged: false },
+      { haplotype: 'M#1', net: 0, covered: [[0, 18]], abridged: false },
+    ])
+    expect(abridged!.map(h => ({ ...h, abridged: false }))).toEqual(expanded)
   })
 
   test('throws RegionTooLargeError past its byte budget', async () => {
