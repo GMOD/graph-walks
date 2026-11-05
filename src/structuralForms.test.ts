@@ -680,6 +680,58 @@ test("a place's spans each cover half of every other, so any carrier of a state 
   }
 })
 
+// Three +5,000 bp replacements from 10,000 over 10, 6 and 18 kb, two carriers
+// each: the 10 kb span covers half of each of the others, which cover under
+// half of each other, so the place they share depends on which span fills it
+// first, never on the order the haplotypes come in
+test('forms are the same for every order of the haplotypes where places tie in carriers and start', () => {
+  const groups = [
+    haps('a', 2, [dep(10_000, 20_000, 15_000)]),
+    haps('c', 2, [dep(10_000, 16_000, 11_000)]),
+    haps('e', 2, [dep(10_000, 28_000, 23_000)]),
+  ]
+  const orders = [
+    [0, 1, 2],
+    [0, 2, 1],
+    [1, 0, 2],
+    [1, 2, 0],
+    [2, 0, 1],
+    [2, 1, 0],
+  ]
+  const read = (input: HaplotypeDepartures[]) => {
+    const result = forms(input, { minCarriers: 2, floorBp: 1000 })
+    expect(formContradictions(input, result, { window: WINDOW })).toEqual([])
+    return result.forms
+      .map(f => `${[...f.members].sort().join(',')} ${describeForm(f)}`)
+      .sort()
+  }
+  const first = read(groups.flat())
+  for (const order of orders) {
+    const input = order.flatMap(k => groups[k]!)
+    expect(read(input)).toEqual(first)
+    expect(read(input.toReversed())).toEqual(first)
+  }
+})
+
+// R inserts 1,030 bp at one site and 1,050 at another, which fold to A's
+// state at the first and B's at the second; its form fits both A's and B's,
+// of three members each
+test('a rare form that fits two common forms of one size joins the same one for every order of the haplotypes', () => {
+  const at = (first: number, second: number) => [
+    dep(1000, 1000, first),
+    dep(50_000, 50_000, second),
+  ]
+  const a = haps('A', 3, at(1000, 1000))
+  const b = haps('B', 3, at(1080, 1080))
+  const r = hap('R#1', at(1030, 1050))
+  const formOfR = (input: HaplotypeDepartures[]) =>
+    forms(input, { minCarriers: 3 })
+      .forms.find(f => f.members.includes('R#1'))!
+      .members.toSorted()
+  expect(formOfR([...a, ...b, r])).toEqual(['A0#1', 'A1#1', 'A2#1', 'R#1'])
+  expect(formOfR([...b, ...a, r])).toEqual(['A0#1', 'A1#1', 'A2#1', 'R#1'])
+})
+
 test('a haplotype of a form under minCarriers joins a form whose every state fits it, or other', () => {
   const left = (bp: number) => dep(1000, 1000 + bp, 0)
   const right = (bp: number) => dep(40_000, 40_000 + bp, 0)

@@ -42,7 +42,8 @@ export interface SiteMark extends Mark {
 
 /**
  * One state of a site: its key, the median net change of its carriers, and
- * the marks of the carrier with that change. `carriers` are the haplotypes
+ * the marks of the carrier with that change, the first by name where several
+ * have it. `carriers` are the haplotypes
  * whose own marks give the state, before any folding. `0` is R's structure.
  * At a site wider than SUMMED_SITE_BP each change keys on its size and its
  * place, `-20000@1000`: the first span of the common spans it joins, each
@@ -544,13 +545,18 @@ const firstFrom = (spans: Span[], from: number) => {
   return lo
 }
 
+// Spans by start, then end
+const byStartEnd = (a: Span, b: Span) => a.start - b.start || a.end - b.end
+
 // Marks of at least `minCarriers` haplotypes, two marks shared where they
 // half-cover each other, and each mark's place: spans every two of which
 // half-cover each other, named by the first. The common spans take places
-// most carried first, each joining the place whose spans it all half-covers
-// with the most carriers, earlier first, or starting its own, and a rarer
-// mark's place is its own span. Marks of one span compare once, and a mark
-// stops gathering sharers at minCarriers
+// most carried first, then by start and end, each joining the place whose
+// spans it all half-covers with the most carriers, then the earliest start
+// and end, or starting its own, and a rarer mark's place is its own span.
+// Each span is one place's first at most, so these orders are total and the
+// places do not depend on the order of the haplotypes. Marks of one span
+// compare once, and a mark stops gathering sharers at minCarriers
 function commonMarks(marksBy: Mark[][], minCarriers: number) {
   const bySpan = new Map<string, Span & { marks: Mark[]; haps: Set<number> }>()
   marksBy.forEach((marks, hap) => {
@@ -563,7 +569,7 @@ function commonMarks(marksBy: Mark[][], minCarriers: number) {
       bySpan.set(key, group)
     }
   })
-  const all = [...bySpan.values()].sort((a, b) => a.start - b.start)
+  const all = [...bySpan.values()].sort(byStartEnd)
   const sharers = all.map(g => new Set(g.haps))
   const gather = (into: Set<number>, from: Set<number>) => {
     for (const hap of from) {
@@ -594,7 +600,7 @@ function commonMarks(marksBy: Mark[][], minCarriers: number) {
   const places: (Span & { spans: Span[]; carriers: number })[] = []
   const placeOf = new Map<Span, Span>()
   for (const g of common.toSorted(
-    (a, b) => b.haps.size - a.haps.size || a.start - b.start,
+    (a, b) => b.haps.size - a.haps.size || byStartEnd(a, b),
   )) {
     let best: (typeof places)[number] | undefined
     for (
@@ -604,9 +610,7 @@ function commonMarks(marksBy: Mark[][], minCarriers: number) {
     ) {
       const p = places[k]!
       if (
-        (!best ||
-          p.carriers > best.carriers ||
-          (p.carriers === best.carriers && p.start < best.start)) &&
+        (!best || (p.carriers - best.carriers || byStartEnd(best, p)) > 0) &&
         p.spans.every(span => halfCover(span, g))
       ) {
         best = p
@@ -827,7 +831,11 @@ export function structuralForms(
       const byDelta = js
         .map(j => ({ j, marks: marksAt[j]!.get(i) ?? [] }))
         .map(c => ({ ...c, delta: sumDelta(c.marks) }))
-        .sort((a, b) => a.delta - b.delta)
+        .sort(
+          (a, b) =>
+            a.delta - b.delta ||
+            (haplotypes[a.j]!.haplotype < haplotypes[b.j]!.haplotype ? -1 : 1),
+        )
       const median = byDelta[Math.floor(byDelta.length / 2)]!
       return [
         {
@@ -897,7 +905,9 @@ export function structuralForms(
     )
   }
   const largestFirst = kept.toSorted(
-    (a, b) => b.members.length - a.members.length,
+    (a, b) =>
+      b.members.length - a.members.length ||
+      (a.states.join('|') < b.states.join('|') ? -1 : 1),
   )
   const keptMembers = new Set(kept.flatMap(f => f.members))
   const other: string[] = []
