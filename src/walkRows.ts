@@ -293,6 +293,10 @@ export interface WalkFragment {
   hapEnd: number
   ids: Int32Array
   rev: Uint8Array
+  // where each step lies on the reference at its pass, NaN off it, and
+  // whether it runs against the reference's orientation there
+  refStarts: Float64Array
+  against: Uint8Array
   trimmedBefore: number
   trimmedAfter: number
   // set on the fragment of an abridged row, from where it leaves R to where it
@@ -485,6 +489,8 @@ export function walkCut(
         hapEnd: runEnd(run),
         ids,
         rev,
+        refStarts: run.refStarts,
+        against: run.against,
         trimmedBefore: 0,
         trimmedAfter: 0,
         abridged: run.abridged,
@@ -501,6 +507,8 @@ export function walkCut(
       hapEnd,
       ids: ids.subarray(first, last + 1),
       rev: rev.subarray(first, last + 1),
+      refStarts: run.refStarts.subarray(first, last + 1),
+      against: run.against.subarray(first, last + 1),
       trimmedBefore: hapStart - run.hapOffset,
       trimmedAfter: runEnd(run) - hapEnd,
     })

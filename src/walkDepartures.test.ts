@@ -51,11 +51,17 @@ const refStartOf = (nodes: Map<number, WalkNode>, id: number) => {
 }
 
 // A walk's run through the cut: `+3` steps forward through node 3, `-3`
-// against it, from `hapStart` on its contig
+// against it, from `hapStart` on its contig. R holds every node forward and
+// once unless `against` or `refStarts` say otherwise
 function walk(
   name: string,
   steps: string,
-  more: { hapStart?: number; abridged?: Abridged } = {},
+  more: {
+    hapStart?: number
+    abridged?: Abridged
+    against?: number[]
+    refStarts?: number[]
+  } = {},
 ): WalkRun {
   const nodes = graphNodes()
   const parsed = steps
@@ -70,8 +76,14 @@ function walk(
     pieceChunks: [0],
     ids: Int32Array.from(parsed, ([id]) => id),
     rev: Uint8Array.from(parsed, ([, rev]) => (rev ? 1 : 0)),
-    refStarts: Float64Array.from(parsed, ([id]) => refStartOf(nodes, id)),
-    against: Uint8Array.from(parsed, ([, rev]) => (rev ? 1 : 0)),
+    refStarts:
+      more.refStarts === undefined
+        ? Float64Array.from(parsed, ([id]) => refStartOf(nodes, id))
+        : Float64Array.from(more.refStarts),
+    against:
+      more.against === undefined
+        ? Uint8Array.from(parsed, ([, rev]) => (rev ? 1 : 0))
+        : Uint8Array.from(more.against),
     ...(more.abridged ? { abridged: more.abridged } : {}),
   }
 }
@@ -275,7 +287,7 @@ test("a departure across a contig's W lines counts the sequence the graph lacks 
   })
 })
 
-test('an abridged fragment is net between its handles, with the own steps beside it', () => {
+test('an abridged fragment is net between its handles, and the departures either side stay exact', () => {
   const abridged = { pieces: [1], steps: 900, bp: 1500, detail }
   const [a] = departuresOf(
     [
@@ -292,13 +304,15 @@ test('an abridged fragment is net between its handles, with the own steps beside
     haplotype: 'A#1',
     covered: [[0, 1900]],
     departures: [
+      { refStart: 100, refEnd: 100, altLength: 20, ...plain },
       {
         refStart: 100,
         refEnd: 1700,
-        altLength: 20 + 1500 + 20,
+        altLength: 1500,
         ...plain,
         abridged: true,
       },
+      { refStart: 1700, refEnd: 1700, altLength: 20, ...plain },
     ],
   })
 })
@@ -328,6 +342,67 @@ test('a departure within an abridged stretch joins its net', () => {
       },
     ],
   })
+})
+
+test('a walk along R through a node R holds reversed stays on R', () => {
+  expect(
+    departuresOf([walk('A#1#c', '-2 +3 +4', { against: [0, 0, 0] })]),
+  ).toEqual([{ haplotype: 'A#1', covered: [[100, 1700]], departures: [] }])
+  const [a] = departuresOf([walk('A#1#c', '+1 +50 -3', { against: [0, 0, 0] })])
+  expect(a).toEqual({
+    haplotype: 'A#1',
+    covered: [[0, 700]],
+    departures: [{ refStart: 100, refEnd: 600, altLength: 300, ...plain }],
+  })
+})
+
+test("a fragment's ends lie where their pass does, where R passes a node again", () => {
+  const [a] = departuresOf(
+    [walk('A#1#c', '+2 +4', { hapStart: 400, refStarts: [700, 1200] })],
+    [record('A#1#c', 100, 300, '+100', '+700')],
+  )
+  expect(a).toEqual({
+    haplotype: 'A#1',
+    covered: [[100, 2200]],
+    departures: [{ refStart: 100, refEnd: 700, altLength: 300, ...plain }],
+  })
+})
+
+test("abridged pieces with another chunk's piece between them count its bp in their net", () => {
+  const abridged = { pieces: [0, 2], steps: 3, bp: 1400, detail }
+  const [a] = departuresOf(
+    [
+      walk('A#1#c', '+1 +4', { abridged }),
+      walk('A#1#c', '+2 +3', { hapStart: 100 }),
+      walk('A#1#c', '+5 +6', { hapStart: 2000 }),
+    ],
+    [record('A#1#c', 1700, 300, '+1700', '+1700')],
+  )
+  expect(a).toEqual({
+    haplotype: 'A#1',
+    covered: [[0, 1900]],
+    departures: [
+      {
+        refStart: 0,
+        refEnd: 1700,
+        altLength: 2000,
+        ...plain,
+        abridged: true,
+      },
+    ],
+  })
+})
+
+test("a departure leaving abridged pieces' last step keeps its own bp whole", () => {
+  const abridged = { pieces: [0], steps: 2, bp: 600, detail }
+  const [a] = departuresOf(
+    [walk('A#1#c', '+1 +2', { abridged })],
+    [record('A#1#c', 600, 5020, '+600', '+50000', 5000)],
+  )
+  expect(a!.departures).toEqual([
+    { refStart: 0, refEnd: 600, altLength: 600, ...plain, abridged: true },
+    { refStart: 600, refEnd: 50000, altLength: 5020, ...plain },
+  ])
 })
 
 describe('a forms cut', () => {

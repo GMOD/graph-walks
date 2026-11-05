@@ -104,10 +104,6 @@ export function walkDepartures(
   { fragments, departures, nodes }: DepartureSource,
   refName: string,
 ) {
-  const refStart = (id: number) => {
-    const node = nodes.get(id)
-    return node?.rank === 0 && node.refName === refName ? node.start : NaN
-  }
   const length = (id: number) => {
     const node = nodes.get(id)
     return node ? node.end - node.start : 0
@@ -118,7 +114,7 @@ export function walkDepartures(
     byPath.set(name, [...(byPath.get(name) ?? []), item])
   }
   for (const f of fragments) {
-    add(f.name, fragmentItem(f, refStart, length))
+    add(f.name, fragmentItem(f, length))
   }
   for (const d of departures) {
     add(d.name, {
@@ -140,7 +136,7 @@ export function walkDepartures(
       h = { haplotype, covered: [], departures: [] }
       byHaplotype.set(haplotype, h)
     }
-    for (const chain of pathChains(items, refStart, length)) {
+    for (const chain of pathChains(items, length)) {
       readPath(chain, h)
     }
   }
@@ -152,18 +148,12 @@ export function walkDepartures(
   return out
 }
 
-function fragmentItem(
-  f: WalkFragment,
-  refStart: (id: number) => number,
-  length: (id: number) => number,
-): Item {
+function fragmentItem(f: WalkFragment, length: (id: number) => number): Item {
   const n = f.ids.length
-  const a = f.ids[0]!
-  const b = f.ids[n - 1]!
-  const sa = refStart(a)
-  const sb = refStart(b)
+  const sa = f.refStarts[0]!
+  const sb = f.refStarts[n - 1]!
   const lo = least(sa, sb)
-  const hi = most(sa + length(a), sb + length(b))
+  const hi = most(sa + length(f.ids[0]!), sb + length(f.ids[n - 1]!))
   return f.abridged
     ? { hap: [f.hapStart, f.hapEnd], lo, hi, bp: f.abridged.bp, fragment: f }
     : {
@@ -177,28 +167,30 @@ function fragmentItem(
 
 /**
  * A path's chains, each its events in the path's order: a fragment with the
- * departures leaving its last step and rejoining its first, fragments that
- * abut, and a departure touching no fragment on its own. What the read did
- * not see lies between chains, so each reads on its own, and R that two
- * chains reach has no call. Abridged fragments, each a net over the pieces
- * a writer moved out of a chunk, take in whatever of the path lies within
- * those pieces: the fragments of pieces in other chunks between them,
- * abridged fragments abutting them, and the departures whose both ends lie
- * in them, whose own steps the pieces hold and whose missing bp they do not.
- * A departure with one end in them keeps the bp of its own outside: those
- * the graph lacks and the steps the cut holds.
+ * departures leaving its last step, rejoining its first or lying inside it,
+ * fragments that abut, and a departure touching no fragment on its own. What
+ * the read did not see lies between chains, so each reads on its own, and R
+ * that two chains reach has no call. Abridged fragments, each a net over the
+ * pieces a writer moved out of a chunk, take in whatever of the path lies
+ * within those pieces: the fragments of pieces in other chunks between
+ * them, abridged fragments abutting them, and the departures whose both
+ * ends lie in them, whose own steps the pieces hold and whose missing bp
+ * they do not. A departure with one end in them keeps the bp of its own
+ * outside: those the graph lacks and the steps the cut holds.
  */
-function pathChains(
-  items: Item[],
-  refStart: (id: number) => number,
-  length: (id: number) => number,
-) {
+function pathChains(items: Item[], length: (id: number) => number) {
   const overlaps = (a: Item, b: Item) =>
     a.hap[0] < b.hap[1] && a.hap[1] > b.hap[0]
   const touches = (a: Item, b: Item) =>
     a.hap[0] <= b.hap[1] && a.hap[1] >= b.hap[0]
+  // An abridged row's bp count its moved pieces alone, so a group's contig
+  // extent grows by what it takes in, as the pieces of other chunks between
+  // the moved ones lie within it
   const extend = (g: Item, item: Item, bp: number) => {
-    g.hap = [Math.min(g.hap[0], item.hap[0]), Math.max(g.hap[1], item.hap[1])]
+    g.hap = [
+      Math.min(g.hap[0], item.hap[0]),
+      Math.max(g.hap[1] + bp, item.hap[1]),
+    ]
     g.lo = least(g.lo, item.lo)
     g.hi = most(g.hi, item.hi)
     g.bp += bp
@@ -207,10 +199,11 @@ function pathChains(
     'fragment' in item && item.fragment.abridged !== undefined
   let groups = items.filter(abridged).map(i => ({ ...i }))
   let rest = items.filter(i => !abridged(i))
-  // the group whose pieces hold the step at `hap` on the contig, or whose
-  // first or last step it is: own bp beside an abridged stretch join its net
+  // the group whose pieces hold the step at `hap` on the contig, past their
+  // first step and before their last: a departure leaving their last step
+  // or rejoining their first has its own bp outside them, and stays exact
   const holder = (hap: number) =>
-    groups.find(g => g.hap[0] <= hap && hap <= g.hap[1])
+    groups.find(g => g.hap[0] < hap && hap < g.hap[1])
   for (let changed = groups.length > 0; changed;) {
     const before = rest.length + groups.length
     rest = rest.filter(item => {
@@ -252,9 +245,13 @@ function pathChains(
       : item.hap
   const all = [...groups, ...rest]
   const parent = new Map(all.map(item => [item, item]))
-  const find = (item: Item): Item => {
-    const p = parent.get(item) ?? item
-    return p === item ? item : find(p)
+  const find = (item: Item) => {
+    let root = item
+    for (let p = parent.get(root); p !== undefined && p !== root;) {
+      root = p
+      p = parent.get(root)
+    }
+    return root
   }
   const union = (a: Item, b: Item) => parent.set(find(a), find(b))
   // items meet where one's contig stretch touches another's: a departure's
@@ -274,15 +271,12 @@ function pathChains(
     const root = find(item)
     chains.set(root, [...(chains.get(root) ?? []), item])
   }
-  return [...chains.values()].map(chain =>
-    chainEvents(chain, holder, refStart, length),
-  )
+  return [...chains.values()].map(chain => chainEvents(chain, holder, length))
 }
 
 function chainEvents(
   items: Item[],
   holder: (hap: number) => Item | undefined,
-  refStart: (id: number) => number,
   length: (id: number) => number,
 ) {
   const anchors: Anchor[] = []
@@ -302,16 +296,16 @@ function chainEvents(
         continue
       }
       const n = f.ids.length
-      const a = f.ids[0]!
-      const b = f.ids[n - 1]!
-      const ra = f.rev[0] === 1
-      const rb = f.rev[n - 1] === 1
-      if (onR(refStart(a))) {
-        const pos = ra ? refStart(a) + length(a) : refStart(a)
+      const sa = f.refStarts[0]!
+      const sb = f.refStarts[n - 1]!
+      const ra = f.against[0] === 1
+      const rb = f.against[n - 1] === 1
+      if (onR(sa)) {
+        const pos = ra ? sa + length(f.ids[0]!) : sa
         anchors.push({ hap: f.hapStart, order: 1, pos, reversed: ra })
       }
-      if (onR(refStart(b))) {
-        const pos = rb ? refStart(b) : refStart(b) + length(b)
+      if (onR(sb)) {
+        const pos = rb ? sb : sb + length(f.ids[n - 1]!)
         anchors.push({ hap: f.hapEnd, order: 0, pos, reversed: rb, exit: true })
       }
     } else {
@@ -375,7 +369,9 @@ function chainEvents(
       }
       cur ??= { pos: a.pos, reversed: a.reversed }
     } else if (a.exit) {
-      end = a.pos
+      if (cur) {
+        end = a.pos
+      }
     } else {
       cur ??= { pos: a.pos, reversed: a.reversed }
       end = a.pos
@@ -434,6 +430,7 @@ function readPath(events: Event[], h: HaplotypeDepartures) {
           repeatedBp: 0,
           abridged: true,
         })
+        reach = Math.max(reach, abridgedEnd)
         abridgedEnd = NaN
       } else if (start !== prevEnd || alt > 0) {
         const repeated = start < prevEnd ? prevEnd - start : 0
