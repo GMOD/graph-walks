@@ -8,7 +8,12 @@ import {
   pieceLinks,
   referenceNodes,
 } from './walkChunk.ts'
-import { ATTACH_BP, parseDepartureRow, squeezer } from './walkDeparture.ts'
+import {
+  ATTACH_BP,
+  departureOwnTiles,
+  parseDepartureRow,
+  squeezer,
+} from './walkDeparture.ts'
 import { WalkFile, WalkFormatError, once, raceAbort } from './walkFile.ts'
 import {
   WalkGraph,
@@ -27,12 +32,7 @@ import {
 import type { ChunkRef, DecodedChunk } from './walkChunk.ts'
 import type { WalkDeparture } from './walkDeparture.ts'
 import type { WalkFilehandle, WalkUnit } from './walkFile.ts'
-import type {
-  BudgetNames,
-  Unattached,
-  WalkHeader,
-  WalkRow,
-} from './walkRows.ts'
+import type { BudgetNames, WalkHeader, WalkRow } from './walkRows.ts'
 
 // A window reads whole tiles and keeps the steps on it, so a narrow window
 // reads several times what it keeps: 464 haplotypes across the 1.5 kb ABCA7
@@ -169,11 +169,10 @@ const drawnSpan = (
   end: region.end + context,
 })
 
-// The tiles an attach fetch reads for a record whose leave piece the cut
-// lacks: those whose extent holds its leave base
-export function attachTiles(units: WalkUnit[], { base }: Unattached) {
+// The tiles an attach fetch reads for a record: those its `ownTiles` names
+export function attachTiles(units: WalkUnit[], ownTiles: number[]) {
   return units.filter(
-    u => u.kind === 'tile' && u.length > 0 && u.start <= base && base < u.end,
+    u => u.kind === 'tile' && u.length > 0 && ownTiles.includes(Number(u.name)),
   )
 }
 
@@ -181,13 +180,14 @@ export function attachTiles(units: WalkUnit[], { base }: Unattached) {
 const directoryOf = (url: string) => url.replace(/(?=$|[?#])/, '.idx')
 
 // The records of departure lines over `span`, each line once, of the walks
-// kept
+// kept, with the tiles holding each one's own steps
 function departureRecords(
   lines: string[],
   span: { start: number; end: number },
   keep: ((name: string) => boolean) | undefined,
 ) {
   const records: WalkDeparture[] = []
+  const ownTiles = new Map<WalkDeparture, number[]>()
   for (const line of new Set(lines)) {
     const cols = line.split('\t')
     if (
@@ -198,10 +198,11 @@ function departureRecords(
       const record = parseDepartureRow(cols)
       if (keep === undefined || keep(record.name)) {
         records.push(record)
+        ownTiles.set(record, departureOwnTiles(cols))
       }
     }
   }
-  return records
+  return { records, ownTiles }
 }
 
 /**
@@ -457,7 +458,8 @@ export class WalkReader {
     }
     // a tile is decoded into its rows, nodes and the links between pieces,
     // for the names `only` takes that no earlier decode of it took, and a cut
-    // over its node limit stops there
+    // over its node limit stops there. An attach fetch's `only` reads its
+    // walks' abridged pieces from their detail units, for their own steps
     const decode = (
       unit: WalkUnit,
       lines: string[],
@@ -475,7 +477,7 @@ export class WalkReader {
       )
       let ref: ChunkRef | undefined
       for (const row of tileCut.rows) {
-        if (row.abridged && expand?.(row.name)) {
+        if (row.abridged && (only !== undefined || expand?.(row.name))) {
           const { name } = row.abridged.detail
           if (!detailsRead.has(name)) {
             detailsRead.add(name)
@@ -541,7 +543,7 @@ export class WalkReader {
       tiles.forEach((unit, k) => {
         decode(unit, read[k]!)
       })
-      const records = departureRecords(
+      const { records, ownTiles } = departureRecords(
         read.slice(tiles.length).flat(),
         drawn,
         keep,
@@ -570,9 +572,9 @@ export class WalkReader {
       // the tiles holding the own steps of records the read lacks, each
       // fetched once for the records wanting it
       const fetches = new Map<WalkUnit, Set<string>>()
-      for (const record of cut.unattached) {
-        const { name } = record.departure
-        for (const unit of attachTiles(units, record)) {
+      for (const { departure } of cut.unattached) {
+        const { name } = departure
+        for (const unit of attachTiles(units, ownTiles.get(departure) ?? [])) {
           if (!decodedFor(unit, name)) {
             fetches.set(unit, (fetches.get(unit) ?? new Set()).add(name))
           }

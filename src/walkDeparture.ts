@@ -171,6 +171,22 @@ export function parseDepartureRow(cols: string[], from = 3): WalkDeparture {
   }
 }
 
+// A record row's `ownTiles`, after `rejoinPasses`: the nominal starts of
+// the tiles holding its own steps, `.` for none
+export function departureOwnTiles(cols: string[], from = 3) {
+  const field = cols[from + 11]
+  const starts = field === '.' || field === undefined ? [] : field.split(',')
+  return starts.map(start => {
+    const n = Number(start)
+    if (start === '' || !Number.isSafeInteger(n) || n < 0) {
+      throw new WalkRowError(
+        `a departure record's ownTiles is not a list of tile starts: ${cols.join('\t')}`,
+      )
+    }
+    return n
+  })
+}
+
 // Every record's rows repeat the same columns after the block, so this keys
 // a row's record
 export function departureRowKey(cols: string[], from = 3) {

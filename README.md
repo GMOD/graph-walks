@@ -86,8 +86,9 @@ gzip units with a unit table per sequence and a directory, not a Tabix file.
 - A cut reads the tiles and departure blocks overlapping the window and its
   context, by extent, and nothing before them: no chunk before the window, no
   `maxnode` lookback, no `#long` widening, no reach on the departure read, no
-  `~departure` or `~cs` sequences. An attach fetch reads the tile whose extent
-  holds the leave base. Units whose bytes touch come in one range request
+  `~departure` or `~cs` sequences. An attach fetch reads the tiles a record's
+  `ownTiles` names, and an abridged piece there from its detail unit. Units
+  whose bytes touch come in one range request
 - Since a cut reads less, a fragment's `trimmedBefore` and `trimmedAfter`, the
   bp of its walk the cut read and kept out, can be smaller than graph-walks 5
   gave for the same window
@@ -248,9 +249,10 @@ for (const d of departures) {
   counts the nodes passed more than once, 0 where every departure in the file is
   a fact of the graph
 - A departure of at most `attachBp` of own sequence carries its own steps in
-  `steps`, from the pieces the cut read; for a record whose leave piece lies
-  outside the read, the cut fetches the tile whose extent holds the leave base,
-  at most `attachFetches` tiles a cut. `fromSteps` is true for a departure
+  `steps`, from the pieces the cut read; for a record whose leave or rejoin
+  piece lies outside the read, the cut fetches the tiles its `ownTiles` column
+  names that it has not read, reading an abridged piece there from its detail
+  unit, at most `attachFetches` tiles a cut. `fromSteps` is true for a departure
   computed from a piece's steps
 - Those steps' nodes are kept, so the cut draws a short insertion or replacement
   at the window's edge whole, and counts them against `stepBudget`
@@ -451,10 +453,12 @@ const gfa = await rgfaCut(
   each line once
 - A departure inside one piece comes from the piece's steps, and one between
   pieces from its record, so each comes back once. A departure's own steps are
-  attached where its own bp are under `attachBp`, fetching the tile whose extent
-  holds its leave base when the read lacks it, at most `attachFetches` tiles in
-  one more read; a tile fetched again decodes only the walks it was not decoded
-  for. Expanding an abridged piece reads its `detail` unit
+  attached where its own bp are under `attachBp`, from its leave piece's steps
+  after the leave and its rejoin piece's before the rejoin. Where the read lacks
+  either piece, the cut fetches the tiles the record's `ownTiles` names, at most
+  `attachFetches` tiles in one more read; a tile fetched again decodes only the
+  walks it was not decoded for. Expanding an abridged piece reads its `detail`
+  unit
 
 ## License
 

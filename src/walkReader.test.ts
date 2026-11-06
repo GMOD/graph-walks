@@ -1297,14 +1297,17 @@ test("a sequence's length, the bytes a cut reads and the reference nodes over a 
 //   W GRCh38 0 chr1 0  100 >1>2>3>4>5>6>7>8>9>10
 //   W HG002  1 chr1 0  20  >8>9
 //   W HG002  1 chr1 25 75  >20>3>4>5>6
-// An attach fetch reads the leave tile, which lacks it, until the file names
-// the tile holding a record's own steps
-test.fails(
-  'a jump back whose own steps lie in the rejoin piece gets them attached',
-  async () => {
+// Its record's ownTiles names tile 20, so a cut lacking both pieces fetches
+// it, and one holding the leave piece alone reports the record unattached
+test.each([
+  { start: 50, end: 60 },
+  { start: 80, end: 90 },
+])(
+  'a jump back whose own steps lie in the rejoin piece gets them attached, cut $start-$end',
+  async ({ start, end }) => {
     const { departures } = await reader('jumpback.GRCh38').cut(
       'GRCh38#0#chr1',
-      { start: 50, end: 60 },
+      { start, end },
       { context: 0 },
     )
     expect(departures.map(departure)).toEqual([
@@ -1324,4 +1327,20 @@ test('a file past 4 GiB is read at its exact offsets', async () => {
   expect(await copyJumpCut(20, 36, false, walks)).toEqual(
     await copyJumpCut(20, 36, false),
   )
+})
+
+// ownends.R abridges every walk: X#1 leaves R after 2, at 12, takes 11, 12
+// and 13 of its own and rejoins at 5, at 24, and both its pieces are
+// abridged
+//   W R 0 c >1>2>3>4>5>6
+//   W X 1 c >1>2>11>12>13>5>6
+test("an attach fetch reads an abridged piece's detail unit for its own steps", async () => {
+  const { departures } = await reader('ownends.R').cut(
+    'R#0#c',
+    { start: 24, end: 30 },
+    { context: 0, keep: name => name === 'X#1#c' || name === 'R#0#c' },
+  )
+  expect(departures.map(departure)).toEqual([
+    ['X#1#c', 12, 30, 0, '12+', '24+', 'forward', 'record', '>11>12>13'],
+  ])
 })

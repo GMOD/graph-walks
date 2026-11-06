@@ -553,7 +553,7 @@ test('a departure between the pieces of one run comes from the records, not the 
   expect(unattached).toEqual([])
 })
 
-test("a record's own steps come from its leave piece, and a leave piece the cut lacks is asked for", () => {
+test("a record's own steps come from its leave and rejoin pieces, and a record lacking either is asked for", () => {
   const g = graph()
   const record = (hapStart: number): WalkDeparture => ({
     name: 'HG002#1#chr1',
@@ -582,7 +582,14 @@ test("a record's own steps come from its leave piece, and a leave piece the cut 
   expect(lacking.departures.map(departure)).toEqual([
     ['HG002#1#chr1', 200, 100, '200+', '300+', 'record', undefined],
   ])
-  expect(lacking.unattached).toEqual([{ departure: record(200), base: 199 }])
+  expect(lacking.unattached).toEqual([{ departure: record(200) }])
+  const leaveOnly = walkCut(
+    joinPieces([run(g, 'HG002#1#chr1', 0, [1, 2])]),
+    g.nodes,
+    'GRCh38#0#chr1',
+    [record(200)],
+  )
+  expect(leaveOnly.unattached).toEqual([{ departure: record(200) }])
   const over = walkCut(
     joinPieces([run(g, 'HG002#1#chr1', 0, [1, 2, 5]), rejoinOnly]),
     g.nodes,

@@ -268,12 +268,10 @@ export interface WalkCutOptions {
   squeeze?: (bp: number) => number
 }
 
-// A record whose own steps the cut should attach and does not hold: its leave
-// piece is in a tile whose extent holds the base of the reference beside its
-// leave breakpoint
+// A record whose own steps the cut should attach and may not hold: the cut
+// lacks its leave piece or its rejoin piece, either of which can hold them
 export interface Unattached {
   departure: WalkDeparture
-  base: number
 }
 
 /**
@@ -653,11 +651,8 @@ export function walkCut(
           kept.add(id)
         }
       }
-      if (!leave) {
-        unattached.push({
-          departure: d,
-          base: d.leaveReversed ? d.leavePos : Math.max(0, d.leavePos - 1),
-        })
+      if (!leave || !rejoin) {
+        unattached.push({ departure: d })
       }
     }
     if (overExtent(d) || touchesFragment(d)) {
