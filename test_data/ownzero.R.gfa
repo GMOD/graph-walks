@@ -1,0 +1,8 @@
+H	VN:Z:1.1
+S	1	AAAAAA
+S	2	AAAAAA
+S	3	AAAAAA
+S	4	AAAAAA
+S	9	*	LN:i:0
+W	R	0	chr	0	24	>1>2>3>4
+W	G	1	g	0	30	>1>2>3>4>9>1

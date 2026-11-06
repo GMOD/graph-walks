@@ -32,3 +32,4 @@ build contigends contigends.R.gfa --refs R --tile 10 --abridge-bytes 1
 build hprc-chrM hprc-chrM.GRCh38.gfa --refs GRCh38 --sequences
 build jumpback jumpback.GRCh38.gfa --refs GRCh38 --tile 20
 build loop loop.R.gfa --refs R --tile 10
+build ownzero ownzero.R.gfa --refs R --tile 10

@@ -1436,3 +1436,22 @@ test.each([
     ])
   },
 )
+
+// Four 6 bp reference nodes in 10 bp tiles (ownzero.R.gfa); G jumps back
+// from 4 to 1 over node 9 of 0 bp, an own step of a record with no own bp,
+// filed in the leave's tile 10:
+//   W R 0 chr 0 24 >1>2>3>4
+//   W G 1 g 0 30 >1>2>3>4>9>1
+test.each([
+  { start: 0, end: 6 },
+  { start: 0, end: 24 },
+])('a 0 bp own step is attached, cut $start-$end', async ({ start, end }) => {
+  const { departures } = await reader('ownzero.R').cut(
+    'R#0#chr',
+    { start, end },
+    { context: 0 },
+  )
+  expect(departures.map(departure)).toEqual([
+    ['G#1#g', 24, 0, 0, '24+', '0+', 'back', 'record', '>9'],
+  ])
+})

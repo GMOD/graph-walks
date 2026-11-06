@@ -644,7 +644,7 @@ export function walkCut(
   }
   const unattached: Unattached[] = []
   for (const d of records) {
-    if (d.ownBp > d.missingBp && d.ownBp <= attachBp) {
+    if (d.ownBp <= attachBp) {
       const ids: number[] = []
       const rev: number[] = []
       const leave = leaves.get(
