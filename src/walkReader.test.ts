@@ -1331,16 +1331,27 @@ test('a file past 4 GiB is read at its exact offsets', async () => {
 
 // ownends.R abridges every walk: X#1 leaves R after 2, at 12, takes 11, 12
 // and 13 of its own and rejoins at 5, at 24, and both its pieces are
-// abridged
+// abridged. Reading their detail units on every attach fetch cost pggb
+// chrY's 1 kb windows 27 MB at p90, so only an expanded walk reads them
 //   W R 0 c >1>2>3>4>5>6
 //   W X 1 c >1>2>11>12>13>5>6
-test("an attach fetch reads an abridged piece's detail unit for its own steps", async () => {
-  const { departures } = await reader('ownends.R').cut(
-    'R#0#c',
-    { start: 24, end: 30 },
-    { context: 0, keep: name => name === 'X#1#c' || name === 'R#0#c' },
-  )
-  expect(departures.map(departure)).toEqual([
-    ['X#1#c', 12, 30, 0, '12+', '24+', 'forward', 'record', '>11>12>13'],
-  ])
-})
+test.each([
+  { expand: undefined, steps: undefined },
+  { expand: (name: string) => name === 'X#1#c', steps: '>11>12>13' },
+])(
+  "an attach fetch reads an abridged piece's own steps where the cut expands the walk: $steps",
+  async ({ expand, steps }) => {
+    const { departures } = await reader('ownends.R').cut(
+      'R#0#c',
+      { start: 24, end: 30 },
+      {
+        context: 0,
+        keep: name => name === 'X#1#c' || name === 'R#0#c',
+        expand,
+      },
+    )
+    expect(departures.map(departure)).toEqual([
+      ['X#1#c', 12, 30, 0, '12+', '24+', 'forward', 'record', steps],
+    ])
+  },
+)

@@ -458,8 +458,7 @@ export class WalkReader {
     }
     // a tile is decoded into its rows, nodes and the links between pieces,
     // for the names `only` takes that no earlier decode of it took, and a cut
-    // over its node limit stops there. An attach fetch's `only` reads its
-    // walks' abridged pieces from their detail units, for their own steps
+    // over its node limit stops there
     const decode = (
       unit: WalkUnit,
       lines: string[],
@@ -477,7 +476,7 @@ export class WalkReader {
       )
       let ref: ChunkRef | undefined
       for (const row of tileCut.rows) {
-        if (row.abridged && (only !== undefined || expand?.(row.name))) {
+        if (row.abridged && expand?.(row.name)) {
           const { name } = row.abridged.detail
           if (!detailsRead.has(name)) {
             detailsRead.add(name)

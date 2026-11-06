@@ -87,8 +87,7 @@ gzip units with a unit table per sequence and a directory, not a Tabix file.
   context, by extent, and nothing before them: no chunk before the window, no
   `maxnode` lookback, no `#long` widening, no reach on the departure read, no
   `~departure` or `~cs` sequences. An attach fetch reads the tiles a record's
-  `ownTiles` names, and an abridged piece there from its detail unit. Units
-  whose bytes touch come in one range request
+  `ownTiles` names. Units whose bytes touch come in one range request
 - Since a cut reads less, a fragment's `trimmedBefore` and `trimmedAfter`, the
   bp of its walk the cut read and kept out, can be smaller than graph-walks 5
   gave for the same window
@@ -251,9 +250,9 @@ for (const d of departures) {
 - A departure of at most `attachBp` of own sequence carries its own steps in
   `steps`, from the pieces the cut read; for a record whose leave or rejoin
   piece lies outside the read, the cut fetches the tiles its `ownTiles` column
-  names that it has not read, reading an abridged piece there from its detail
-  unit, at most `attachFetches` tiles a cut. `fromSteps` is true for a departure
-  computed from a piece's steps
+  names that it has not read, at most `attachFetches` tiles a cut. Own steps in
+  an abridged piece come only for a walk `expand` names, which reads its detail
+  unit `fromSteps` is true for a departure computed from a piece's steps
 - Those steps' nodes are kept, so the cut draws a short insertion or replacement
   at the window's edge whole, and counts them against `stepBudget`
 - `graph.tables(kept, fragments, departures)` keeps them as the `departures`
