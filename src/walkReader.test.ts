@@ -2,7 +2,7 @@ import { BlobFile, LocalFile } from 'generic-filehandle2'
 
 import { bgzf, graphTablesGFA, walkFileOf } from './testing.ts'
 import { RegionTooLargeError, panSNHaplotype } from './util.ts'
-import { WalkRowError } from './walkChunk.ts'
+import { WalkRowError, canonicalLink } from './walkChunk.ts'
 import { departureKind, placementChoice } from './walkDeparture.ts'
 import { WalkFormatError } from './walkFile.ts'
 import {
@@ -1510,4 +1510,33 @@ test('referenceNodes gives every pass of the reference over the region', async (
     '3@24-30',
     '4@30-45',
   ])
+})
+
+const linkLine = ([a, b]: [number, number]) =>
+  `${a >> 1} ${a & 1 ? '-' : '+'} ${b >> 1} ${b & 1 ? '-' : '+'}`
+
+test.each([
+  { a: 14, b: 6, line: '7 + 3 +' },
+  { a: 7, b: 15, line: '7 + 3 +' },
+  { a: 16, b: 12, line: '8 + 6 +' },
+  { a: 13, b: 17, line: '8 + 6 +' },
+  { a: 14, b: 7, line: '3 + 7 -' },
+  { a: 6, b: 15, line: '3 + 7 -' },
+  { a: 15, b: 6, line: '3 - 7 +' },
+])(
+  'a link is written the way round with more + ends, the smaller first on a tie: $line',
+  ({ a, b, line }) => {
+    expect(linkLine(canonicalLink(a, b))).toBe(line)
+  },
+)
+
+test("a cut's links run the way a walk along the reference takes them", async () => {
+  const { graph, kept, fragments, departures } = await reader(
+    'excursion.R',
+  ).cut('R#0#chr', { start: 0, end: 8 }, { context: 0 })
+  const links = graphTablesGFA(graph.tables(kept, fragments, departures))
+    .split('\n')
+    .filter(line => line.startsWith('L\t'))
+  expect(links).toContain('L\t11\t+\t2\t+\t0M')
+  expect(links).not.toContain('L\t2\t-\t11\t-\t0M')
 })

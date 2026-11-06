@@ -86,10 +86,16 @@ function passCounts(cols: string[], n: number) {
   return counts
 }
 
-// A link the way round the converter writes it, so a link and its reverse
-// are one: the smaller of a and the flipped b first
+const forwardEnds = (a: number, b: number) => 2 - (a & 1) - (b & 1)
+
+// A link one way round, so a link and its reverse are one: the way with more
+// forward ends, as a walk along the reference takes it, else the smaller of a
+// and the flipped b first
 export function canonicalLink(a: number, b: number): [number, number] {
-  return a > otherStrand(b) ? [otherStrand(b), otherStrand(a)] : [a, b]
+  const forward = forwardEnds(a, b)
+  return forward > 1 || (forward === 1 && a <= otherStrand(b))
+    ? [a, b]
+    : [otherStrand(b), otherStrand(a)]
 }
 
 // A handle token and the occurrence in R its `@k` names, NONE for the default
