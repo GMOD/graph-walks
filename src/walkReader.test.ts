@@ -1380,3 +1380,59 @@ test("a cut's drawn stretch takes every pass over the window, not one per node",
     ['F#1#f', 24, 2, 0, '24+', '24+', 'adjacent', 'record', '>5'],
   ])
 })
+
+// Twelve 4 bp reference nodes in 16 bp tiles. H's second piece goes to tile
+// 32 and its record back to 20 names that tile; G's record names tile 0 and
+// comes first in the block:
+//   W R 0 chr >1>2>...>12
+//   W H 1 h   >5>6>7>11>13>12>14>6>7>8   13, 14 own; pieces in tiles 16, 32, 16
+//   W G 1 g   >1>15>6>7>8                15 own; pieces in tiles 0, 16
+const farAttach = [
+  '#walks format:i:7 tile:i:16',
+  '#reference R',
+  '#haplotype G#1',
+  '#haplotype H#1',
+  'R#0#chr 0 ref R#0#chr 0 0 0 4 2,2,2,2 4,4,4,4 .',
+  'R#0#chr 0 nodes 15 4',
+  'R#0#chr 0 route 2 28 .',
+  'R#0#chr 0 walk G#1#g 0 0 0 2 2 0',
+  'R#0#chr 16 ref R#0#chr 0 16 1 4 10,2,2,2 4,4,4,4 .',
+  'R#0#chr 16 walk G#1#g 0 8 1 3 12 .',
+  'R#0#chr 16 walk H#1#h 0 0 0 3 10 .',
+  'R#0#chr 16 walk H#1#h 0 28 2 3 12 .',
+  'R#0#chr 32 ref R#0#chr 0 32 2 4 18,2,2,2 4,4,4,4 .',
+  'R#0#chr 32 nodes 13,1 4,4',
+  'R#0#chr 32 route 22 4 -2',
+  'R#0#chr 32 route 0 4 .',
+  'R#0#chr 32 walk H#1#h 0 12 1 4 22 0,2',
+  'R#0#chr 0 24 departure G#1#g 4 4 0 4 + 1 20 + 1 0',
+  'R#0#chr 20 48 departure H#1#h 24 4 0 48 + 1 20 + 1 32',
+  'R#0#chr 24 44 departure H#1#h 12 0 0 28 + 1 40 + 1 .',
+]
+
+test.each([
+  { opts: {}, steps: '>14' },
+  { opts: { attachFetches: 0 }, steps: undefined },
+  { opts: { attachFetches: 1 }, steps: undefined },
+  {
+    opts: { attachFetches: 1, keep: (name: string) => name !== 'G#1#g' },
+    steps: '>14',
+  },
+])(
+  'a tile fetched to attach gives its record the own steps and nothing else: $opts',
+  async ({ opts, steps }) => {
+    const { fragments, departures } = await inline(farAttach).cut(
+      'R#0#chr',
+      { start: 20, end: 28 },
+      { context: 0, ...opts },
+    )
+    expect(fragments.filter(f => f.name === 'H#1#h').map(fragment)).toEqual([
+      ['H#1#h', 4, 12, '>6>7', 4, 0],
+      ['H#1#h', 28, 36, '>6>7', 0, 4],
+    ])
+    expect(departures.filter(d => d.name === 'H#1#h').map(departure)).toEqual([
+      ['H#1#h', 12, 0, 0, '28+', '40+', 'forward', 'record', undefined],
+      ['H#1#h', 24, 4, 0, '48+', '20+', 'back', 'record', steps],
+    ])
+  },
+)

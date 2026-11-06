@@ -269,6 +269,9 @@ export interface WalkCutOptions {
   // the window and its context: every pass of a run's step over it widens
   // the drawn stretch to the step's node
   drawn?: { start: number; end: number }
+  // runs of tiles read only for records' own steps, which give those steps
+  // and nothing else
+  attach?: WalkRun[]
 }
 
 // A record whose own steps the cut should attach and may not hold: the cut
@@ -309,6 +312,7 @@ export function walkCut(
     attachBp = ATTACH_BP,
     squeeze = (bp: number) => bp,
     drawn,
+    attach = [],
   }: WalkCutOptions = {},
 ) {
   // the window and its context, as the reference nodes on it span them
@@ -596,7 +600,7 @@ export function walkCut(
   // where the piece starts
   const leaves = new Map<string, [WalkRun, number, number]>()
   const rejoins = new Map<string, [WalkRun, number, number]>()
-  for (const run of runs) {
+  for (const run of [...runs, ...attach]) {
     if (run.abridged) {
       continue
     }

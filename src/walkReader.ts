@@ -400,6 +400,9 @@ export class WalkReader {
     signal?.throwIfAborted()
     signal?.addEventListener('abort', stop, { once: true })
     const rows: WalkRow[] = []
+    // the rows of tiles fetched to attach, which give records their own steps
+    // and nothing else
+    const attachRows: WalkRow[] = []
     const graph = new WalkGraph({
       refName,
       start: region.start,
@@ -423,8 +426,9 @@ export class WalkReader {
       units.filter(u => u.kind === 'detail').map(u => [u.name, u]),
     )
     // the detail records of the expanded walks, each once, with the R of
-    // their tile; a path's abridged pieces in a tile share one
-    let details: { ref: ChunkRef; row: WalkRow }[] = []
+    // their tile and the rows they join; a path's abridged pieces in a tile
+    // share one
+    let details: { ref: ChunkRef; row: WalkRow; into: WalkRow[] }[] = []
     const detailsRead = new Set<string>()
     const place = (tileCut: DecodedChunk, readTo: number) => {
       for (const [id, node] of tileCut.nodes) {
@@ -456,12 +460,13 @@ export class WalkReader {
         }
       }
     }
-    // a tile is decoded into its rows, nodes and the links between pieces,
-    // for the names `only` takes that no earlier decode of it took, and a cut
-    // over its node limit stops there
+    // a tile is decoded into `into`, with its nodes and the links between
+    // pieces, for the names `only` takes that no earlier decode of it took,
+    // and a cut over its node limit stops there
     const decode = (
       unit: WalkUnit,
       lines: string[],
+      into: WalkRow[],
       only?: (name: string) => boolean,
     ) => {
       const wanted = only ?? keep ?? (() => true)
@@ -481,10 +486,10 @@ export class WalkReader {
           if (!detailsRead.has(name)) {
             detailsRead.add(name)
             ref ??= chunkRef(tileRows)
-            details.push({ ref, row })
+            details.push({ ref, row, into })
           }
         } else {
-          rows.push(row)
+          into.push(row)
         }
       }
       place(tileCut, unit.end)
@@ -501,7 +506,7 @@ export class WalkReader {
       return lines.map(line => line.split('\t'))
     }
     const decodeDetail = (
-      { ref, row }: { ref: ChunkRef; row: WalkRow },
+      { ref, row, into }: { ref: ChunkRef; row: WalkRow; into: WalkRow[] },
       held: string[][],
     ) => {
       const tileCut = decodeChunk(
@@ -513,7 +518,7 @@ export class WalkReader {
       )
       for (const decodedRow of tileCut.rows) {
         if (decodedRow.name === row.name) {
-          rows.push(decodedRow)
+          into.push(decodedRow)
         }
       }
       place(tileCut, row.chunkStart + tile)
@@ -540,7 +545,7 @@ export class WalkReader {
     try {
       const read = await this.file.read([...tiles, ...blocks], reads.signal)
       tiles.forEach((unit, k) => {
-        decode(unit, read[k]!)
+        decode(unit, read[k]!, rows)
       })
       const { records, ownTiles } = departureRecords(
         read.slice(tiles.length).flat(),
@@ -567,6 +572,7 @@ export class WalkReader {
           attachBp,
           squeeze: squeezer(header.holes, refName),
           drawn: bounds,
+          attach: joinPieces(attachRows),
         })
       cut = cutRows()
       // the tiles holding the own steps of records the read lacks, each
@@ -587,7 +593,7 @@ export class WalkReader {
           reads.signal,
         )
         wanted.forEach(([unit, names], k) => {
-          decode(unit, fetched[k]!, name => names.has(name))
+          decode(unit, fetched[k]!, attachRows, name => names.has(name))
         })
         await finish()
         cut = cutRows()
