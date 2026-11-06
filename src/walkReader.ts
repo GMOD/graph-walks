@@ -566,6 +566,7 @@ export class WalkReader {
           context,
           attachBp,
           squeeze: squeezer(header.holes, refName),
+          drawn: bounds,
         })
       cut = cutRows()
       // the tiles holding the own steps of records the read lacks, each

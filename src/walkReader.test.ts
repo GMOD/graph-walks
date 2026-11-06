@@ -1355,3 +1355,27 @@ test.each([
     ])
   },
 )
+
+// The reference passes 2 and 3 twice, 6 bp nodes in 10 bp tiles
+// (loop.R.gfa): 2 at 6-12 and 18-24, 3 at 12-18 and 24-30
+//   W R 0 chr >1>2>3>2>3>4
+//   W A 1 a   >1>2>3>2>3>2>3>4
+//   W F 1 f   >1>2>3>2>5>3>4   5 between the second passes of 2 and 3
+test("a cut's drawn stretch takes every pass over the window, not one per node", async () => {
+  const { fragments, departures } = await reader('loop.R').cut(
+    'R#0#chr',
+    { start: 8, end: 20 },
+    { context: 0 },
+  )
+  expect(
+    fragments
+      .filter(f => f.name === 'R#0#chr' || f.name === 'F#1#f')
+      .map(f => [f.name, f.hapStart, f.hapEnd, [...f.refStarts].join(',')]),
+  ).toEqual([
+    ['R#0#chr', 6, 24, '6,12,18'],
+    ['F#1#f', 6, 24, '6,12,18'],
+  ])
+  expect(departures.filter(d => d.name === 'F#1#f').map(departure)).toEqual([
+    ['F#1#f', 24, 2, 0, '24+', '24+', 'adjacent', 'record', '>5'],
+  ])
+})

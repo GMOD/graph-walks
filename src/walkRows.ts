@@ -266,6 +266,9 @@ export interface WalkCutOptions {
   attachBp?: number
   // a position with the reference's holes before it removed
   squeeze?: (bp: number) => number
+  // the window and its context: every pass of a run's step over it widens
+  // the drawn stretch to the step's node
+  drawn?: { start: number; end: number }
 }
 
 // A record whose own steps the cut should attach and may not hold: the cut
@@ -305,6 +308,7 @@ export function walkCut(
     context = 0,
     attachBp = ATTACH_BP,
     squeeze = (bp: number) => bp,
+    drawn,
   }: WalkCutOptions = {},
 ) {
   // the window and its context, as the reference nodes on it span them
@@ -319,6 +323,20 @@ export function walkCut(
   const length = (id: number) => {
     const node = nodes.get(id)
     return node === undefined ? 0 : node.end - node.start
+  }
+  // a node the reference passes twice is held at one pass, so the other
+  // passes come from the steps placed on them
+  if (drawn) {
+    for (const run of runs) {
+      for (let i = 0; i < run.ids.length; i++) {
+        const start = run.refStarts[i]!
+        const end = start + length(run.ids[i]!)
+        if (start < drawn.end && end > drawn.start) {
+          windowStart = Math.min(windowStart, start)
+          windowEnd = Math.max(windowEnd, end)
+        }
+      }
+    }
   }
   const passesOf = (id: number) => nodes.get(id)?.passes ?? 0
   const onR = (run: WalkRun, i: number) => !Number.isNaN(run.refStarts[i])
