@@ -28,8 +28,8 @@ export class WalkFormatError extends Error {
 /**
  * One unit of a sequence's table: `start end` is a tile's true extent, a
  * departure block's span, or a detail record's pieces' span on the
- * reference; `name` a tile's nominal start, a block's size, or a detail's
- * `tile:detail`; `offset length` its compressed bytes in the data file
+ * reference; `name` a tile's nominal start, a detail's `tile:detail`, or `.`
+ * for a block; `offset length` its compressed bytes in the data file
  */
 export interface WalkUnit {
   refName: string

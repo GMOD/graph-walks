@@ -27,7 +27,8 @@ function reader(name: string) {
 }
 
 // The units of `name`'s sequence each read in `run` fetches, as
-// `kind name`, and how many reads it makes
+// `kind name`, or `departures start` for a departure block, named `.`, and
+// how many reads it makes
 async function unitsRead(
   name: string,
   refName: string,
@@ -42,7 +43,7 @@ async function unitsRead(
     return read.mock.calls.map(([length, position = 0]) =>
       units
         .filter(u => u.offset >= position && u.offset < position + length)
-        .map(u => `${u.kind} ${u.name}`),
+        .map(u => `${u.kind} ${u.kind === 'departures' ? u.start : u.name}`),
     )
   } finally {
     read.mockRestore()
@@ -260,7 +261,7 @@ test('a cut reads the tiles and departure blocks its window overlaps, in one rea
   )
   expect(reads).toEqual([
     ['tile 1000'],
-    ['tile 2000', 'departures 1000'],
+    ['tile 2000', 'departures 2000'],
     ['tile 0'],
   ])
   expect(departures.map(departure)).toEqual([
@@ -1183,7 +1184,7 @@ test('a leave piece the read lacks is fetched for the own steps, once per tile, 
   expect(departures.map(departure)).toEqual([
     ['HG003#1#chr1', 30, 30, 0, '70-', '40-', 'forward', 'record', '<22<21<20'],
   ])
-  expect(reads).toEqual([['tile 40', 'departures 20'], ['tile 60']])
+  expect(reads).toEqual([['tile 40', 'departures 40'], ['tile 60']])
   const capped = await spanCut('HG003#1', { attachFetches: 0 })
   expect(capped.departures.map(departure)).toEqual([
     ['HG003#1#chr1', 30, 30, 0, '70-', '40-', 'forward', 'record', undefined],

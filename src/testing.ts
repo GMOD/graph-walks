@@ -166,10 +166,10 @@ export function walkFileOf(
         start,
         order: 1,
         unit: () => {
-          const head = ['#unit', seq, start, start + tile, 'departures', tile]
+          const head = ['#unit', seq, start, start + tile, 'departures', '.']
           const at = write(`${[head.join('\t'), ...blockLines].join('\n')}\n`)
           const unit = { refName: seq, start, end: start + tile }
-          return { ...unit, kind: 'departures', name: String(tile), ...at }
+          return { ...unit, kind: 'departures', name: '.', ...at }
         },
       })
     }
