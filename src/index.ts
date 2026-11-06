@@ -2,21 +2,17 @@ export {
   BUDGET_NAMES,
   WalkGraph,
   byteBudgetError,
-  chunkQueryStart,
   joinPieces,
   keptNodesError,
   keptStepsError,
-  lookbackChunks,
   stepBudgetError,
   walkCut,
   walkHeader,
   walkNameFilter,
-  walkQueryStart,
   walksKept,
 } from './walkRows.ts'
 export type {
   BudgetNames,
-  LongPass,
   WalkFragment,
   WalkHeader,
   WalkNode,
@@ -34,13 +30,11 @@ export {
   squeezer,
 } from './walkDeparture.ts'
 export type { DepartureKind, Hole, WalkDeparture } from './walkDeparture.ts'
-export {
-  DepartureReadError,
-  WALK_BUDGETS,
-  WalkFormatError,
-  WalkReader,
-  checkRange,
-} from './walkReader.ts'
+export { DepartureReadError, WALK_BUDGETS, WalkReader } from './walkReader.ts'
+export { WALK_FORMAT, WalkFile, WalkFormatError } from './walkFile.ts'
+export type { WalkFilehandle, WalkUnit } from './walkFile.ts'
+export { checkRange } from './tabixSource.ts'
+export type { TabixSource } from './tabixSource.ts'
 export { refNameLookup, resolveRefName } from './refNames.ts'
 export { referenceNodes } from './walkChunk.ts'
 export {
@@ -90,7 +84,6 @@ export type {
 } from './walkDepartures.ts'
 export type {
   RegionCutOptions,
-  TabixSource,
   WalkCutOptions,
   WalkReaderHeader,
 } from './walkReader.ts'

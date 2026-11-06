@@ -9,7 +9,7 @@ import {
   parseLinkLine,
   parseSegmentRow,
 } from './rgfaBed.ts'
-import { checkRange } from './walkReader.ts'
+import { checkRange } from './tabixSource.ts'
 
 import type {
   GraphHeader,
@@ -17,7 +17,7 @@ import type {
   RgfaSegment,
   StableSpan,
 } from './rgfaBed.ts'
-import type { TabixSource } from './walkReader.ts'
+import type { TabixSource } from './tabixSource.ts'
 
 // What a hop follows: alleles, never the backbone. A rank-0 segment reached
 // through a link is flanking backbone, usually outside the window, so querying

@@ -1,6 +1,6 @@
 {
   "name": "@jbrowse/graph-walks",
-  "version": "5.0.2",
+  "version": "6.0.0",
   "description": "Read gfa-to-tabix walk files by range requests and cut a window of a pangenome graph: the reference, every haplotype's walk through it, and the nodes and links they visit",
   "license": "MIT",
   "author": {
@@ -57,10 +57,13 @@
     "@types/node": "^26.6.5",
     "eslint": "^10.12.0",
     "eslint-plugin-import-x": "^4.17.1",
-    "generic-filehandle2": "^2.5.0",
     "prettier": "^3.9.10",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.71.1",
     "vitest": "^5.0.3"
+  },
+  "dependencies": {
+    "@gmod/bgzf-filehandle": "^6.8.2",
+    "generic-filehandle2": "^2.5.1"
   }
 }

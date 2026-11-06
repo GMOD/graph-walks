@@ -41,13 +41,13 @@ export interface WalkRow {
  * A piece the writer moved to a detail record: all its steps, which reading
  * the record decodes; the bp of its stretch from its first step on R to its
  * last, which runs from its row's hapOffset to hapOffset + bp on the contig;
- * and the record's sequence and position, which a cut that expands the path
- * reads
+ * and the record's `detail` unit, by its sequence, its tile's nominal start
+ * and its name, `tile:detail`, which a cut that expands the path reads
  */
 export interface Abridged {
   steps: number
   bp: number
-  detail: { refName: string; start: number }
+  detail: { refName: string; start: number; name: string }
 }
 
 export interface WalkNode {
@@ -72,21 +72,13 @@ export interface WalkWindow {
   sequences?: boolean
 }
 
-// A pass of the reference over a node longer than a chunk, from a `#long` line
-export interface LongPass {
-  refName: string
-  start: number
-  end: number
-}
-
 export interface WalkHeader {
-  // format:i:6; the reader refuses any other, and format 1 states none
+  // format:i:7; the reader refuses any other, and format 1 states none
   format?: number
-  chunk?: number
-  maxNode?: number
+  // the bp of reference a tile holds, tile:i:
+  tile?: number
   references: string[]
   haplotypes: string[]
-  long: LongPass[]
   holes: Hole[]
   // how many nodes the reference's paths pass more than once: 0 states
   // every position and departure in the file as a fact of the graph
@@ -99,18 +91,16 @@ function integerTag(line: string, tag: string) {
 }
 
 /**
- * What a walk file's header states: a `#walks` line with the format, the
- * chunk size and the longest node in bp, `format:i:6\tchunk:i:65536\tmaxnode:i:1024`,
- * a `#reference\tGRCh38` line naming the reference sample, a
- * `#haplotype\tHG002#1` line per other haplotype with rows, a `#long` line
- * per pass of the reference over a node longer than a chunk and a `#hole`
- * line per stretch of a reference sequence no line of the reference covers
+ * What a walk file's header states: a `#walks` line with the format and the
+ * tile size, `format:i:7\ttile:i:65536`, a `#reference\tGRCh38` line naming
+ * the reference sample, a `#haplotype\tHG002#1` line per other haplotype with
+ * rows and a `#hole` line per stretch of a reference sequence no line of the
+ * reference covers
  */
 export function walkHeader(lines: string[]): WalkHeader {
   const header: WalkHeader = {
     references: [],
     haplotypes: [],
-    long: [],
     holes: [],
   }
   for (const line of lines) {
@@ -119,62 +109,15 @@ export function walkHeader(lines: string[]): WalkHeader {
       header.references.push(value)
     } else if (key === '#haplotype') {
       header.haplotypes.push(value)
-    } else if (key === '#long') {
-      header.long.push({ refName: value, start: +start, end: +end })
     } else if (key === '#hole') {
       header.holes.push({ refName: value, start: +start, end: +end })
     } else {
       header.format ??= integerTag(line, 'format')
-      header.chunk ??= integerTag(line, 'chunk')
-      header.maxNode ??= integerTag(line, 'maxnode')
+      header.tile ??= integerTag(line, 'tile')
       header.revisited ??= integerTag(line, 'revisited')
     }
   }
   return header
-}
-
-/**
- * How many chunks before the window's own a cut reads. A node is filed under
- * the chunk holding its start, so a node `maxNode` bp long reaching into the
- * window starts at most ceil(maxNode / chunk) chunks back. At least one, since
- * the chunk before carries the detour a haplotype takes into the window's
- * first reference node; one when the header gives no `maxnode:i:`, which holds
- * for vg's graphs, chopped to nodes of at most 1,024 bp.
- */
-export function lookbackChunks(maxNode: number | undefined, chunk: number) {
-  return maxNode === undefined ? 1 : Math.max(1, Math.ceil(maxNode / chunk))
-}
-
-// The first base a cut queries: the start of the chunk `lookback` chunks
-// before the one holding the window's start
-export function chunkQueryStart(start: number, chunk: number, lookback = 1) {
-  return Math.max(0, (Math.floor(start / chunk) - lookback) * chunk)
-}
-
-/**
- * The first base a cut of `refName` over `start`–`end` queries: the chunk
- * before the window's first, or the chunk before a `#long` pass overlapping
- * the window, whichever is earlier. A file with no `#long` lines reads
- * lookbackChunks back, which is one chunk unless `maxnode` exceeds a chunk,
- * as in a pggb file from gfa-to-tabix 1.2.
- */
-export function walkQueryStart(
-  header: Pick<WalkHeader, 'maxNode' | 'long'> & { chunk: number },
-  refName: string,
-  start: number,
-  end: number,
-) {
-  const { chunk, long } = header
-  if (long.length === 0) {
-    return chunkQueryStart(start, chunk, lookbackChunks(header.maxNode, chunk))
-  }
-  let from = chunkQueryStart(start, chunk)
-  for (const pass of long) {
-    if (pass.refName === refName && pass.start < end && pass.end > start) {
-      from = Math.min(from, chunkQueryStart(pass.start, chunk))
-    }
-  }
-  return from
 }
 
 // Which walks a cut decodes: the reference's, and those `wanted` names by
@@ -325,9 +268,9 @@ export interface WalkCutOptions {
   squeeze?: (bp: number) => number
 }
 
-// A record whose own steps the cut should attach and does not hold: the base
-// of the reference beside its leave breakpoint names the chunk its leave
-// piece is filed under, or the one before for a node straddling a boundary
+// A record whose own steps the cut should attach and does not hold: its leave
+// piece is in a tile whose extent holds the base of the reference beside its
+// leave breakpoint
 export interface Unattached {
   departure: WalkDeparture
   base: number
@@ -1059,9 +1002,9 @@ const readSteps = (row: WalkRow) => {
 /**
  * The zoom-in notice for a cut whose walk rows hold more steps than
  * `readPerKept` times `stepBudget`, or undefined when they fit. A window reads
- * whole chunks, those before it included, so the span that fits is counted in
- * chunks from the window's start; when the chunks a window there always reads
- * are over on their own, no zoom fits and the notice asks for fewer
+ * whole tiles, so the span that fits is counted in tiles of `tile` bp from
+ * the window's start; when the tiles a window there always reads are over on
+ * their own, no zoom fits and the notice asks for fewer
  * haplotypes. A cut for every haplotype is also offered fewer where the
  * reference and one haplotype, at the walks' average steps, would fit the
  * whole window.
@@ -1071,7 +1014,7 @@ export function stepBudgetError(
   stepBudget: number,
   readPerKept: number,
   window: { start: number; end: number },
-  chunk: number,
+  tile: number,
   filtered: boolean,
   names = BUDGET_NAMES,
 ) {
@@ -1096,7 +1039,7 @@ export function stepBudgetError(
     if (read > budget) {
       break
     }
-    fitsBp = Math.max(fitsBp, cs + chunk - window.start)
+    fitsBp = Math.max(fitsBp, cs + tile - window.start)
   }
   const fewerFit =
     !filtered && walks.size > 2 && (2 * total) / walks.size <= budget
@@ -1165,35 +1108,35 @@ function keptOverError(
 /**
  * The zoom-in notice for a cut whose walk read would fetch more than
  * `budget` compressed bytes, or undefined when it fits. `bytesTo(end)` is the
- * index's estimate for a read from the window's first query base to `end`;
- * the span that fits grows a chunk at a time from the chunk holding the
- * window's start, and when that chunk and those before it are over on their
- * own, no zoom fits.
+ * bytes of the tiles a read from the window's first base to `end` fetches;
+ * the span that fits grows a tile at a time from the tile holding the
+ * window's start, and when the tiles that reaches are over on their own, no
+ * zoom fits.
  */
-export async function byteBudgetError(
-  bytesTo: (end: number) => Promise<number>,
+export function byteBudgetError(
+  bytesTo: (end: number) => number,
   budget: number,
   window: { start: number; end: number },
-  chunk: number,
+  tile: number,
   names = BUDGET_NAMES,
 ) {
-  const bytes = await bytesTo(window.end)
+  const bytes = bytesTo(window.end)
   if (bytes <= budget) {
     return undefined
   }
   let fitsBp = 0
   let least: number | undefined
   for (
-    let cs = Math.floor(window.start / chunk) * chunk;
+    let cs = Math.floor(window.start / tile) * tile;
     cs < window.end;
-    cs += chunk
+    cs += tile
   ) {
-    const read = await bytesTo(cs + 1)
+    const read = bytesTo(cs + 1)
     least ??= read
     if (read > budget) {
       break
     }
-    fitsBp = cs + chunk - window.start
+    fitsBp = cs + tile - window.start
   }
   const windowBp = window.end - window.start
   return fitsBp > 0

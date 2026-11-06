@@ -1,8 +1,8 @@
 import type { WalkRow } from './walkRows.ts'
 
-// A chunk of gfa-to-tabix's walk format 6, one file per reference (that
-// repo's docs/walks-format.md). A chunk lists its `ref` rows, which joined in
-// hapOffset order are the chunk's reference path R; a `nodes` row with the
+// A tile of gfa-to-tabix's walk format 7, whose rows from `kind` on are
+// format 6's (that repo's docs/walks-format.md). A tile lists its `ref` rows,
+// which joined in hapOffset order are the tile's reference path R; a `nodes` row with the
 // lengths of the nodes its routes visit; `route` rows, each a way off R; a
 // `walk` row per piece of every other path, naming the routes it takes in
 // order and, where R holds a node more than once, the occurrence a step
@@ -465,11 +465,13 @@ function sliceBases(
 // The row of an `abridged` line, one piece, as a two-step walk from the
 // handle on R it starts on to the one it ends on, each at the occurrence its
 // `@k` names, else the first and the one nearest it. Its detail record, which
-// holds the path's moved pieces in the chunk, is filed under `seq~cs`, one
-// Tabix leaf bin apart.
-const DETAIL_SPACING = 16384
-
-function abridgedRow(cols: string[], path: RefPath): WalkRow {
+// holds the path's moved pieces in the tile, is the sequence's `detail` unit
+// named for the tile's nominal start and the row's detail number.
+function abridgedRow(
+  cols: string[],
+  path: RefPath,
+  tileStart: number,
+): WalkRow {
   const count = (k: number) => {
     const n = Number(cols[k])
     if (cols[7]?.includes(',')) {
@@ -483,7 +485,6 @@ function abridgedRow(cols: string[], path: RefPath): WalkRow {
     }
     return n
   }
-  const anchor = cols[0]!
   const [h0, k0] = parseCopy(cols[10]!)
   const [h1, k1] = parseCopy(cols[11]!)
   const i0 = k0 === NONE ? path.first(h0) : path.copy(h0, k0)
@@ -498,7 +499,7 @@ function abridgedRow(cols: string[], path: RefPath): WalkRow {
   const againstAt = (i: number | undefined, h: number) =>
     i !== undefined && path.handles[i] !== h ? 1 : 0
   return {
-    chunkStart: +cols[1]!,
+    chunkStart: tileStart,
     name: cols[4]!,
     fragStart: +cols[5]!,
     hapOffset: count(6),
@@ -514,8 +515,9 @@ function abridgedRow(cols: string[], path: RefPath): WalkRow {
       steps: count(8),
       bp: count(9),
       detail: {
-        refName: `${anchor}~${cols[1]!}`,
-        start: +cols[12]! * DETAIL_SPACING,
+        refName: cols[0]!,
+        start: tileStart,
+        name: `${tileStart}:${cols[12]!}`,
       },
     },
   }
@@ -545,13 +547,15 @@ export function chunkRef(rows: string[][]): ChunkRef {
 }
 
 /**
- * Decodes one chunk's rows, each split on tabs. `keep` names the walk rows
- * whose steps a cut wants, undefined for every one. Given `ref`, the rows are
- * a detail record decoded against that chunk's R, and the result leaves out
- * R's rows, nodes, ends and bases, which the chunk's own decode gave.
+ * Decodes one tile's rows, each split on tabs, the tile starting at
+ * `tileStart` nominally. `keep` names the walk rows whose steps a cut wants,
+ * undefined for every one. Given `ref`, the rows are a detail record decoded
+ * against that tile's R, and the result leaves out R's rows, nodes, ends and
+ * bases, which the tile's own decode gave.
  */
 export function decodeChunk(
   rows: string[][],
+  tileStart: number,
   keep: ((name: string) => boolean) | undefined,
   withSequences = false,
   ref?: ChunkRef,
@@ -608,7 +612,7 @@ export function decodeChunk(
     })
     if (keep === undefined || keep(cols[4]!)) {
       out.rows.push({
-        chunkStart: +cols[1]!,
+        chunkStart: tileStart,
         name: cols[4]!,
         fragStart: +cols[5]!,
         hapOffset,
@@ -654,7 +658,7 @@ export function decodeChunk(
     if (cols[3] === 'abridged') {
       const name = cols[4]!
       if (keep === undefined || keep(name)) {
-        out.rows.push(abridgedRow(cols, path))
+        out.rows.push(abridgedRow(cols, path, tileStart))
       }
       continue
     }
@@ -693,7 +697,7 @@ export function decodeChunk(
         last: steps.ids[n - 1]! * 2 + steps.rev[n - 1]!,
       })
       out.rows.push({
-        chunkStart: +cols[1]!,
+        chunkStart: tileStart,
         name,
         fragStart: +cols[5]!,
         hapOffset: +cols[6]!,

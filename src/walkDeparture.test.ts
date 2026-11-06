@@ -78,11 +78,11 @@ test('ref and abridged rows from a writer before pass counts are refused, saying
   }
   const abridged = (pieces: string) =>
     `R#0#c\t0\t1\tabridged\tX#1#c\t0\t0\t${pieces}\t5\t42\t2\t4\t1`.split('\t')
-  expect(() => decodeChunk([ref('\t.'), abridged('0,2')], undefined)).toThrow(
-    /abridged row of several pieces.*rebuild the walk file/,
-  )
+  expect(() =>
+    decodeChunk([ref('\t.'), abridged('0,2')], 0, undefined),
+  ).toThrow(/abridged row of several pieces.*rebuild the walk file/)
   expect(
-    decodeChunk([ref('\t.'), abridged('0')], undefined).rows.filter(
+    decodeChunk([ref('\t.'), abridged('0')], 0, undefined).rows.filter(
       r => r.abridged,
     ),
   ).toHaveLength(1)

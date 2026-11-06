@@ -1,5 +1,4 @@
-import { TabixIndexedFile } from '@gmod/tabix'
-import { RemoteFile } from 'generic-filehandle2'
+import { LocalFile, RemoteFile } from 'generic-filehandle2'
 import { expect, test } from 'vitest'
 
 import { formContradictions } from '../src/formsCheck.ts'
@@ -51,13 +50,10 @@ const lifted = {
 }
 
 const reader = () =>
-  new WalkReader(
-    walks.startsWith('http')
-      ? new TabixIndexedFile({
-          filehandle: new RemoteFile(walks),
-          tbiFilehandle: new RemoteFile(`${walks}.tbi`),
-        })
-      : new TabixIndexedFile({ path: walks, tbiPath: `${walks}.tbi` }),
+  WalkReader.open(walks, location =>
+    location.startsWith('http')
+      ? new RemoteFile(location)
+      : new LocalFile(location),
   )
 
 const net = (h: HaplotypeDepartures) =>

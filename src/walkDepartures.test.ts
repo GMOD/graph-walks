@@ -1,4 +1,4 @@
-import { TabixIndexedFile } from '@gmod/tabix'
+import { LocalFile } from 'generic-filehandle2'
 
 import { RegionTooLargeError } from './util.ts'
 import {
@@ -130,7 +130,7 @@ const plain = {
   repeatedBp: 0,
 }
 
-const detail = { refName: `${R}~0`, start: 0 }
+const detail = { refName: R, start: 0, name: '0:0' }
 
 test('a walk along R departs nowhere and covers what it reaches', () => {
   expect(departuresOf([walk('A#1#c', '+1 +2 +3')])).toEqual([
@@ -548,10 +548,11 @@ test("a departure leaving abridged pieces' last step keeps its own bp whole", ()
 describe('a forms cut', () => {
   const DATA = new URL('../test_data/', import.meta.url).pathname
   const reader = (name: string) => {
-    const path = `${DATA}${name}.walks.bed.gz`
-    return new WalkReader(
-      new TabixIndexedFile({ path, tbiPath: `${path}.tbi` }),
-    )
+    const path = `${DATA}${name}.walks.gz`
+    return WalkReader.fromFilehandles({
+      data: new LocalFile(path),
+      directory: new LocalFile(`${path}.idx`),
+    })
   }
   const region = { refName: 'chr', start: 0, end: 30 }
   const byHaplotype = (hs: HaplotypeDepartures[]) =>

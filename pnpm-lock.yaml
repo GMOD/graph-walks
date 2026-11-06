@@ -7,6 +7,13 @@ settings:
 importers:
 
   .:
+    dependencies:
+      '@gmod/bgzf-filehandle':
+        specifier: ^6.8.2
+        version: 6.8.2
+      generic-filehandle2:
+        specifier: ^2.5.1
+        version: 2.5.1
     devDependencies:
       '@eslint/js':
         specifier: ^10.0.1
@@ -23,9 +30,6 @@ importers:
       eslint-plugin-import-x:
         specifier: ^4.17.1
         version: 4.17.1(@typescript-eslint/utils@8.71.1(eslint@10.12.0)(typescript@6.0.3))(eslint@10.12.0)
-      generic-filehandle2:
-        specifier: ^2.5.0
-        version: 2.5.0
       prettier:
         specifier: ^3.9.10
         version: 3.9.10
@@ -640,9 +644,6 @@ packages:
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
     os: [darwin]
 
-  generic-filehandle2@2.5.0:
-    resolution: {integrity: sha512-qrzjvxfFTswagFQRW7Gc8m5Fy+ra538mrXg4Ggtn+05PpeGYQ9QPkvQQ2O4poa2eGdUN/jAR49M5Y31Wvrr/xA==}
-
   generic-filehandle2@2.5.1:
     resolution: {integrity: sha512-+0F0k0xH4erZEB3xOVBdrlJi0hyURYb/CygF8QyqAjLsitmoZYl86pMfTZ91/w2Z1CPK610mBy93bxyiby1CHA==}
 
@@ -1101,7 +1102,7 @@ snapshots:
 
   '@gmod/bgzf-filehandle@6.8.2':
     dependencies:
-      generic-filehandle2: 2.5.0
+      generic-filehandle2: 2.5.1
       pako-esm2: 2.0.2
 
   '@gmod/shared-read-cache@2.1.0': {}
@@ -1572,8 +1573,6 @@ snapshots:
 
   fsevents@2.3.3:
     optional: true
-
-  generic-filehandle2@2.5.0: {}
 
   generic-filehandle2@2.5.1: {}
 

@@ -1,27 +1,52 @@
-import { TabixIndexedFile } from '@gmod/tabix'
+import { BlobFile, LocalFile } from 'generic-filehandle2'
 
-import { graphTablesGFA } from './testing.ts'
+import { bgzf, graphTablesGFA, walkFileOf } from './testing.ts'
 import { RegionTooLargeError, panSNHaplotype } from './util.ts'
 import { WalkRowError } from './walkChunk.ts'
 import { departureKind, placementChoice } from './walkDeparture.ts'
+import { WalkFormatError } from './walkFile.ts'
 import {
   DepartureReadError,
   WALK_BUDGETS,
-  WalkFormatError,
   WalkReader,
   readInOrder,
 } from './walkReader.ts'
 import { walkNameFilter } from './walkRows.ts'
 
 import type { WalkDeparture } from './walkDeparture.ts'
-import type { TabixSource } from './walkReader.ts'
 import type { WalkFragment } from './walkRows.ts'
 
 const DATA = new URL('../test_data/', import.meta.url).pathname
 
 function reader(name: string) {
-  const path = `${DATA}${name}.walks.bed.gz`
-  return new WalkReader(new TabixIndexedFile({ path, tbiPath: `${path}.tbi` }))
+  const path = `${DATA}${name}.walks.gz`
+  return WalkReader.fromFilehandles({
+    data: new LocalFile(path),
+    directory: new LocalFile(`${path}.idx`),
+  })
+}
+
+// The units of `name`'s sequence each read in `run` fetches, as
+// `kind name`, and how many reads it makes
+async function unitsRead(
+  name: string,
+  refName: string,
+  run: (walks: WalkReader) => Promise<unknown>,
+) {
+  const walks = reader(name)
+  const units = await walks.units(refName)
+  await walks.header()
+  const read = vi.spyOn(LocalFile.prototype, 'read')
+  try {
+    await run(walks)
+    return read.mock.calls.map(([length, position = 0]) =>
+      units
+        .filter(u => u.offset >= position && u.offset < position + length)
+        .map(u => `${u.kind} ${u.name}`),
+    )
+  } finally {
+    read.mockRestore()
+  }
 }
 
 async function gfa(
@@ -75,54 +100,108 @@ const departure = (d: WalkDeparture) => [
 //   W HG002   1 chr1 >1>2>7>4>5>6   7 replaces 3
 //   W HG002   2 chr1 >1>2>3>4>8>6   8 replaces 5
 //   W HG00097 1 chr1 >1>2>3>4>5>6
-test('the header names the format, the reference, the haplotypes and the chunk size', async () => {
+test('the header names the format, the reference, the haplotypes and the tile size', async () => {
   const header = await reader('header.GRCh38').header()
   expect(header).toMatchObject({
-    format: 6,
-    chunk: 1000,
+    format: 7,
+    tile: 1000,
     references: ['GRCh38'],
     haplotypes: ['HG00097#1', 'HG002#1', 'HG002#2'],
     holes: [],
   })
 })
 
-test('a format 1 walk file is refused, with what to rebuild it with', async () => {
-  const walks = reader('format1')
-  await expect(walks.header()).rejects.toThrow(WalkFormatError)
-  await expect(
-    walks.cut('GRCh38#0#chr1', { start: 0, end: 600 }),
-  ).rejects.toThrow(/rebuild it with gfa-to-tabix 3.0/)
-})
-
-function headerOnly(lines: string[]) {
-  return new WalkReader({
-    getHeaderLines: () => Promise.resolve(lines),
-    getLines: () => Promise.resolve(),
-    getReferenceSequenceNames: () => Promise.resolve([]),
+// A walk file whose directory's first line is `walks`, with its header
+// unit and data as walkFileOf writes them unless `data` is given
+function directoryOf(walks: string, data = new Uint8Array()) {
+  return WalkReader.fromFilehandles({
+    data: new BlobFile(new Blob([data])),
+    directory: new BlobFile(new Blob([`${walks}\n#header\t0\t0\n`])),
   })
 }
 
-test.each([2, 3, 4, 5])(
-  'a format %i walk file is refused, with what to rebuild it with',
-  async format => {
+test.each([
+  { walks: '#walks', format: 1 },
+  ...[2, 3, 4, 5, 6].map(format => ({
+    walks: `#walks\tformat:i:${format}\tchunk:i:1000`,
+    format,
+  })),
+])(
+  'a walk file whose directory states $walks is refused as format $format, with what to rebuild it with',
+  async ({ walks, format }) => {
+    const walkFile = directoryOf(walks)
+    await expect(walkFile.header()).rejects.toThrow(WalkFormatError)
     await expect(
-      headerOnly([`#walks\tformat:i:${format}\tchunk:i:1000`]).header(),
+      walkFile.cut('GRCh38#0#chr1', { start: 0, end: 600 }),
     ).rejects.toThrow(
-      `This walk file is format ${format}; @jbrowse/graph-walks reads format 6, so rebuild it with gfa-to-tabix 3.0 or later`,
+      `This walk file is format ${format}; @jbrowse/graph-walks reads format 7, so rebuild it with gfa-to-tabix 4.0 or later`,
     )
   },
 )
 
-test.each([7, 8])(
+test.each([8, 9])(
   'a format %i walk file is refused, asking for a newer reader',
   async format => {
     await expect(
-      headerOnly([`#walks\tformat:i:${format}\tchunk:i:1000`]).header(),
+      directoryOf(`#walks\tformat:i:${format}\ttile:i:1000`).header(),
     ).rejects.toThrow(
-      `This walk file is format ${format}; this version of @jbrowse/graph-walks reads format 6, so update the viewer, or @jbrowse/graph-walks, to one that reads format ${format}`,
+      `This walk file is format ${format}; this version of @jbrowse/graph-walks reads format 7, so update the viewer, or @jbrowse/graph-walks, to one that reads format ${format}`,
     )
   },
 )
+
+test('a file that is not a directory is refused', async () => {
+  await expect(directoryOf('GRCh38#0#chr1\t0\t100').header()).rejects.toThrow(
+    "This is not a walk file's directory",
+  )
+})
+
+test('a format 6 file, which has no directory, is refused by its name', async () => {
+  const path = `${DATA}hprc.GRCh38.walks.bed.gz`
+  await expect(
+    WalkReader.open(path, url => new LocalFile(url)).header(),
+  ).rejects.toThrow(
+    `${path} names a walk file of format 6 or earlier, which has no .idx directory; @jbrowse/graph-walks reads format 7, so rebuild it with gfa-to-tabix 4.0 or later`,
+  )
+})
+
+test('open finds the directory beside the data, before any query', async () => {
+  const opened: string[] = []
+  const walks = WalkReader.open(
+    `${DATA}header.GRCh38.walks.gz?v=1#top`,
+    url => {
+      opened.push(url)
+      return new LocalFile(url.replace(/[?#].*$/, ''))
+    },
+  )
+  expect(opened).toEqual([
+    `${DATA}header.GRCh38.walks.gz?v=1#top`,
+    `${DATA}header.GRCh38.walks.gz.idx?v=1#top`,
+  ])
+  expect((await walks.header()).tile).toBe(1000)
+})
+
+// header.GRCh38's rows, with its directory changed by `edit`
+async function edited(edit: (directory: string) => string) {
+  const path = `${DATA}header.GRCh38.walks.gz`
+  const directory = await new LocalFile(`${path}.idx`).readFile('utf8')
+  return WalkReader.fromFilehandles({
+    data: new LocalFile(path),
+    directory: new BlobFile(new Blob([edit(directory)])),
+  })
+}
+
+test('a directory and data that disagree are refused', async () => {
+  await expect(
+    (await edited(d => d.replace(/\tbytes:i:\d+/, '\tbytes:i:12'))).header(),
+  ).rejects.toThrow(
+    /directory does not match its data: the directory states 12 bytes, the data holds \d+/,
+  )
+  await expect(
+    (await edited(d => d.replace('stay:i:311', 'stay:i:0'))).header(),
+  ).rejects.toThrow(/directory does not match its data/)
+  expect((await (await edited(d => d)).header()).tile).toBe(1000)
+})
 
 test('a cut keeps the reference and the haplotypes asked for', async () => {
   const names = walkNames(
@@ -149,28 +228,45 @@ test('a cut lists each departure over the window, with the own steps it holds', 
   ])
 })
 
-// An unchopped graph whose node 1 spans 0-2600, filed under chunk 0 alone:
+// An unchopped graph whose node 1 spans 0-2600, in tile 0 alone:
 //   W GRCh38 0 chr1 >1>2>4
 //   W HG002  1 chr1 >1>3>4   3 replaces 2
-test("a node longer than a chunk is read back as far as the header's maxnode reaches", async () => {
+test('a node longer than a tile is read from the tile whose extent holds it', async () => {
+  const reads = await unitsRead('maxnode.GRCh38', 'GRCh38#0#chr1', walks =>
+    walks.cut('GRCh38#0#chr1', { start: 2100, end: 2500 }, { context: 0 }),
+  )
+  expect(reads.flat()).toContain('tile 0')
   const text = await gfa(reader('maxnode.GRCh38'), 2100, 2500)
   expect(text).toMatch(/^S\t1\t/m)
   expect(text).toMatch(/^W\tGRCh38\t0\tchr1\t0\t3800\t>1>2>4$/m)
   expect(walkNames(text)).toEqual(['GRCh38#0#chr1', 'HG002#1#chr1'])
 })
 
-test('a cut reads the chunks from the one before the window, and the departures over it', async () => {
-  const getLines = vi.spyOn(TabixIndexedFile.prototype, 'getLines')
-  await reader('header.GRCh38').cut(
+// Tile 0's extent is 0-1200, as node 2 runs past it; tile 1000's 1200-2400
+test('a cut reads the tiles and departure blocks its window overlaps, in one read where they touch, and fetches the tile holding a leave base', async () => {
+  let departures: WalkDeparture[] = []
+  const reads = await unitsRead(
+    'header.GRCh38',
     'GRCh38#0#chr1',
-    { start: 2100, end: 2600 },
-    { context: 0 },
+    async walks => {
+      departures = (
+        await walks.cut(
+          'GRCh38#0#chr1',
+          { start: 2100, end: 2600 },
+          { context: 0 },
+        )
+      ).departures
+    },
   )
-  const reads = getLines.mock.calls.map(call => call.slice(0, 3))
-  getLines.mockRestore()
-  expect(reads).toContainEqual(['GRCh38#0#chr1', 1000, 2600])
-  expect(reads).toContainEqual(['GRCh38#0#chr1~departure', 1500, 3200])
-  expect(reads).toHaveLength(2)
+  expect(reads).toEqual([
+    ['tile 1000'],
+    ['tile 2000', 'departures 1000'],
+    ['tile 0'],
+  ])
+  expect(departures.map(departure)).toEqual([
+    ['HG002#1#chr1', 1200, 550, 0, '1200+', '1800+', 'forward', 'record', '>7'],
+    ['HG002#2#chr1', 2400, 20, 0, '2400+', '3000+', 'forward', 'record', '>8'],
+  ])
 })
 
 // A reference that passes nodes twice, in 1 kb chunks:
@@ -217,8 +313,8 @@ test('a step on a second pass over the window departs from that pass', async () 
     { context: 0 },
   )
   expect(fragments.map(fragment)).toEqual([
-    ['GRCh38#0#chr1', 4000, 5000, '>7>8', 1000, 0],
-    ['HG002#1#chr1', 4000, 4500, '>7', 1000, 500],
+    ['GRCh38#0#chr1', 4000, 5000, '>7>8', 0, 0],
+    ['HG002#1#chr1', 4000, 4500, '>7', 0, 500],
   ])
   expect(departures.map(departure)).toEqual([
     [
@@ -247,6 +343,16 @@ test("a cut leaves out the reference's other pass over the window's nodes", asyn
   expect(text).toMatch(/^W\tGRCh38\t0\tchr1\t4500\t5000\t>7>8$/m)
   expect(text).toMatch(/^W\tHG002\t1\tchr1\t4500\t4750\t>7$/m)
   expect(text).not.toMatch(/^S\t(9|10)\t/m)
+  const both = await reader('farpass.GRCh38').cut(
+    'GRCh38#0#chr1',
+    { start: 3900, end: 5000 },
+    { context: 0 },
+  )
+  expect(
+    graphTablesGFA(
+      both.graph.tables(both.kept, both.fragments, both.departures),
+    ),
+  ).toMatch(/^S\t7\t\*\tLN:i:250\tSN:Z:GRCh38#0#chr1\tSO:i:4500\tSR:i:0$/m)
   expect(departures.map(departure)).toEqual([
     [
       'HG002#1#chr1',
@@ -266,23 +372,25 @@ test("a cut leaves out the reference's other pass over the window's nodes", asyn
 // leaves chunk 1000 for 20 and 21, 2 kb each, and rejoins at 9, in chunk
 // 4000; HG003#1's contig ends on 22
 test('a walk leaving the window is cut there, and its record says where it rejoins', async () => {
-  const getLines = vi.spyOn(TabixIndexedFile.prototype, 'getLines')
-  const { fragments, departures } = await reader('follow.GRCh38').cut(
+  let cut: Awaited<ReturnType<WalkReader['cut']>> | undefined
+  const reads = await unitsRead(
+    'follow.GRCh38',
     'GRCh38#0#chr1',
-    { start: 1000, end: 1500 },
-    { context: 0 },
+    async walks => {
+      cut = await walks.cut(
+        'GRCh38#0#chr1',
+        { start: 1000, end: 1500 },
+        { context: 0 },
+      )
+    },
   )
-  const reads = getLines.mock.calls.map(call => call.slice(0, 3))
-  getLines.mockRestore()
-  expect(reads).toEqual([
-    ['GRCh38#0#chr1~departure', 500, 2000],
-    ['GRCh38#0#chr1', 0, 1500],
-  ])
+  expect(reads).toEqual([['tile 1000', 'departures 1000']])
+  const { fragments, departures } = cut!
   expect(fragments.map(fragment)).toEqual([
-    ['GRCh38#0#chr1', 1000, 1500, '>3', 1000, 500],
-    ['HG002#1#chr1', 1000, 1500, '>3', 1000, 4000],
-    ['HG002#2#chr1', 1000, 1500, '>3', 1000, 500],
-    ['HG003#1#chr1', 1000, 1500, '>3', 1000, 300],
+    ['GRCh38#0#chr1', 1000, 1500, '>3', 0, 500],
+    ['HG002#1#chr1', 1000, 1500, '>3', 0, 4000],
+    ['HG002#2#chr1', 1000, 1500, '>3', 0, 500],
+    ['HG003#1#chr1', 1000, 1500, '>3', 0, 300],
   ])
   expect(departures.map(departure)).toEqual([
     [
@@ -340,7 +448,7 @@ const records = async (start: number, end: number, name: string) => {
 
 test("a departure across a contig's W lines counts the bp the graph lacks as missing", async () => {
   expect(await records(1000, 2000, 'HG002#1#chr1')).toEqual({
-    fragments: [['HG002#1#chr1', 1000, 2000, '>3>4', 1000, 0]],
+    fragments: [['HG002#1#chr1', 1000, 2000, '>3>4', 0, 0]],
     departures: [
       [
         'HG002#1#chr1',
@@ -376,7 +484,7 @@ test("a departure across a contig's W lines counts the bp the graph lacks as mis
 test('a walk jumping away for eight chunks and back has a record each way', async () => {
   expect(await records(1000, 2000, 'HG003#1#chr1')).toEqual({
     fragments: [
-      ['HG003#1#chr1', 1000, 1500, '>3', 1000, 0],
+      ['HG003#1#chr1', 1000, 1500, '>3', 0, 0],
       ['HG003#1#chr1', 2500, 3000, '>4', 0, 0],
     ],
     departures: [
@@ -409,7 +517,8 @@ test('a walk jumping away for eight chunks and back has a record each way', asyn
 test('a cut on a signal already aborted reads no row', async () => {
   const walks = reader('header.GRCh38')
   await walks.header()
-  const getLines = vi.spyOn(TabixIndexedFile.prototype, 'getLines')
+  await walks.units('GRCh38#0#chr1')
+  const read = vi.spyOn(LocalFile.prototype, 'read')
   const aborted = new AbortController()
   aborted.abort(new Error('panned away'))
   await expect(
@@ -419,8 +528,8 @@ test('a cut on a signal already aborted reads no row', async () => {
       { signal: aborted.signal },
     ),
   ).rejects.toThrow('panned away')
-  expect(getLines).not.toHaveBeenCalled()
-  getLines.mockRestore()
+  expect(read).not.toHaveBeenCalled()
+  read.mockRestore()
 })
 
 test('a range that is not finite queries nothing', async () => {
@@ -517,37 +626,24 @@ test('a region cut over its node limit says how far to zoom in', async () => {
   )
 })
 
-// A walk file from rows written space-separated, served in chunk order or
-// reversed, which notes the chunk of each chunk row it serves
+// A walk file from rows as walkFileOf takes them, its units written in order
+// or reversed, which notes the nominal start of each tile it serves
 function inline(lines: string[], reversed = false, served: number[] = []) {
-  return new WalkReader(inlineSource(lines, reversed, served))
-}
-
-function inlineSource(
-  lines: string[],
-  reversed = false,
-  served: number[] = [],
-): TabixSource {
-  const rows = lines.map(line => line.split(' ').join('\t'))
-  const header = rows.filter(row => row.startsWith('#'))
-  const body = rows.filter(row => !row.startsWith('#'))
-  return {
-    getHeaderLines: () => Promise.resolve(header),
-    getLines: (refName, start, end, { lineCallback }) => {
-      const hits = body.filter(row => {
-        const [seq, a, b] = row.split('\t')
-        return seq === refName && +a! < end && +b! > start
-      })
-      for (const row of reversed ? hits.reverse() : hits) {
-        if (!refName.includes('~')) {
-          served.push(+row.split('\t')[1]!)
-        }
-        lineCallback(row)
+  const { data, directory, units } = walkFileOf(lines, reversed)
+  const read = data.read.bind(data)
+  data.read = (length, position = 0, opts) => {
+    for (const unit of units) {
+      if (
+        unit.kind === 'tile' &&
+        unit.offset >= position &&
+        unit.offset < position + length
+      ) {
+        served.push(+unit.name)
       }
-      return Promise.resolve()
-    },
-    getReferenceSequenceNames: () => Promise.resolve(['R#0#chr']),
+    }
+    return read(length, position, opts)
   }
+  return WalkReader.fromFilehandles({ data, directory })
 }
 
 // Eight 4 bp reference nodes in 16 bp chunks:
@@ -559,34 +655,34 @@ function inlineSource(
 // does on a reference that passes 2 and 6 twice, so chunk 0's route steps on
 // 6, which chunk 16's ref row places, and chunk 16's on 2.
 const tinyHeader = [
-  '#walks format:i:6 chunk:i:16 maxnode:i:4',
+  '#walks format:i:7 tile:i:16',
   '#reference R',
   '#haplotype H1#1',
   '#haplotype H2#1',
 ]
 const pieces = [
   ...tinyHeader,
-  'R#0#chr 0 1 ref R#0#chr 0 0 0 4 2,2,2,2 4,4,4,4 .',
-  'R#0#chr 0 1 walk H1#1#c 0 0 0 2 2 .',
-  'R#0#chr 0 1 walk H1#1#c 0 12 2 2 6 .',
-  'R#0#chr 0 1 walk H2#1#c 0 8 1 1 4 .',
-  'R#0#chr 16 17 ref R#0#chr 0 16 1 4 10,2,2,2 4,4,4,4 .',
-  'R#0#chr 16 17 walk H1#1#c 0 8 1 1 12 .',
-  'R#0#chr 16 17 walk H1#1#c 0 20 3 4 10 .',
-  'R#0#chr 16 17 walk H2#1#c 0 0 0 2 10 .',
-  'R#0#chr 16 17 walk H2#1#c 0 12 2 2 14 .',
+  'R#0#chr 0 ref R#0#chr 0 0 0 4 2,2,2,2 4,4,4,4 .',
+  'R#0#chr 0 walk H1#1#c 0 0 0 2 2 .',
+  'R#0#chr 0 walk H1#1#c 0 12 2 2 6 .',
+  'R#0#chr 0 walk H2#1#c 0 8 1 1 4 .',
+  'R#0#chr 16 ref R#0#chr 0 16 1 4 10,2,2,2 4,4,4,4 .',
+  'R#0#chr 16 walk H1#1#c 0 8 1 1 12 .',
+  'R#0#chr 16 walk H1#1#c 0 20 3 4 10 .',
+  'R#0#chr 16 walk H2#1#c 0 0 0 2 10 .',
+  'R#0#chr 16 walk H2#1#c 0 12 2 2 14 .',
 ]
 const stays = [
   ...tinyHeader,
-  'R#0#chr 0 1 ref R#0#chr 0 0 0 4 2,2,2,2 4,4,4,4 .',
-  'R#0#chr 0 1 nodes 6 4',
-  'R#0#chr 0 1 route 4 8 -6',
-  'R#0#chr 0 1 walk H1#1#c 0 0 0 5 2 0',
-  'R#0#chr 16 17 ref R#0#chr 0 16 1 4 10,2,2,2 4,4,4,4 .',
-  'R#0#chr 16 17 nodes 2 4',
-  'R#0#chr 16 17 route 12 -8 10',
-  'R#0#chr 16 17 walk H1#1#c 0 20 1 4 10 .',
-  'R#0#chr 16 17 walk H2#1#c 0 0 0 5 10 0',
+  'R#0#chr 0 ref R#0#chr 0 0 0 4 2,2,2,2 4,4,4,4 .',
+  'R#0#chr 0 nodes 6 4',
+  'R#0#chr 0 route 4 8 -6',
+  'R#0#chr 0 walk H1#1#c 0 0 0 5 2 0',
+  'R#0#chr 16 ref R#0#chr 0 16 1 4 10,2,2,2 4,4,4,4 .',
+  'R#0#chr 16 nodes 2 4',
+  'R#0#chr 16 route 12 -8 10',
+  'R#0#chr 16 walk H1#1#c 0 20 1 4 10 .',
+  'R#0#chr 16 walk H2#1#c 0 0 0 5 10 0',
 ]
 
 // Each window reads both chunks, the first as the chunk before it. In
@@ -594,7 +690,7 @@ const stays = [
 // inside one piece, so the cut keeps the node, at its reference position
 describe.each([
   { start: 4, end: 20, haplotypes: ['H1'], node: 6, at: 20, step: '>6' },
-  { start: 16, end: 32, haplotypes: ['H2'], node: 2, at: 4, step: '>2' },
+  { start: 12, end: 32, haplotypes: ['H2'], node: 2, at: 4, step: '>2' },
   { start: 0, end: 32, haplotypes: undefined, node: 6, at: 20, step: '>6' },
 ])(
   'a reference node a route steps on, cut $start-$end for $haplotypes',
@@ -627,10 +723,10 @@ describe.each([
 test('the same walks in pieces of their own cut whole, with the jumps as records', async () => {
   const records = [
     ...pieces,
-    'R#0#chr~departure 7 21 departure H1#1#c 8 0 0 8 + 1 20 + 1',
-    'R#0#chr~departure 8 24 departure H1#1#c 12 0 0 24 + 1 8 + 1',
-    'R#0#chr~departure 4 24 departure H2#1#c 8 0 0 24 + 1 4 + 1',
-    'R#0#chr~departure 7 25 departure H2#1#c 12 0 0 8 + 1 24 + 1',
+    'R#0#chr 4 24 departure H1#1#c 8 0 0 8 + 1 20 + 1',
+    'R#0#chr 8 24 departure H1#1#c 12 0 0 24 + 1 8 + 1',
+    'R#0#chr 4 24 departure H2#1#c 8 0 0 24 + 1 4 + 1',
+    'R#0#chr 4 28 departure H2#1#c 12 0 0 8 + 1 24 + 1',
   ]
   const { tables } = await inline(records).cutRegion(
     { refName: 'chr', start: 4, end: 20 },
@@ -667,13 +763,13 @@ test("a route's own steps inside one piece are a departure computed from the ste
 //   H  >1>2>9>3>4
 test("a departure computed from steps takes its ends' pass counts from the ref rows", async () => {
   const { graph, kept, fragments, departures } = await inline([
-    '#walks format:i:6 chunk:i:16 maxnode:i:4 revisited:i:1',
+    '#walks format:i:7 tile:i:16 revisited:i:1',
     '#reference R',
     '#haplotype H#1',
-    'R#0#chr 0 1 ref R#0#chr 0 0 0 4 2,2,2,2 4,4,4,4 1,2,1,1',
-    'R#0#chr 0 1 nodes 9 4',
-    'R#0#chr 0 1 route 4 14 -12',
-    'R#0#chr 0 1 walk H#1#h 0 0 0 5 2 0',
+    'R#0#chr 0 ref R#0#chr 0 0 0 4 2,2,2,2 4,4,4,4 1,2,1,1',
+    'R#0#chr 0 nodes 9 4',
+    'R#0#chr 0 route 4 14 -12',
+    'R#0#chr 0 walk H#1#h 0 0 0 5 2 0',
   ]).cut('R#0#chr', { start: 0, end: 16 }, { context: 0 })
   expect(
     departures.map(d => [
@@ -693,36 +789,32 @@ test("a departure computed from steps takes its ends' pass counts from the ref r
 })
 
 test('a cut keeps to WALK_BUDGETS unless its caller lifts them', async () => {
-  const bytes = { walks: 100, departures: WALK_BUDGETS.departureByteBudget + 1 }
-  const source: TabixSource = {
-    ...inlineSource(copyJump),
-    bytesForRegions: regions =>
-      Promise.resolve(
-        regions[0]!.refName.endsWith('~departure')
-          ? bytes.departures
-          : bytes.walks,
-      ),
-  }
   const window = { start: 16, end: 32 }
-  await expect(
-    new WalkReader(source).cut('R#0#chr', window),
-  ).rejects.toBeInstanceOf(DepartureReadError)
-  const lifted = await new WalkReader(source).cut('R#0#chr', window, {
-    departureByteBudget: Infinity,
-  })
-  expect(lifted.departures).toHaveLength(2)
-  bytes.departures = 1
-  bytes.walks = WALK_BUDGETS.byteBudget + 1
-  await expect(
-    new WalkReader(source).cut('R#0#chr', window),
-  ).rejects.toBeInstanceOf(RegionTooLargeError)
+  const defaults = { ...WALK_BUDGETS }
+  try {
+    WALK_BUDGETS.departureByteBudget = 1
+    await expect(
+      inline(copyJump).cut('R#0#chr', window),
+    ).rejects.toBeInstanceOf(DepartureReadError)
+    const lifted = await inline(copyJump).cut('R#0#chr', window, {
+      departureByteBudget: Infinity,
+    })
+    expect(lifted.departures).toHaveLength(2)
+    WALK_BUDGETS.departureByteBudget = defaults.departureByteBudget
+    WALK_BUDGETS.byteBudget = 1
+    await expect(
+      inline(copyJump).cut('R#0#chr', window),
+    ).rejects.toBeInstanceOf(RegionTooLargeError)
+  } finally {
+    Object.assign(WALK_BUDGETS, defaults)
+  }
 })
 
 test('a ref row whose passes do not count its steps is refused', async () => {
   const error = await inline([
-    '#walks format:i:6 chunk:i:16 maxnode:i:4',
+    '#walks format:i:7 tile:i:16',
     '#reference R',
-    'R#0#chr 0 1 ref R#0#chr 0 0 0 4 2,2,2,2 4,4,4,4',
+    'R#0#chr 0 ref R#0#chr 0 0 0 4 2,2,2,2 4,4,4,4',
   ])
     .cut('R#0#chr', { start: 0, end: 16 }, { context: 0 })
     .catch((e: unknown) => e)
@@ -734,17 +826,17 @@ test('a ref row whose passes do not count its steps is refused', async () => {
 //   W R  0 chr >1>2>3>4>5>6>7>8>9>10>11>12
 //   W H  1 h   >5>6>7>11>6>7>8
 const copyJump = [
-  '#walks format:i:6 chunk:i:16 maxnode:i:4',
+  '#walks format:i:7 tile:i:16',
   '#reference R',
   '#haplotype H#1',
-  'R#0#chr 0 1 ref R#0#chr 0 0 0 4 2,2,2,2 4,4,4,4 .',
-  'R#0#chr 16 17 ref R#0#chr 0 16 1 4 10,2,2,2 4,4,4,4 .',
-  'R#0#chr 16 17 walk H#1#h 0 0 0 3 10 .',
-  'R#0#chr 16 17 walk H#1#h 0 16 2 3 12 .',
-  'R#0#chr 32 33 ref R#0#chr 0 32 2 4 18,2,2,2 4,4,4,4 .',
-  'R#0#chr 32 33 walk H#1#h 0 12 1 1 22 .',
-  'R#0#chr~departure 27 41 departure H#1#h 12 0 0 28 + 1 40 + 1',
-  'R#0#chr~departure 19 45 departure H#1#h 16 0 0 44 + 1 20 + 1',
+  'R#0#chr 0 ref R#0#chr 0 0 0 4 2,2,2,2 4,4,4,4 .',
+  'R#0#chr 16 ref R#0#chr 0 16 1 4 10,2,2,2 4,4,4,4 .',
+  'R#0#chr 16 walk H#1#h 0 0 0 3 10 .',
+  'R#0#chr 16 walk H#1#h 0 16 2 3 12 .',
+  'R#0#chr 32 ref R#0#chr 0 32 2 4 18,2,2,2 4,4,4,4 .',
+  'R#0#chr 32 walk H#1#h 0 12 1 1 22 .',
+  'R#0#chr 24 44 departure H#1#h 12 0 0 28 + 1 40 + 1',
+  'R#0#chr 20 44 departure H#1#h 16 0 0 44 + 1 20 + 1',
 ]
 const copyJumpCut = async (
   start: number,
@@ -783,7 +875,7 @@ test('a contained cut splits a walk where it steps onto the reference off the wi
   expect(contained.text).not.toMatch(/^S\t11\t/m)
 })
 
-test("a cut reads the window's chunks and the one before, and nothing else", async () => {
+test('a cut reads the tiles its window overlaps, and nothing else', async () => {
   const served: number[] = []
   const { walks, departures } = await copyJumpCut(20, 28, true, served)
   expect(walks).toEqual([
@@ -791,23 +883,22 @@ test("a cut reads the window's chunks and the one before, and nothing else", asy
     ['H#1#h', 16, 24, '>6>7', 0, 4],
   ])
   expect(departures).toHaveLength(2)
-  expect(new Set(served)).toEqual(new Set([0, 16]))
+  expect(new Set(served)).toEqual(new Set([16]))
 })
 
 // Eight chunks of four 4 bp reference nodes
 const eightChunks = [
-  '#walks format:i:6 chunk:i:16 maxnode:i:4',
+  '#walks format:i:7 tile:i:16',
   '#reference R',
   ...Array.from(
     { length: 8 },
     (_, c) =>
-      `R#0#chr ${16 * c} ${16 * c + 1} ref R#0#chr 0 ${16 * c} ${c} 4 ${8 * c + 2},2,2,2 4,4,4,4 .`,
+      `R#0#chr ${16 * c} ref R#0#chr 0 ${16 * c} ${c} 4 ${8 * c + 2},2,2,2 4,4,4,4 .`,
   ),
 ]
 
-test('a cut over its node limit stops reading at the chunk that puts it over', async () => {
-  const served: number[] = []
-  const error = await inline(eightChunks, false, served)
+test('a cut over its node limit stops decoding at the tile that puts it over', async () => {
+  const error = await inline(eightChunks)
     .cutRegion(
       { refName: 'chr', start: 0, end: 128 },
       { context: 0, nodeLimit: 6 },
@@ -815,7 +906,6 @@ test('a cut over its node limit stops reading at the chunk that puts it over', a
     .catch((e: unknown) => e)
   expect(error).toBeInstanceOf(RegionTooLargeError)
   expect(error).toMatchObject({ limit: 6, windowBp: 128, fitsBp: 24 })
-  expect(served).toEqual([0, 16, 32])
   const whole = await inline(eightChunks).cutRegion(
     { refName: 'chr', start: 0, end: 128 },
     { context: 0, nodeLimit: 32 },
@@ -884,26 +974,31 @@ test('the reference sequences leave out detail records and departures', async ()
   expect(await reader('abridged.R').referenceSequences()).toEqual(['R#0#chr'])
 })
 
-// abridged.R, each detail read made through `around`
-function heldDetails(
-  around: (
-    read: () => Promise<void>,
+// abridged.R, each read of a detail unit made through `around`
+async function heldDetails(
+  around: <T>(
+    read: () => Promise<T>,
     detail: { start: number; signal?: AbortSignal },
-  ) => Promise<void>,
+  ) => Promise<T>,
 ) {
-  const path = `${DATA}abridged.R.walks.bed.gz`
-  const file = new TabixIndexedFile({ path, tbiPath: `${path}.tbi` })
-  const source: TabixSource = {
-    getHeaderLines: opts => file.getHeaderLines(opts),
-    getReferenceSequenceNames: opts => file.getReferenceSequenceNames(opts),
-    getLines: (refName, start, end, opts) => {
-      const read = () => file.getLines(refName, start, end, opts)
-      return refName.includes('~') && !refName.endsWith('~departure')
-        ? around(read, { start, signal: opts.signal })
-        : read()
-    },
-  }
-  return new WalkReader(source)
+  const path = `${DATA}abridged.R.walks.gz`
+  const units = await reader('abridged.R').units('R#0#chr')
+  const details = new Set(
+    units.filter(u => u.kind === 'detail').map(u => u.offset),
+  )
+  const data = new LocalFile(path)
+  const read = data.read.bind(data)
+  data.read = (length, position = 0, opts = {}) =>
+    details.has(position)
+      ? around(() => read(length, position, opts), {
+          start: position,
+          signal: opts.signal,
+        })
+      : read(length, position, opts)
+  return WalkReader.fromFilehandles({
+    data,
+    directory: new LocalFile(`${path}.idx`),
+  })
 }
 
 async function expandedCut(walks: WalkReader, signal?: AbortSignal) {
@@ -921,7 +1016,7 @@ async function expandedCut(walks: WalkReader, signal?: AbortSignal) {
 test('detail records read at once, finishing in reverse, cut as reads one at a time do', async () => {
   const pieces = (await twoRefs('abridged.R')).fragments.flatMap(f =>
     f.abridged
-      ? [`${f.abridged.detail.refName} ${f.abridged.detail.start}`]
+      ? [`${f.abridged.detail.refName} ${f.abridged.detail.name}`]
       : [],
   )
   const details = new Set(pieces).size
@@ -930,21 +1025,23 @@ test('detail records read at once, finishing in reverse, cut as reads one at a t
   let reading = 0
   let most = 0
   const serial = await expandedCut(
-    heldDetails(read => {
-      queue = queue.then(async () => {
+    await heldDetails(read => {
+      const turn = queue.then(async () => {
         most = Math.max(most, ++reading)
-        await read()
+        const bytes = await read()
         reading--
+        return bytes
       })
-      return queue
+      queue = turn.then(() => undefined)
+      return turn
     }),
   )
   expect(most).toBe(1)
   const waiting: (() => void)[] = []
   const finished: number[] = []
   const concurrent = await expandedCut(
-    heldDetails(async (read, { start }) => {
-      await read()
+    await heldDetails(async (read, { start }) => {
+      const bytes = await read()
       await new Promise<void>(resolve => {
         waiting.push(() => {
           finished.push(start)
@@ -956,6 +1053,7 @@ test('detail records read at once, finishing in reverse, cut as reads one at a t
           }
         }
       })
+      return bytes
     }),
   )
   expect(finished).toHaveLength(details)
@@ -966,9 +1064,9 @@ test('detail records read at once, finishing in reverse, cut as reads one at a t
 test('aborting an expanding cut stops its detail reads', async () => {
   const controller = new AbortController()
   const signals: AbortSignal[] = []
-  const walks = heldDetails(
+  const walks = await heldDetails(
     (_read, { signal }) =>
-      new Promise((_resolve, reject) => {
+      new Promise<never>((_resolve, reject) => {
         signals.push(signal!)
         signal!.addEventListener('abort', () => {
           reject(signal!.reason as Error)
@@ -1057,8 +1155,8 @@ test('a window inside a jump finds the jump in the departure read', async () => 
 //   W HG003  1 chr1 <10<9<8<22<21<20<4<3<2<1   its own steps filed in chunk 60
 //   W HG004  1 chr1 <10<9<8<5<4<3<2<1          jumps from 70 to 50
 // A cut of 50-55 reads chunks 20 and 40
-const spanCut = (haplotype: string, opts = {}) =>
-  reader('span.GRCh38').cut(
+const spanCut = (haplotype: string, opts = {}, walks = reader('span.GRCh38')) =>
+  walks.cut(
     'GRCh38#0#chr1',
     { start: 50, end: 55 },
     { context: 0, keep: walkNameFilter([haplotype], 'GRCh38'), ...opts },
@@ -1072,15 +1170,15 @@ test("a record under the attach threshold carries the walk's own steps from the 
   ])
 })
 
-test('a leave piece the read lacks is fetched for the own steps, once per chunk, within the fetch cap', async () => {
-  const getLines = vi.spyOn(TabixIndexedFile.prototype, 'getLines')
-  const { departures } = await spanCut('HG003#1')
-  const reads = getLines.mock.calls.map(call => call.slice(0, 3))
-  getLines.mockRestore()
+test('a leave piece the read lacks is fetched for the own steps, once per tile, within the fetch cap', async () => {
+  let departures: WalkDeparture[] = []
+  const reads = await unitsRead('span.GRCh38', 'GRCh38#0#chr1', async walks => {
+    departures = (await spanCut('HG003#1', {}, walks)).departures
+  })
   expect(departures.map(departure)).toEqual([
     ['HG003#1#chr1', 30, 30, 0, '70-', '40-', 'forward', 'record', '<22<21<20'],
   ])
-  expect(reads).toContainEqual(['GRCh38#0#chr1', 40, 61])
+  expect(reads).toEqual([['tile 40', 'departures 20'], ['tile 60']])
   const capped = await spanCut('HG003#1', { attachFetches: 0 })
   expect(capped.departures.map(departure)).toEqual([
     ['HG003#1#chr1', 30, 30, 0, '70-', '40-', 'forward', 'record', undefined],
@@ -1119,4 +1217,70 @@ test('two records whose leave pieces lie in adjacent chunks both get their own s
     ['HG002#1#chr1', 30, 10, 0, '30+', '100+', 'forward', 'record', '>20'],
     ['HG003#1#chr1', 20, 10, 0, '20+', '100+', 'forward', 'record', '>21'],
   ])
+})
+
+test('a table entry of length 0 is never read', async () => {
+  const { data, directory, units } = walkFileOf(copyJump)
+  const bytes = new Uint8Array(await data.readFile())
+  const end = bytes.length - 28
+  const entries = [
+    ['#unit', 'R#0#chr', 0, 48, 'table', '.'],
+    ['#entry', 'R#0#chr', 0, 48, 'tile', '0', 0, 0],
+    ...units.map(u => [
+      '#entry',
+      u.refName,
+      u.start,
+      u.end,
+      u.kind,
+      u.name,
+      u.offset,
+      u.length,
+    ]),
+  ]
+  const table = bgzf(`${entries.map(e => e.join('\t')).join('\n')}\n`)
+  const tableLength = table.reduce((sum, block) => sum + block.length, 0)
+  const parts = [bytes.subarray(0, end), ...table, bytes.subarray(end)]
+  const size = parts.reduce((sum, part) => sum + part.length, 0)
+  const [walks = '', header = ''] = (await directory.readFile('utf8')).split(
+    '\n',
+  )
+  const index = `${walks.replace(/\tbytes:i:\d+/, `\tbytes:i:${size}`)}\n${header}\nR#0#chr\t${end}\t${tableLength}\n`
+  const reader = WalkReader.fromFilehandles({
+    data: new BlobFile(new Blob(parts)),
+    directory: new BlobFile(new Blob([index])),
+  })
+  expect((await reader.units('R#0#chr'))[0]).toMatchObject({ length: 0 })
+  const { departures } = await reader.cut(
+    'R#0#chr',
+    { start: 0, end: 48 },
+    { context: 0 },
+  )
+  expect(departures).toHaveLength(2)
+})
+
+test("a sequence's length, the bytes a cut reads and the reference nodes over a window come from its tiles", async () => {
+  const walks = reader('header.GRCh38')
+  const units = await walks.units('GRCh38#0#chr1')
+  const tile = (name: string) =>
+    units.find(u => u.kind === 'tile' && u.name === name)!
+  expect(await walks.sequenceLength('GRCh38#0#chr1')).toBe(3600)
+  expect(await walks.sequenceLength('GRCh38#0#chr2')).toBe(0)
+  expect(
+    await walks.bytesFor(
+      'GRCh38#0#chr1',
+      { start: 2100, end: 2600 },
+      {
+        context: 0,
+      },
+    ),
+  ).toBe(
+    tile('1000').length +
+      tile('2000').length +
+      units.find(u => u.kind === 'departures' && u.start === 2000)!.length,
+  )
+  expect(
+    (
+      await walks.referenceNodes('GRCh38#0#chr1', { start: 1100, end: 2500 })
+    ).map(n => `${n.id}@${n.start}-${n.end}`),
+  ).toEqual(['2@600-1200', '3@1200-1800', '4@1800-2400', '5@2400-3000'])
 })

@@ -1,33 +1,35 @@
+import { RemoteFile } from 'generic-filehandle2'
+
 import { refNameLookup, resolveRefName } from './refNames.ts'
-import { chunkRef, decodeChunk, pieceLinks } from './walkChunk.ts'
+import { checkRange } from './tabixSource.ts'
 import {
-  ATTACH_BP,
-  departureRowKey,
-  parseDepartureRow,
-  squeezer,
-} from './walkDeparture.ts'
+  chunkRef,
+  decodeChunk,
+  pieceLinks,
+  referenceNodes,
+} from './walkChunk.ts'
+import { ATTACH_BP, parseDepartureRow, squeezer } from './walkDeparture.ts'
+import { WalkFile, WalkFormatError, once, raceAbort } from './walkFile.ts'
 import {
   WalkGraph,
   byteBudgetError,
-  chunkQueryStart,
   joinPieces,
   keptNodesError,
   keptStepsError,
-  lookbackChunks,
   megabytes,
   stepBudgetError,
   surelyKept,
   walkCut,
   walkHeader,
-  walkQueryStart,
   walksKept,
 } from './walkRows.ts'
 
 import type { ChunkRef, DecodedChunk } from './walkChunk.ts'
 import type { WalkDeparture } from './walkDeparture.ts'
+import type { WalkFilehandle, WalkUnit } from './walkFile.ts'
 import type { BudgetNames, WalkHeader, WalkRow } from './walkRows.ts'
 
-// A window reads whole chunks and keeps the steps on it, so a narrow window
+// A window reads whole tiles and keeps the steps on it, so a narrow window
 // reads several times what it keeps: 464 haplotypes across the 1.5 kb ABCA7
 // repeat read 5.0 M steps and keep 1.16 M, and the cut takes 0.4 s from warm
 // files. The step budget bounds what the cut keeps, and rows are read to this
@@ -40,7 +42,7 @@ const WALK_CONTEXT = 1000
 // detail records an expanding cut reads at once
 const DETAIL_READS = 16
 
-// chunks a cut fetches for the own steps of departure records whose leave
+// tiles a cut fetches for the own steps of departure records whose leave
 // piece its read lacks
 const ATTACH_FETCHES = 8
 
@@ -51,31 +53,6 @@ export const WALK_BUDGETS = {
   byteBudget: 8_000_000,
   departureByteBudget: 2_000_000,
   attachBp: ATTACH_BP,
-}
-
-/**
- * A Tabix-indexed file as the reader uses one: @gmod/tabix's
- * TabixIndexedFile is one. `bytesForRegions` estimates the compressed bytes a
- * read fetches, which the byte budgets need.
- */
-export interface TabixSource {
-  getHeaderLines(opts?: { signal?: AbortSignal }): Promise<string[]>
-  getLines(
-    refName: string,
-    start: number,
-    end: number,
-    opts: { signal?: AbortSignal; lineCallback: (line: string) => void },
-  ): Promise<void>
-  getReferenceSequenceNames(opts?: { signal?: AbortSignal }): Promise<string[]>
-  bytesForRegions?(
-    regions: { refName: string; start: number; end: number }[],
-    opts?: { signal?: AbortSignal },
-  ): Promise<number>
-}
-
-// A walk file in a format other than 6, which the reader refuses
-export class WalkFormatError extends Error {
-  override name = 'WalkFormatError'
 }
 
 /**
@@ -95,22 +72,6 @@ export class DepartureReadError extends Error {
     this.bytes = bytes
     this.limit = limit
   }
-}
-
-// @gmod/tabix loops forever on a NaN end and reads nothing for a NaN start
-// (GMOD/tabix-js#157), so every query refuses a range that is not finite first
-export function checkRange(refName: string, start: number, end: number) {
-  if (!Number.isFinite(start) || !Number.isFinite(end)) {
-    throw new Error(
-      `${refName}:${start}-${end} is not a finite range to query the graph's index for`,
-    )
-  }
-}
-
-// A detail record's sequence is its chunk's, `~` and the chunk's start, and
-// a sequence's departures lie under `~departure`
-function withoutSiblings(names: string[]) {
-  return names.filter(name => !name.includes('~'))
 }
 
 // Reads `items`, at most `limit` at once and none once `signal` aborts, and
@@ -139,27 +100,6 @@ export async function readInOrder<T, R>(
   }
 }
 
-// Settles like `promise` unless `signal` aborts first
-function raceAbort<T>(promise: Promise<T>, signal?: AbortSignal) {
-  if (!signal) {
-    return promise
-  }
-  signal.throwIfAborted()
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => {
-      reject(
-        signal.reason instanceof Error
-          ? signal.reason
-          : new Error(String(signal.reason)),
-      )
-    }
-    signal.addEventListener('abort', onAbort, { once: true })
-    promise.then(resolve, reject).finally(() => {
-      signal.removeEventListener('abort', onAbort)
-    })
-  })
-}
-
 export interface WalkCutOptions {
   signal?: AbortSignal
   // which walks to decode, by `sample#haplotype#contig`; undefined is all
@@ -167,18 +107,18 @@ export interface WalkCutOptions {
   // the most steps a cut keeps, WALK_BUDGETS' by default; Infinity has no
   // limit
   stepBudget?: number
-  // the most compressed bytes a cut fetches from the windows' chunks, on a
-  // source with bytesForRegions, WALK_BUDGETS' by default; Infinity has no
-  // limit. The detail records `expand` reads count only against stepBudget,
-  // and the chunks fetched for records' own steps against no budget
+  // the most compressed bytes a cut fetches from the tiles under its window
+  // and context, WALK_BUDGETS' by default; Infinity has no limit. The detail
+  // records `expand` reads count only against stepBudget, and the tiles
+  // fetched for records' own steps against no budget
   byteBudget?: number
-  // the most compressed bytes the departure read fetches, on a source with
-  // bytesForRegions, WALK_BUDGETS' by default; Infinity has no limit
+  // the most compressed bytes the departure read fetches, WALK_BUDGETS' by
+  // default; Infinity has no limit
   departureByteBudget?: number
   // the most bp of own sequence a departure gets its steps attached for,
   // ATTACH_BP by default
   attachBp?: number
-  // the most chunks the cut fetches for the own steps of records whose leave
+  // the most tiles the cut fetches for the own steps of records whose leave
   // piece its read lacks
   attachFetches?: number
   context?: number
@@ -207,57 +147,116 @@ export interface RegionCutOptions extends Omit<WalkCutOptions, 'keep'> {
   referenceSample?: string
 }
 
-export type WalkReaderHeader = WalkHeader & { chunk: number }
+export type WalkReaderHeader = WalkHeader & { tile: number }
+
+const overlaps = (unit: WalkUnit, span: { start: number; end: number }) =>
+  unit.length > 0 && unit.start < span.end && unit.end > span.start
+
+const bytesOf = (units: WalkUnit[]) =>
+  units.reduce((sum, unit) => sum + unit.length, 0)
+
+// The stretch a cut draws: the window and its context
+const drawnSpan = (
+  region: { start: number; end: number },
+  context: number,
+) => ({
+  start: Math.max(0, region.start - context),
+  end: region.end + context,
+})
+
+// The directory beside a data file's URL, before any query or fragment
+const directoryOf = (url: string) => url.replace(/(?=$|[?#])/, '.idx')
+
+// The records of departure lines over `span`, each line once, of the walks
+// kept
+function departureRecords(
+  lines: string[],
+  span: { start: number; end: number },
+  keep: ((name: string) => boolean) | undefined,
+) {
+  const records: WalkDeparture[] = []
+  for (const line of new Set(lines)) {
+    const cols = line.split('\t')
+    if (
+      cols[3] === 'departure' &&
+      +cols[1]! < span.end &&
+      +cols[2]! > span.start
+    ) {
+      const record = parseDepartureRow(cols)
+      if (keep === undefined || keep(record.name)) {
+        records.push(record)
+      }
+    }
+  }
+  return records
+}
 
 /**
- * A `gfa-to-tabix --walks` file, `<prefix>.<sample>.walks.bed.gz`, read a
- * window at a time: the walk read over whole chunks, from the lookback
- * chunks before the window to its end, each chunk decoded once, and the
- * departure read over the window and its context on the sequence's
- * `~departure` sibling. The index first estimates the bytes each fetches,
- * and a window past a budget reads no row. Only the walks `keep` accepts are
- * decoded. The step budget bounds the steps the cut keeps, and rows holding
+ * A `gfa-to-tabix --walks` file of walk format 7, `<prefix>.<sample>.walks.gz`
+ * and its directory `<prefix>.<sample>.walks.gz.idx`, read a window at a
+ * time. At open the directory, the header and the sequence's unit table; for
+ * a window, the tiles and departure blocks overlapping the window and its
+ * context, in one read wherever their bytes touch, each tile decoded once.
+ * The table gives each read's bytes before it is made, and a window past a
+ * budget reads no row. Only the walks `keep` accepts are decoded. The step
+ * budget bounds the steps the cut keeps, and rows holding
  * READ_STEPS_PER_KEPT times as many stop the read.
  */
 export class WalkReader {
-  private headerRead: Promise<WalkReaderHeader> | undefined
-  private lookupRead: Promise<Map<string, string>> | undefined
-  private readonly walks: TabixSource
+  private readonly file: WalkFile
 
-  constructor(walks: TabixSource) {
-    this.walks = walks
+  constructor(file: WalkFile) {
+    this.file = file
   }
+
+  /**
+   * The walk file at `url` and its directory at `url` plus `.idx`, before any
+   * query string, each opened by `open`, a RemoteFile by default
+   */
+  static open(
+    url: string,
+    open: (url: string) => WalkFilehandle = location =>
+      new RemoteFile(location),
+  ) {
+    return WalkReader.fromFilehandles({
+      data: open(url),
+      directory: open(directoryOf(url)),
+    })
+  }
+
+  // The walk file `data` with its directory, the `.idx` file
+  static fromFilehandles({
+    data,
+    directory,
+  }: {
+    data: WalkFilehandle
+    directory: WalkFilehandle
+  }) {
+    return new WalkReader(new WalkFile(data, directory))
+  }
+
+  private readonly readHeader = once(async () => {
+    const header = walkHeader(await this.file.header())
+    const { tile } = header
+    if (tile === undefined) {
+      throw new WalkFormatError("The walk file's #walks line states no tile:i:")
+    }
+    return { ...header, tile }
+  })
+
+  private readonly readLookup = once(async () =>
+    refNameLookup(await this.file.sequences()),
+  )
 
   // The header, read once for every caller: one caller giving up stops only
   // its own wait, and a read that fails is tried again by the next caller
   header(opts: { signal?: AbortSignal } = {}) {
-    if (!this.headerRead) {
-      const read = this.walks.getHeaderLines().then(lines => {
-        const header = walkHeader(lines)
-        if (header.format !== 6) {
-          const format = header.format ?? 1
-          throw new WalkFormatError(
-            format > 6
-              ? `This walk file is format ${format}; this version of @jbrowse/graph-walks reads format 6, so update the viewer, or @jbrowse/graph-walks, to one that reads format ${format}`
-              : `This walk file is format ${format}; @jbrowse/graph-walks reads format 6, so rebuild it with gfa-to-tabix 3.0 or later`,
-          )
-        }
-        return { ...header, chunk: header.chunk ?? 65536 }
-      })
-      read.catch(() => {
-        if (this.headerRead === read) {
-          this.headerRead = undefined
-        }
-      })
-      this.headerRead = read
-    }
-    return raceAbort(this.headerRead, opts.signal)
+    return raceAbort(this.readHeader(), opts.signal)
   }
 
-  // The reference sequences the walk file holds windows on, without the
-  // `seq~cs` sequences of detail records and the `seq~departure` siblings
-  async referenceSequences(opts: { signal?: AbortSignal } = {}) {
-    return withoutSiblings(await this.walks.getReferenceSequenceNames(opts))
+  // The reference sequences the walk file holds windows on
+  referenceSequences(opts: { signal?: AbortSignal } = {}) {
+    return raceAbort(this.file.sequences(), opts.signal)
   }
 
   /**
@@ -270,29 +269,68 @@ export class WalkReader {
     refName: string,
     opts: { signal?: AbortSignal } = {},
   ) {
-    if (!this.lookupRead) {
-      const read = this.walks
-        .getReferenceSequenceNames()
-        .then(names => refNameLookup(withoutSiblings(names)))
-      read.catch(() => {
-        if (this.lookupRead === read) {
-          this.lookupRead = undefined
-        }
-      })
-      this.lookupRead = read
-    }
-    const lookup = await raceAbort(this.lookupRead, opts.signal)
+    const lookup = await raceAbort(this.readLookup(), opts.signal)
     return resolveRefName(lookup, sample, refName)
   }
 
-  // The first base a cut over `start`, and `end` on `refName` when given,
-  // queries
-  async queryStart(
-    start: number,
-    opts: { signal?: AbortSignal; refName?: string; end?: number } = {},
+  // The units the file holds for a reference sequence, in file order
+  units(refName: string, opts: { signal?: AbortSignal } = {}) {
+    return raceAbort(this.file.units(refName), opts.signal)
+  }
+
+  // Where the reference's last node on `refName` ends, from the extents of
+  // its tiles; 0 for a sequence the file lacks
+  async sequenceLength(refName: string, opts: { signal?: AbortSignal } = {}) {
+    const units = await this.units(refName, opts)
+    return units.reduce(
+      (end, u) => (u.kind === 'tile' ? Math.max(end, u.end) : end),
+      0,
+    )
+  }
+
+  // The compressed bytes a cut of `region` reads before any attach fetch or
+  // expansion: its tiles and departure blocks
+  async bytesFor(
+    refName: string,
+    region: { start: number; end: number },
+    opts: { signal?: AbortSignal; context?: number } = {},
   ) {
-    const { refName = '', end = start + 1 } = opts
-    return walkQueryStart(await this.header(opts), refName, start, end)
+    const drawn = drawnSpan(region, opts.context ?? WALK_CONTEXT)
+    const units = await this.units(refName, opts)
+    return bytesOf(
+      units.filter(
+        u =>
+          (u.kind === 'tile' || u.kind === 'departures') && overlaps(u, drawn),
+      ),
+    )
+  }
+
+  // The reference's nodes overlapping `region`, each once, from the ref rows
+  // of the tiles there
+  async referenceNodes(
+    refName: string,
+    region: { start: number; end: number },
+    opts: { signal?: AbortSignal } = {},
+  ) {
+    checkRange(refName, region.start, region.end)
+    const tiles = (await this.units(refName, opts)).filter(
+      u => u.kind === 'tile' && overlaps(u, region),
+    )
+    const read = await this.file.read(tiles, opts.signal)
+    const seen = new Set<number>()
+    return referenceNodes(read.flat().map(line => line.split('\t'))).filter(
+      node => {
+        const fresh =
+          node.refName === refName &&
+          node.end > region.start &&
+          node.start < region.end &&
+          !seen.has(node.id)
+        if (fresh) {
+          seen.add(node.id)
+        }
+        return fresh
+      },
+    )
   }
 
   async cut(
@@ -314,52 +352,32 @@ export class WalkReader {
       nodeLimit = Infinity,
       expand,
     } = opts
-    const header = await this.header({ signal })
-    const { chunk } = header
-    const drawn = {
-      start: Math.max(0, region.start - context),
-      end: region.end + context,
-    }
-    const from = walkQueryStart(header, refName, drawn.start, drawn.end)
-    const sibling = `${refName}~departure`
-    // the drawn stretch reaches at most a node past the window's context
-    const reach = header.maxNode ?? chunk
-    const extent = {
-      start: Math.max(0, region.start - context - reach),
-      end: region.end + context + reach,
-    }
-    const bytesForRegions = this.walks.bytesForRegions?.bind(this.walks)
-    const bytesFor = async (
-      name: string,
-      spans: { start: number; end: number }[],
-    ) =>
-      bytesForRegions === undefined
-        ? 0
-        : bytesForRegions(
-            spans.map(span => ({ refName: name, ...span })),
-            { signal },
-          )
-    if (Number.isFinite(byteBudget) && bytesForRegions !== undefined) {
-      const tooLarge = await byteBudgetError(
-        async end => {
-          checkRange(refName, from, end)
-          return bytesFor(refName, [{ start: from, end }])
-        },
+    checkRange(refName, region.start, region.end)
+    const [header, units] = await Promise.all([
+      this.header({ signal }),
+      this.units(refName, { signal }),
+    ])
+    const { tile } = header
+    const drawn = drawnSpan(region, context)
+    const tiles = units.filter(u => u.kind === 'tile' && overlaps(u, drawn))
+    const blocks = units.filter(
+      u => u.kind === 'departures' && overlaps(u, drawn),
+    )
+    if (Number.isFinite(byteBudget)) {
+      const tooLarge = byteBudgetError(
+        end => bytesOf(tiles.filter(u => u.start < end)),
         byteBudget,
         region,
-        chunk,
+        tile,
         opts.budgetNames,
       )
       if (tooLarge) {
         throw tooLarge
       }
     }
-    if (Number.isFinite(departureByteBudget) && bytesForRegions !== undefined) {
-      checkRange(sibling, extent.start, extent.end)
-      const bytes = await bytesFor(sibling, [extent])
-      if (bytes > departureByteBudget) {
-        throw new DepartureReadError(bytes, departureByteBudget)
-      }
+    const departureBytes = bytesOf(blocks)
+    if (departureBytes > departureByteBudget) {
+      throw new DepartureReadError(departureBytes, departureByteBudget)
     }
     const reads = new AbortController()
     const stop = () => {
@@ -375,10 +393,10 @@ export class WalkReader {
       context,
       sequences: opts.sequences,
     })
-    // the name filters each chunk was decoded under
+    // the name filters each tile was decoded under, by its offset
     const decodedBy = new Map<number, ((name: string) => boolean)[]>()
-    const decodedFor = (cs: number, name: string) =>
-      decodedBy.get(cs)?.some(took => took(name)) === true
+    const decodedFor = (unit: WalkUnit, name: string) =>
+      decodedBy.get(unit.offset)?.some(took => took(name)) === true
     const ends: DecodedChunk['ends'] = []
     const surely = new Set<number>()
     const bounds = {
@@ -387,87 +405,27 @@ export class WalkReader {
       end: region.end + context,
     }
     const filtered = keep !== undefined
+    const detailUnits = new Map(
+      units.filter(u => u.kind === 'detail').map(u => [u.name, u]),
+    )
     // the detail records of the expanded walks, each once, with the R of
-    // their chunk; a path's abridged pieces in a chunk share one
+    // their tile; a path's abridged pieces in a tile share one
     let details: { ref: ChunkRef; row: WalkRow }[] = []
     const detailsRead = new Set<string>()
-    // each chunk read is decoded once, into its rows, nodes and the links
-    // between pieces, and a cut over its node limit stops there
-    const decode = (
-      cs: number,
-      chunkRows: string[][],
-      only: ((name: string) => boolean) | undefined,
-    ) => {
-      const wanted = only ?? keep ?? (() => true)
-      const earlier = decodedBy.get(cs) ?? []
-      decodedBy.set(cs, [...earlier, wanted])
-      const chunkCut = decodeChunk(
-        chunkRows,
-        name => wanted(name) && !earlier.some(took => took(name)),
-        opts.sequences,
-      )
-      let ref: ChunkRef | undefined
-      for (const row of chunkCut.rows) {
-        if (row.abridged && expand?.(row.name)) {
-          const { refName: sequence, start } = row.abridged.detail
-          const key = `${sequence}\t${start}`
-          if (!detailsRead.has(key)) {
-            detailsRead.add(key)
-            ref ??= chunkRef(chunkRows)
-            details.push({ ref, row })
-          }
-        } else {
-          rows.push(row)
-        }
-      }
-      place(chunkCut, cs)
-    }
-    const readDetail = async ({ row }: { row: WalkRow }) => {
-      const { refName: sequence, start } = row.abridged!.detail
-      checkRange(sequence, start, start + 1)
-      const held: string[][] = []
-      await this.walks.getLines(sequence, start, start + 1, {
-        signal: reads.signal,
-        lineCallback: line => {
-          const cols = line.split('\t')
-          cols[0] = refName
-          cols[1] = String(row.chunkStart)
-          held.push(cols)
-        },
-      })
-      return held
-    }
-    const decodeDetail = (
-      { ref, row }: { ref: ChunkRef; row: WalkRow },
-      held: string[][],
-    ) => {
-      const chunkCut = decodeChunk(
-        held,
-        name => name === row.name,
-        opts.sequences,
-        ref,
-      )
-      for (const decodedRow of chunkCut.rows) {
-        if (decodedRow.name === row.name) {
-          rows.push(decodedRow)
-        }
-      }
-      place(chunkCut, row.chunkStart)
-    }
-    const place = (chunkCut: DecodedChunk, cs: number) => {
-      for (const [id, node] of chunkCut.nodes) {
+    const place = (tileCut: DecodedChunk, readTo: number) => {
+      for (const [id, node] of tileCut.nodes) {
         graph.placeNode(id, node)
       }
-      for (const { id, ...node } of chunkCut.revisits) {
+      for (const { id, ...node } of tileCut.revisits) {
         graph.placeNode(id, node)
       }
-      graph.addSequences(chunkCut.sequences)
-      graph.addChunk(chunkCut.chunk)
-      for (const end of chunkCut.ends) {
+      graph.addSequences(tileCut.sequences)
+      graph.addChunk(tileCut.chunk)
+      for (const end of tileCut.ends) {
         ends.push(end)
       }
       if (Number.isFinite(nodeLimit)) {
-        surelyKept(chunkCut, graph.nodes, bounds, surely)
+        surelyKept(tileCut, graph.nodes, bounds, surely)
         if (surely.size > nodeLimit) {
           surely.clear()
           surelyKept({ nodes: graph.nodes, rows }, graph.nodes, bounds, surely)
@@ -477,41 +435,78 @@ export class WalkReader {
           nodeLimit,
           region,
           filtered,
-          cs + chunk,
+          readTo,
         )
         if (over) {
           throw over
         }
       }
     }
-    // rows arrive in chunk order, and each chunk is decoded as the next
-    // starts; `only` narrows a fetch to the walks named
-    const readChunks = async (
-      start: number,
-      end: number,
+    // a tile is decoded into its rows, nodes and the links between pieces,
+    // for the names `only` takes that no earlier decode of it took, and a cut
+    // over its node limit stops there
+    const decode = (
+      unit: WalkUnit,
+      lines: string[],
       only?: (name: string) => boolean,
     ) => {
-      checkRange(refName, start, end)
-      let at: number | undefined
-      let held: string[][] = []
-      await this.walks.getLines(refName, start, end, {
-        signal: reads.signal,
-        lineCallback: line => {
-          const cols = line.split('\t')
-          const cs = +cols[1]!
-          if (cs !== at) {
-            if (at !== undefined) {
-              decode(at, held, only)
-            }
-            at = cs
-            held = []
+      const wanted = only ?? keep ?? (() => true)
+      const earlier = decodedBy.get(unit.offset) ?? []
+      decodedBy.set(unit.offset, [...earlier, wanted])
+      const tileRows = lines.map(line => line.split('\t'))
+      const tileCut = decodeChunk(
+        tileRows,
+        Number(unit.name),
+        name => wanted(name) && !earlier.some(took => took(name)),
+        opts.sequences,
+      )
+      let ref: ChunkRef | undefined
+      for (const row of tileCut.rows) {
+        if (row.abridged && expand?.(row.name)) {
+          const { name } = row.abridged.detail
+          if (!detailsRead.has(name)) {
+            detailsRead.add(name)
+            ref ??= chunkRef(tileRows)
+            details.push({ ref, row })
           }
-          held.push(cols)
-        },
-      })
-      if (at !== undefined) {
-        decode(at, held, only)
+        } else {
+          rows.push(row)
+        }
       }
+      place(tileCut, unit.end)
+    }
+    const readDetail = async ({ row }: { row: WalkRow }) => {
+      const { name } = row.abridged!.detail
+      const unit = detailUnits.get(name)
+      if (!unit) {
+        throw new WalkFormatError(
+          `${refName}'s unit table lists no detail unit ${name}, which an abridged row of ${row.name} names`,
+        )
+      }
+      const [lines = []] = await this.file.read([unit], reads.signal)
+      return lines.map(line => line.split('\t'))
+    }
+    const decodeDetail = (
+      { ref, row }: { ref: ChunkRef; row: WalkRow },
+      held: string[][],
+    ) => {
+      const tileCut = decodeChunk(
+        held,
+        row.chunkStart,
+        name => name === row.name,
+        opts.sequences,
+        ref,
+      )
+      for (const decodedRow of tileCut.rows) {
+        if (decodedRow.name === row.name) {
+          rows.push(decodedRow)
+        }
+      }
+      place(tileCut, row.chunkStart + tile)
+    }
+    // the detail records the tiles decoded asked for, then the links
+    // between pieces
+    const finish = async () => {
       const pending = details
       details = []
       await readInOrder(
@@ -527,43 +522,24 @@ export class WalkReader {
         }
       }
     }
-    // the records over the extent, each once, of the walks kept
-    const readDepartures = async () => {
-      checkRange(sibling, extent.start, extent.end)
-      const seen = new Set<string>()
-      const records: WalkDeparture[] = []
-      await this.walks.getLines(sibling, extent.start, extent.end, {
-        signal: reads.signal,
-        lineCallback: line => {
-          const cols = line.split('\t')
-          if (cols[3] !== 'departure') {
-            return
-          }
-          const key = departureRowKey(cols)
-          if (seen.has(key)) {
-            return
-          }
-          seen.add(key)
-          const record = parseDepartureRow(cols)
-          if (keep === undefined || keep(record.name)) {
-            records.push(record)
-          }
-        },
-      })
-      return records
-    }
     let cut: ReturnType<typeof walkCut>
     try {
-      const [records] = await Promise.all([
-        readDepartures(),
-        readChunks(from, drawn.end),
-      ])
+      const read = await this.file.read([...tiles, ...blocks], reads.signal)
+      tiles.forEach((unit, k) => {
+        decode(unit, read[k]!)
+      })
+      const records = departureRecords(
+        read.slice(tiles.length).flat(),
+        drawn,
+        keep,
+      )
+      await finish()
       const tooManyRead = stepBudgetError(
         rows,
         stepBudget,
         READ_STEPS_PER_KEPT,
         region,
-        chunk,
+        tile,
         filtered,
         opts.budgetNames,
       )
@@ -578,26 +554,35 @@ export class WalkReader {
           squeeze: squeezer(header.holes, refName),
         })
       cut = cutRows()
-      // the leave pieces the read lacks, each chunk fetched once for the
-      // records wanting it, with the chunk before for a straddling node
-      const fetches = new Map<number, Set<string>>()
+      // the leave pieces the read lacks: each tile whose extent holds a
+      // record's leave base, fetched once for the records wanting it
+      const fetches = new Map<WalkUnit, Set<string>>()
       for (const { departure, base } of cut.unattached) {
-        const cs = Math.floor(base / chunk) * chunk
-        if (!decodedFor(cs, departure.name)) {
-          fetches.set(cs, (fetches.get(cs) ?? new Set()).add(departure.name))
+        for (const unit of units) {
+          if (
+            unit.kind === 'tile' &&
+            unit.length > 0 &&
+            unit.start <= base &&
+            base < unit.end &&
+            !decodedFor(unit, departure.name)
+          ) {
+            fetches.set(
+              unit,
+              (fetches.get(unit) ?? new Set()).add(departure.name),
+            )
+          }
         }
       }
       const wanted = [...fetches].slice(0, attachFetches)
       if (wanted.length > 0) {
-        await Promise.all(
-          wanted.map(([cs, names]) =>
-            readChunks(
-              chunkQueryStart(cs, chunk, lookbackChunks(header.maxNode, chunk)),
-              cs + 1,
-              name => names.has(name),
-            ),
-          ),
+        const fetched = await this.file.read(
+          wanted.map(([unit]) => unit),
+          reads.signal,
         )
+        wanted.forEach(([unit, names], k) => {
+          decode(unit, fetched[k]!, name => names.has(name))
+        })
+        await finish()
         cut = cutRows()
       }
     } catch (error) {

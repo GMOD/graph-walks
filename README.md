@@ -3,17 +3,22 @@
 @jbrowse/graph-walks reads a window of a pangenome graph from
 [gfa-to-tabix](https://github.com/GMOD/gfa-to-tabix) files by range requests.
 
-- **In:** a `gfa-to-tabix --walks` file, `<prefix>.<sample>.walks.bed.gz` with
-  its `.tbi`, or a segment index, `<prefix>.segs.bed.gz` and
-  `<prefix>.links.bed.gz` with theirs or format 2's `<prefix>.graph.bed.gz`,
-  plus a reference region such as `chr6:160,614,798-160,647,758`
+- **In:** a `gfa-to-tabix --walks` file, `<prefix>.<sample>.walks.gz` with its
+  directory `<prefix>.<sample>.walks.gz.idx`, or a segment index,
+  `<prefix>.segs.bed.gz` and `<prefix>.links.bed.gz` with theirs or format 2's
+  `<prefix>.graph.bed.gz`, plus a reference region such as
+  `chr6:160,614,798-160,647,758`
 - **Out:** from a walk file, the reference over the region, every haplotype's
   walk through it, and the nodes and links they visit, as typed arrays; from a
   segment index, the segments and links under the region as GFA text
-- The reader reads walk format 6, which gfa-to-tabix 3.0 and later write, and
+- The reader reads walk format 7, which gfa-to-tabix 4.0 and later write, and
   refuses an older format with a `WalkFormatError` asking for a rebuild, and a
   newer one asking for a newer reader
-- The package has no runtime dependencies, and reads through any object with
+- It reads a walk file through
+  [generic-filehandle2](https://github.com/GMOD/generic-filehandle2)'s handles
+  and gunzips with
+  [@gmod/bgzf-filehandle](https://github.com/GMOD/bgzf-filehandle); a segment
+  index through any object with
   [@gmod/tabix](https://github.com/GMOD/tabix-js)'s `TabixIndexedFile` methods
 
 The JBrowse graph plugin, BandageJS, ggbandage and the sequenceTubeMap fork read
@@ -22,18 +27,18 @@ through it.
 ## Install
 
 ```bash
-npm install @jbrowse/graph-walks @gmod/tabix
+npm install @jbrowse/graph-walks
 ```
+
+A segment index also needs `@gmod/tabix`.
 
 ## Usage
 
 ```ts
-import { TabixIndexedFile } from '@gmod/tabix'
 import { WalkReader, walksKept } from '@jbrowse/graph-walks'
 
-const path = 'hprc-v2.1-mc-grch38.GRCh38.walks.bed.gz'
-const reader = new WalkReader(
-  new TabixIndexedFile({ path, tbiPath: `${path}.tbi` }),
+const reader = WalkReader.open(
+  'https://example.org/hprc-v2.1-mc-grch38.GRCh38.walks.gz',
 )
 
 const refName = 'GRCh38#0#chr6'
@@ -45,9 +50,16 @@ const { graph, kept, fragments, departures } = await reader.cut(
 const tables = graph.tables(kept, fragments, departures)
 ```
 
-- `path` is a walk file gfa-to-tabix 3.0 or later wrote; over HTTP, pass
-  `filehandle` and `tbiFilehandle` from generic-filehandle2's `RemoteFile`. The
-  HPRC files jbrowse.org hosts are format 5, which graph-walks 4 reads
+- `WalkReader.open(url)` reads the walk file at `url` and its directory at `url`
+  plus `.idx`, put before any query string or fragment, by HTTP range requests
+  through generic-filehandle2's `RemoteFile`. Its second argument opens each
+  location another way: `url => new LocalFile(url)` for a local file
+- `WalkReader.fromFilehandles({ data, directory })` takes the two handles
+  already open: `data` the `.walks.gz`, `directory` its `.idx`. Any object with
+  a generic-filehandle2 handle's `read`, `readFile`, `stat` and `source` will do
+- A file gfa-to-tabix 4.0 or later wrote; a format 6 `.walks.bed.gz` has no
+  directory, and the reader says to rebuild it. The HPRC files jbrowse.org hosts
+  are format 5, which graph-walks 4 reads
 - `tables` lists the nodes with their lengths and reference positions, the links
   between them, each walk's steps, and every departure from the reference over
   the window ([Departures](#departures)). `graphTablesGFA` in
@@ -57,9 +69,42 @@ const tables = graph.tables(kept, fragments, departures)
   the position of its pass over the window, and each walk's step on it the pass
   its row names
 - `reader.header()` lists the reference sample and every haplotype with rows,
-  read from the walk file's first block
+  and the tile size, `tile`, read from the walk file's header unit
 - `reader.referenceSequences()` lists the sequences a region can be on, in full
   PanSN: `GRCh38#0#chr6`
+
+## Changes in 6
+
+graph-walks 6 reads walk format 7 only (gfa-to-tabix's ADR 0010): a series of
+gzip units with a unit table per sequence and a directory, not a Tabix file.
+
+- Open a walk file with `WalkReader.open(url)` or
+  `WalkReader.fromFilehandles({ data, directory })`, in place of
+  `new WalkReader(new TabixIndexedFile(...))`. `cut`, `cutRegion`, `header`,
+  `referenceSequences` and `sequenceFor` keep their calls, and `cut` its return
+  shape
+- A cut reads the tiles and departure blocks overlapping the window and its
+  context, by extent, and nothing before them: no chunk before the window, no
+  `maxnode` lookback, no `#long` widening, no reach on the departure read, no
+  `~departure` or `~cs` sequences. An attach fetch reads the tile whose extent
+  holds the leave base. Units whose bytes touch come in one range request
+- Since a cut reads less, a fragment's `trimmedBefore` and `trimmedAfter`, the
+  bp of its walk the cut read and kept out, can be smaller than graph-walks 5
+  gave for the same window
+- An abridged fragment's `abridged.detail` names its detail unit: the sequence,
+  the tile's nominal start and `name`, `tile:detail`
+- The byte budgets count the table's exact unit lengths, so they hold on every
+  source
+- New: `reader.units(refName)`, a sequence's unit table;
+  `reader.sequenceLength(refName)`, where its reference ends;
+  `reader.bytesFor(refName, region)`, the bytes a cut there reads;
+  `reader.referenceNodes(refName, region)`, the reference's nodes there;
+  `WalkFile`, `WalkUnit`, `WalkFilehandle` and `WALK_FORMAT`
+- Removed: `queryStart`, `chunkQueryStart`, `lookbackChunks`, `walkQueryStart`,
+  `LongPass`, and the header's `chunk`, `maxNode` and `long`; `byteBudgetError`
+  takes a synchronous `bytesTo`. `TabixSource` now types only the segment index
+- Fixed: two departure records whose leave pieces lie in adjacent tiles both get
+  their own steps; graph-walks 5.0.2 dropped one's
 
 ## Changes in 5
 
@@ -109,7 +154,7 @@ const { tables, refName, sample } = await reader.cutRegion(
 | `byteBudget`          | The most compressed bytes the walk read fetches; 8 MB by default                    |
 | `departureByteBudget` | The most compressed bytes the departure read fetches; 2 MB by default               |
 | `attachBp`            | The most bp of own sequence a departure gets its steps attached for; default 65,536 |
-| `attachFetches`       | The most chunks fetched for own steps the read lacks; default 8                     |
+| `attachFetches`       | The most tiles fetched for own steps the read lacks; default 8                      |
 | `nodeLimit`           | The most nodes a cut keeps; no limit by default                                     |
 | `contained`           | `true` keeps each walk within the window; see below                                 |
 | `links`               | `false` lists no links, for a caller that draws no edges                            |
@@ -124,22 +169,21 @@ const { tables, refName, sample } = await reader.cutRegion(
 - Over the byte budget, the error's `bytes` is what the window would fetch, so a
   viewer with a fixed window can offer to load it anyway with `byteBudget`
   raised to `bytes`. `zoomHelps` is false where no narrower window fits
-- The cut checks the node limit as it decodes each chunk, against the nodes it
-  keeps whatever else it reads, and stops reading at the first chunk over it
+- The cut checks the node limit as it decodes each tile, against the nodes it
+  keeps whatever else it reads, and stops decoding at the first tile over it
 - A window past `departureByteBudget` throws a `DepartureReadError`, which is
   not a `RegionTooLargeError`: a departure's record is filed over its whole
   stretch, so zooming in does not lower that read. A collapsed repeat that
   haplotypes hop between the copies of is the usual cause
 - `WALK_BUDGETS` holds the default budgets and `attachBp`, what a browser window
   holds; a caller that wants no limit passes `Infinity`
-- The byte budgets bound what a cut fetches only where the source has
-  `bytesForRegions`: the cut estimates the window's chunks and the departure
-  read before fetching them, and refuses either past its budget. A source
-  without it gets those reads whole. On any source, the detail records `expand`
-  names count only against `stepBudget`, once read, and the chunks fetched for
-  records' own steps, at most `attachFetches` (8), against no budget; the writer
-  moves paths out of any chunk whose rows would compress past its header's
-  `abridgebytes`
+- The byte budgets bound what a cut fetches: the unit table gives the exact
+  compressed bytes of the window's tiles and of its departure blocks before
+  either is fetched, and the cut refuses either past its budget. The detail
+  records `expand` names count only against `stepBudget`, once read, and the
+  tiles fetched for records' own steps, at most `attachFetches` (8), against no
+  budget; the writer moves paths out of any tile whose rows would compress past
+  its header's `abridgebytes`
 
 ## Fragments
 
@@ -147,11 +191,11 @@ Each of `fragments` is one walk's stretch through the cut: `name`, `fragStart`
 (the W line's start), `hapStart`/`hapEnd`, and its steps, from the walk's first
 step on the drawn stretch of the reference, the window and its context, to its
 last. `trimmedBefore` and `trimmedAfter` count the bp of the walk the cut read
-but kept out past either end.
+but kept out past either end, so they depend on the tiles the cut read.
 
-- A cut reads the window's chunks and the chunk before, and nothing else: where
-  a walk goes past the drawn stretch and comes back, its fragment ends at its
-  last step on the stretch, and its departure says where it rejoins
+- A cut reads the tiles overlapping the drawn stretch, and nothing else: where a
+  walk goes past the drawn stretch and comes back, its fragment ends at its last
+  step on the stretch, and its departure says where it rejoins
 - A walk's fragment therefore does not depend on which other walks the cut keeps
 - `graph.tables(kept, fragments, departures)` keeps `trimmedBefore` and
   `trimmedAfter` as columns of `walks`
@@ -161,10 +205,10 @@ but kept out past either end.
 A departure is where a walk's consecutive steps on the reference are not
 adjacent there: it leaves the reference at one breakpoint and rejoins it at
 another, with `ownBp` of its own sequence between. `cut` returns every departure
-over the drawn stretch, each once, from two reads: the walk read gives those
-inside one piece of a walk, which the cut computes from the piece's steps, and a
-read of the sequence's `~departure` sibling gives the rest as the file's
-records, which gfa-to-tabix writes for every departure between two pieces.
+over the drawn stretch, each once: the tiles give those inside one piece of a
+walk, which the cut computes from the piece's steps, and the departure blocks
+give the rest as the file's records, which gfa-to-tabix writes for every
+departure between two pieces.
 
 ```ts
 import { departureKind } from '@jbrowse/graph-walks'
@@ -205,8 +249,9 @@ for (const d of departures) {
   a fact of the graph
 - A departure of at most `attachBp` of own sequence carries its own steps in
   `steps`, from the pieces the cut read; for a record whose leave piece lies
-  outside the read, the cut fetches that chunk, at most `attachFetches` chunks a
-  cut. `fromSteps` is true for a departure computed from a piece's steps
+  outside the read, the cut fetches the tile whose extent holds the leave base,
+  at most `attachFetches` tiles a cut. `fromSteps` is true for a departure
+  computed from a piece's steps
 - Those steps' nodes are kept, so the cut draws a short insertion or replacement
   at the window's edge whole, and counts them against `stepBudget`
 - `graph.tables(kept, fragments, departures)` keeps them as the `departures`
@@ -217,21 +262,20 @@ for (const d of departures) {
 
 ## Abridged walks
 
-- In a chunk over its budget, gfa-to-tabix moves the costliest paths' rows to
+- In a tile over its budget, gfa-to-tabix moves the costliest paths' rows to
   detail records and leaves one `abridged` row per moved piece. A satellite
   array in a pggb graph is the usual case
 - The cut makes a separate fragment for each such row, with an `abridged` field:
-  the piece's `steps` and `bp`, and the `detail` record that holds it with the
-  path's other moved pieces in the chunk. The fragment's two steps are the
-  piece's first and last handles on the reference, `hapStart`/`hapEnd` are
+  the piece's `steps` and `bp`, and the `detail` unit that holds it with the
+  path's other moved pieces in the tile: its sequence `refName`, the tile's
+  nominal `start`, and its `name`, `tile:detail`. The fragment's two steps are
+  the piece's first and last handles on the reference, `hapStart`/`hapEnd` are
   exactly where the stretch between them lies on its contig, and `steps` counts
   all the piece's steps, its own before and after that stretch included
 - `graph.tables(kept, fragments, departures)` keeps them as `abridgedSteps` and
   `abridgedBp` columns, NaN for every other walk
 - With `expand` naming a walk, the cut reads its detail records and cuts it in
   full, as a file without abridging would
-- `referenceSequences()` leaves out the detail records' sequences, `seq~cs`, and
-  the departure siblings, `seq~departure`
 
 ## Moved components
 
@@ -267,10 +311,10 @@ result.forms.map(f => formTag(f, result))
   reading them all would take the cut past `stepBudget`, it throws
   `ExpansionTooLargeError`, a `RegionTooLargeError` with the step count, before
   the second cut
-- `formsCut` takes `byteBudget`, and on a source with `bytesForRegions` a region
-  the index estimates past it throws `RegionTooLargeError` before any read. The
-  budget covers the region's chunks, not the detail records an expanded cut
-  reads, which only the step budget bounds
+- `formsCut` takes `byteBudget`, and a region whose tiles the table puts past it
+  throws `RegionTooLargeError` before any read. The budget covers the region's
+  tiles, not the detail records an expanded cut reads, which only the step
+  budget bounds
 - `formsCut` reads each haplotype's departures off the cut's `departures`, every
   one over the region, and its fragments' ends, so a haplotype that leaves the
   region and rejoins the reference far away, or jumps over it whole, is a
@@ -356,7 +400,7 @@ result.forms.map(f => formTag(f, result))
   `refName`, which keeps the reference walk on `refName` and the walks of the
   haplotypes named
 - `refNameLookup` and `resolveRefName` resolve a contig the same way against any
-  tabix file's sequence names
+  file's sequence names
 
 ## Segment indexes
 
@@ -390,19 +434,27 @@ const gfa = await rgfaCut(
 
 ## How a cut works
 
-- A chunk holds the reference's path through it once, each way a haplotype
-  leaves that path once, and every other path's piece as the list of ways it
-  takes; gfa-to-tabix's
+- A tile holds the reference's path through it once, each way a haplotype leaves
+  that path once, and every other path's piece as the list of ways it takes;
+  gfa-to-tabix's
   [walks-format.md](https://github.com/GMOD/gfa-to-tabix/blob/main/docs/walks-format.md)
-  describes the rows
-- A cut makes two reads: every chunk under the region, from the chunk before the
-  region's first or the chunk before a `#long` pass that overlaps it, whichever
-  is earlier, each decoded once; and the `~departure` blocks over the same
-  stretch, which return every departure record whose stretch overlaps it
+  describes the rows, and its ADR 0010 the file
+- At open the reader reads the directory, refusing any format but 7, then the
+  header unit and the sequence's unit table at once, and refuses a directory
+  whose first line differs from the header's `#walks` line or whose `bytes`
+  differs from the data's length (from Content-Range over HTTP; a server that
+  hides it skips that check)
+- A cut selects the `tile` and `departures` units whose `start end` overlap the
+  window and its context, skipping any of length 0, merges the byte ranges that
+  touch, and fetches each as one single-range request. It gunzips each unit,
+  decodes each tile once, and keeps the departure lines over the drawn stretch,
+  each line once
 - A departure inside one piece comes from the piece's steps, and one between
   pieces from its record, so each comes back once. A departure's own steps are
-  attached where its own bp are under `attachBp`, fetching the chunk it leaves
-  from when the read lacks it, at most `attachFetches` chunks
+  attached where its own bp are under `attachBp`, fetching the tile whose extent
+  holds its leave base when the read lacks it, at most `attachFetches` tiles in
+  one more read; a tile fetched again decodes only the walks it was not decoded
+  for. Expanding an abridged piece reads its `detail` unit
 
 ## License
 
