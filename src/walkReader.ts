@@ -319,8 +319,8 @@ export class WalkReader {
     )
   }
 
-  // The reference's nodes overlapping `region`, each once, from the ref rows
-  // of the tiles there
+  // Every pass of the reference over `region`, by start, from the ref rows of
+  // the tiles there: a node the reference passes twice there comes twice
   async referenceNodes(
     refName: string,
     region: { start: number; end: number },
@@ -331,20 +331,14 @@ export class WalkReader {
       u => u.kind === 'tile' && overlaps(u, region),
     )
     const read = await this.file.read(tiles, opts.signal)
-    const seen = new Set<number>()
-    return referenceNodes(read.flat().map(line => line.split('\t'))).filter(
-      node => {
-        const fresh =
+    return referenceNodes(read.flat().map(line => line.split('\t')))
+      .filter(
+        node =>
           node.refName === refName &&
           node.end > region.start &&
-          node.start < region.end &&
-          !seen.has(node.id)
-        if (fresh) {
-          seen.add(node.id)
-        }
-        return fresh
-      },
-    )
+          node.start < region.end,
+      )
+      .sort((a, b) => a.start - b.start || a.end - b.end)
   }
 
   async cut(

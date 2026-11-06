@@ -1496,3 +1496,18 @@ test('a cut computes no departure outside its drawn stretch, even inside a fragm
     ['H#1#h', 12, 0, 0, '44+', '4+', 'back', 'steps', undefined],
   ])
 })
+
+test('referenceNodes gives every pass of the reference over the region', async () => {
+  const nodes = await reader('loop.R').referenceNodes('R#0#chr', {
+    start: 0,
+    end: 36,
+  })
+  expect(nodes.map(n => `${n.id}@${n.start}-${n.end}`)).toEqual([
+    '1@0-6',
+    '2@6-12',
+    '3@12-18',
+    '2@18-24',
+    '3@24-30',
+    '4@30-45',
+  ])
+})
