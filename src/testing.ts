@@ -2,6 +2,8 @@ import { crc32, deflateRawSync } from 'node:zlib'
 
 import { BlobFile } from 'generic-filehandle2'
 
+import type { FilehandleOptions } from 'generic-filehandle2'
+
 import type { GraphTables } from './util.ts'
 import type { WalkUnit } from './walkFile.ts'
 
@@ -64,6 +66,31 @@ export function bgzf(text: string) {
 const lengthOf = (blocks: Uint8Array[]) =>
   blocks.reduce((sum, block) => sum + block.length, 0)
 
+// A file whose bytes past `from` lie `gap` further on than the blob holds them
+class GappedFile extends BlobFile {
+  private readonly from: number
+  private readonly gap: number
+
+  constructor(blob: Blob, from: number, gap: number) {
+    super(blob)
+    this.from = from
+    this.gap = gap
+  }
+
+  override read(length: number, position = 0, opts?: FilehandleOptions) {
+    return super.read(
+      length,
+      position < this.from ? position : position - this.gap,
+      opts,
+    )
+  }
+
+  override async stat() {
+    const { size } = await super.stat()
+    return { size: size + this.gap }
+  }
+}
+
 const spanOf = (cols: string[]) =>
   (cols[9] ?? '').split(',').reduce((end, n) => end + Number(n), +cols[5]!)
 
@@ -73,18 +100,23 @@ const spanOf = (cols: string[]) =>
  * `kind` on under its nominal start; and departure lines as the file holds
  * them, `seq start end departure ...`, each filed in every block of the
  * tile size it overlaps. A tile's extent is its ref rows' span, and each of
- * its lines states that extent; every inline tile has ref rows. `reversed` writes a sequence's units last
- * first.
+ * its lines states that extent; every inline tile has ref rows. `reversed`
+ * writes a sequence's units last first, and `gap` puts that many bytes the
+ * file never reads between the header and the first unit.
  */
-export function walkFileOf(lines: string[], reversed = false) {
+export function walkFileOf(
+  lines: string[],
+  { reversed = false, gap = 0 } = {},
+) {
   const rows = lines.map(line => line.split(' '))
   const header = rows.filter(r => r[0]!.startsWith('#')).map(r => r.join('\t'))
   const tile = Number(/tile:i:(\d+)/.exec(header[0] ?? '')?.[1] ?? 65536)
   const body = rows.filter(r => !r[0]!.startsWith('#'))
   const sequences = [...new Set(body.map(r => r[0]!))]
   const parts = bgzf(`${header.join('\n')}\n`)
-  let offset = lengthOf(parts)
-  const directory = [`#header\t0\t${offset}`]
+  const headerLength = lengthOf(parts)
+  let offset = headerLength + gap
+  const directory = [`#header\t0\t${headerLength}`]
   const units: WalkUnit[] = []
   const write = (text: string) => {
     const blocks = bgzf(text)
@@ -172,9 +204,9 @@ export function walkFileOf(lines: string[], reversed = false) {
     directory.push(`${seq}\t${table.offset}\t${table.length}`)
   }
   parts.push(BGZF_EOF)
-  const index = `${header[0]}\tbytes:i:${lengthOf(parts)}\n${directory.join('\n')}\n`
+  const index = `${header[0]}\tbytes:i:${lengthOf(parts) + gap}\n${directory.join('\n')}\n`
   return {
-    data: new BlobFile(new Blob(parts)),
+    data: new GappedFile(new Blob(parts), headerLength, gap),
     directory: new BlobFile(new Blob([index])),
     units,
   }

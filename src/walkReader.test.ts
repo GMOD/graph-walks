@@ -629,7 +629,7 @@ test('a region cut over its node limit says how far to zoom in', async () => {
 // A walk file from rows as walkFileOf takes them, its units written in order
 // or reversed, which notes the nominal start of each tile it serves
 function inline(lines: string[], reversed = false, served: number[] = []) {
-  const { data, directory, units } = walkFileOf(lines, reversed)
+  const { data, directory, units } = walkFileOf(lines, { reversed })
   const read = data.read.bind(data)
   data.read = (length, position = 0, opts) => {
     for (const unit of units) {
@@ -842,13 +842,13 @@ const copyJumpCut = async (
   start: number,
   end: number,
   contained: boolean,
-  served: number[] = [],
+  walks = inline(copyJump),
 ) => {
-  const { graph, kept, fragments, departures } = await inline(
-    copyJump,
-    false,
-    served,
-  ).cut('R#0#chr', { start, end }, { context: 0, contained, nodeLimit: 5 })
+  const { graph, kept, fragments, departures } = await walks.cut(
+    'R#0#chr',
+    { start, end },
+    { context: 0, contained, nodeLimit: 5 },
+  )
   return {
     text: graphTablesGFA(graph.tables(kept, fragments, departures)),
     walks: fragments.filter(f => f.name === 'H#1#h').map(fragment),
@@ -877,7 +877,12 @@ test('a contained cut splits a walk where it steps onto the reference off the wi
 
 test('a cut reads the tiles its window overlaps, and nothing else', async () => {
   const served: number[] = []
-  const { walks, departures } = await copyJumpCut(20, 28, true, served)
+  const { walks, departures } = await copyJumpCut(
+    20,
+    28,
+    true,
+    inline(copyJump, false, served),
+  )
   expect(walks).toEqual([
     ['H#1#h', 4, 12, '>6>7', 4, 0],
     ['H#1#h', 16, 24, '>6>7', 0, 4],
@@ -1283,4 +1288,40 @@ test("a sequence's length, the bytes a cut reads and the reference nodes over a 
       await walks.referenceNodes('GRCh38#0#chr1', { start: 1100, end: 2500 })
     ).map(n => `${n.id}@${n.start}-${n.end}`),
   ).toEqual(['2@600-1200', '3@1200-1800', '4@1800-2400', '5@2400-3000'])
+})
+
+// Ten 10 bp reference nodes in 20 bp tiles (jumpback.GRCh38.gfa). HG002#1's
+// first W line ends on 9 and its second starts with 20 before rejoining at
+// 3, so its record jumps back from 90 to 20 and its own step leads the
+// rejoin piece, in tile 20:
+//   W GRCh38 0 chr1 0  100 >1>2>3>4>5>6>7>8>9>10
+//   W HG002  1 chr1 0  20  >8>9
+//   W HG002  1 chr1 25 75  >20>3>4>5>6
+// An attach fetch reads the leave tile, which lacks it, until the file names
+// the tile holding a record's own steps
+test.fails(
+  'a jump back whose own steps lie in the rejoin piece gets them attached',
+  async () => {
+    const { departures } = await reader('jumpback.GRCh38').cut(
+      'GRCh38#0#chr1',
+      { start: 50, end: 60 },
+      { context: 0 },
+    )
+    expect(departures.map(departure)).toEqual([
+      ['HG002#1#chr1', 20, 15, 5, '90+', '20+', 'back', 'record', '>20'],
+    ])
+  },
+)
+
+test('a file past 4 GiB is read at its exact offsets', async () => {
+  const gap = 2 ** 32 + 7
+  const { data, directory, units } = walkFileOf(copyJump, { gap })
+  expect(units[0]!.offset).toBeGreaterThan(2 ** 32)
+  const walks = WalkReader.fromFilehandles({ data, directory })
+  expect((await walks.units('R#0#chr')).map(u => u.offset)).toEqual(
+    units.map(u => u.offset),
+  )
+  expect(await copyJumpCut(20, 36, false, walks)).toEqual(
+    await copyJumpCut(20, 36, false),
+  )
 })
