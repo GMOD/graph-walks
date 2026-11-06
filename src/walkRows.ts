@@ -235,8 +235,10 @@ function decodeRun(pieces: WalkRow[]): WalkRun {
 
 /**
  * One walk's stretch through the cut, from its first step on the drawn
- * stretch of the reference to its last. `trimmedBefore` and `trimmedAfter`
- * count the bp of the walk the cut read but kept out, before and after it.
+ * stretch of the reference to its last, in consecutive pieces of the tiles
+ * over the window and its context. `trimmedBefore` and `trimmedAfter` count
+ * the bp of the walk those tiles hold but the cut kept out, before and after
+ * it, so they depend on the tiles read.
  */
 export interface WalkFragment {
   name: string
@@ -283,9 +285,11 @@ export interface Unattached {
 /**
  * The cut a window draws from its walks: the reference inside the window plus
  * its context, the drawn stretch, and each run from its first step on that
- * stretch to its last. Nothing is followed past the drawn stretch and no
- * fragment runs on through nodes other walks kept, so a haplotype's fragment
- * does not depend on which others are cut.
+ * stretch to its last. The drawn stretch is the reference nodes over the
+ * window and its context, whole, widened by every pass of a run's step over
+ * them. Nothing is followed past the drawn stretch and no fragment runs on
+ * through nodes other walks kept, so a haplotype's fragment does not depend on
+ * which others are cut.
  *
  * A contained cut splits a run wherever it steps onto the reference off the
  * drawn stretch. Each piece between those steps that steps on the stretch is
@@ -294,12 +298,16 @@ export interface Unattached {
  * haplotypes go from a 4 kb window to the other copies and back: the cut
  * above keeps 9,928 nodes there, the contained cut 182.
  *
- * Every place a walk departs from the reference over the drawn stretch comes
- * back once: the departures inside one piece are computed from its steps,
- * and those between pieces, in different chunks or across W lines, come from
- * the file's records, which the reader read over the same stretch. A record
- * under `attachBp` of own sequence gets its own steps from the pieces the
- * cut holds, and the reader fetches the leave piece of one it does not.
+ * Each departure comes back once: those inside one piece are computed from
+ * its steps, and kept where their stretch overlaps the drawn stretch; those
+ * between pieces, in different tiles or across W lines, are `records`, every
+ * one of which comes back, as the reader read them over the window and its
+ * context. A computed departure's leave and rejoin passes come from the ref
+ * rows the cut read, 0 for a node it places off R. A record within
+ * `attachBp` of own sequence gets its own steps, a 0 bp step included, from
+ * the leave and rejoin pieces of `runs` or of `attach`, which give nothing
+ * else; `unattached` lists the records lacking either piece, whose tiles the
+ * reader fetches into `attach`.
  */
 export function walkCut(
   runs: WalkRun[],

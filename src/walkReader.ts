@@ -110,7 +110,9 @@ export interface WalkCutOptions {
   // which walks to decode, by `sample#haplotype#contig`; undefined is all
   keep?: (name: string) => boolean
   // the most steps a cut keeps, WALK_BUDGETS' by default; Infinity has no
-  // limit
+  // limit. The rows of the window's tiles and expanded detail records may
+  // hold READ_STEPS_PER_KEPT times as many; those of tiles fetched for own
+  // steps are not counted
   stepBudget?: number
   // the most compressed bytes a cut fetches from the tiles under its window
   // and context, WALK_BUDGETS' by default; Infinity has no limit. The detail
@@ -124,7 +126,9 @@ export interface WalkCutOptions {
   // ATTACH_BP by default
   attachBp?: number
   // the most tiles the cut fetches for the own steps of records whose leave
-  // piece its read lacks
+  // or rejoin piece its read lacks, ATTACH_FETCHES by default; when more are
+  // wanted, the first in record order. They give those records their steps
+  // and nothing else
   attachFetches?: number
   context?: number
   // false lists no links, for a caller that draws no edges
@@ -210,11 +214,13 @@ function departureRecords(
  * and its directory `<prefix>.<sample>.walks.gz.idx`, read a window at a
  * time. At open the directory, the header and the sequence's unit table; for
  * a window, the tiles and departure blocks overlapping the window and its
- * context, in one read wherever their bytes touch, each tile decoded once.
- * The table gives each read's bytes before it is made, and a window past a
- * budget reads no row. Only the walks `keep` accepts are decoded. The step
- * budget bounds the steps the cut keeps, and rows holding
- * READ_STEPS_PER_KEPT times as many stop the read.
+ * context, in one read wherever their bytes touch, each tile decoded once;
+ * then at most `attachFetches` tiles holding the own steps of records the
+ * read lacks, which give those steps alone, and the detail records of the
+ * walks `expand` names. The table gives each read's bytes before it is made,
+ * and a window past a budget reads no row. Only the walks `keep` accepts are
+ * decoded. The step budget bounds the steps the cut keeps, and rows of the
+ * window holding READ_STEPS_PER_KEPT times as many stop the read.
  */
 export class WalkReader {
   private readonly file: WalkFile

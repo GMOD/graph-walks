@@ -14,7 +14,8 @@ export const WALK_FORMAT = 7
 
 // What the reader needs of a file: generic-filehandle2's handles are ones,
 // and `stat` gives the data's length, from Content-Range on a RemoteFile's
-// first read
+// first read. Where it gives 0, as a RemoteFile does when CORS hides
+// Content-Range, the reader skips checking the directory's `bytes`
 export type WalkFilehandle = Pick<
   GenericFilehandle,
   'read' | 'readFile' | 'stat' | 'source'
