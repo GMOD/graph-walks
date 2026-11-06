@@ -2,10 +2,9 @@ import { crc32, deflateRawSync } from 'node:zlib'
 
 import { BlobFile } from 'generic-filehandle2'
 
-import type { FilehandleOptions } from 'generic-filehandle2'
-
 import type { GraphTables } from './util.ts'
 import type { WalkUnit } from './walkFile.ts'
+import type { FilehandleOptions } from 'generic-filehandle2'
 
 // The GFA a cut's tables stand for, as @jbrowse/bandage-core writes it
 export function graphTablesGFA({ nodes, links, walks }: GraphTables) {
@@ -77,7 +76,7 @@ class GappedFile extends BlobFile {
     this.gap = gap
   }
 
-  override read(length: number, position = 0, opts?: FilehandleOptions) {
+  override read(length: number, position: number, opts?: FilehandleOptions) {
     return super.read(
       length,
       position < this.from ? position : position - this.gap,

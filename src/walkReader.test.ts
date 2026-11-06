@@ -631,7 +631,7 @@ test('a region cut over its node limit says how far to zoom in', async () => {
 function inline(lines: string[], reversed = false, served: number[] = []) {
   const { data, directory, units } = walkFileOf(lines, { reversed })
   const read = data.read.bind(data)
-  data.read = (length, position = 0, opts) => {
+  data.read = (length, position, opts) => {
     for (const unit of units) {
       if (
         unit.kind === 'tile' &&
