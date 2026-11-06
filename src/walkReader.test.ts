@@ -14,6 +14,7 @@ import {
 import { walkNameFilter } from './walkRows.ts'
 
 import type { WalkDeparture } from './walkDeparture.ts'
+import type { WalkUnit } from './walkFile.ts'
 import type { WalkFragment } from './walkRows.ts'
 
 const DATA = new URL('../test_data/', import.meta.url).pathname
@@ -1225,23 +1226,36 @@ test('two records whose leave pieces lie in adjacent chunks both get their own s
   ])
 })
 
-test('a table entry of length 0 is never read', async () => {
+// An empty entry first in the table at the file's start, or after the
+// first tile at that tile's offset, where it would shadow the tile in a read
+// that took it
+test.each([
+  { at: 'first, at the file start', after: false },
+  { at: "after the first tile, at the tile's offset", after: true },
+])('a table entry of length 0 is never read: $at', async ({ after }) => {
   const { data, directory, units } = walkFileOf(copyJump)
   const bytes = new Uint8Array(await data.readFile())
   const end = bytes.length - 28
+  const entry = (u: WalkUnit) => [
+    '#entry',
+    u.refName,
+    u.start,
+    u.end,
+    u.kind,
+    u.name,
+    u.offset,
+    u.length,
+  ]
+  const [first, ...rest] = units.map(entry)
+  const empty = entry({
+    ...units[0]!,
+    offset: after ? units[0]!.offset : 0,
+    length: 0,
+  })
   const entries = [
     ['#unit', 'R#0#chr', 0, 48, 'table', '.'],
-    ['#entry', 'R#0#chr', 0, 48, 'tile', '0', 0, 0],
-    ...units.map(u => [
-      '#entry',
-      u.refName,
-      u.start,
-      u.end,
-      u.kind,
-      u.name,
-      u.offset,
-      u.length,
-    ]),
+    ...(after ? [first!, empty] : [empty, first!]),
+    ...rest,
   ]
   const table = bgzf(`${entries.map(e => e.join('\t')).join('\n')}\n`)
   const tableLength = table.reduce((sum, block) => sum + block.length, 0)
@@ -1255,13 +1269,20 @@ test('a table entry of length 0 is never read', async () => {
     data: new BlobFile(new Blob(parts)),
     directory: new BlobFile(new Blob([index])),
   })
-  expect((await reader.units('R#0#chr'))[0]).toMatchObject({ length: 0 })
-  const { departures } = await reader.cut(
-    'R#0#chr',
-    { start: 0, end: 48 },
-    { context: 0 },
-  )
-  expect(departures).toHaveLength(2)
+  expect(
+    (await reader.units('R#0#chr')).filter(u => u.length === 0),
+  ).toHaveLength(1)
+  const cut = async (walks: WalkReader) => {
+    const { fragments, departures } = await walks.cut(
+      'R#0#chr',
+      { start: 0, end: 48 },
+      { context: 0 },
+    )
+    return [fragments.map(fragment), departures.map(departure)]
+  }
+  const whole = await cut(inline(copyJump))
+  expect(whole[1]).toHaveLength(2)
+  expect(await cut(reader)).toEqual(whole)
 })
 
 test("a sequence's length, the bytes a cut reads and the reference nodes over a window come from its tiles", async () => {
@@ -1539,4 +1560,157 @@ test("a cut's links run the way a walk along the reference takes them", async ()
     .filter(line => line.startsWith('L\t'))
   expect(links).toContain('L\t11\t+\t2\t+\t0M')
   expect(links).not.toContain('L\t2\t-\t11\t-\t0M')
+})
+
+const placedSteps = (f: WalkFragment) =>
+  [...f.ids]
+    .map((id, k) => `${f.rev[k] ? '<' : '>'}${id}@${f.refStarts[k]}`)
+    .join('')
+
+// The reference passes 2 and 3 twice, 6 bp nodes in one tile (copies.R.gfa).
+// F leaves from 2's second pass, `:1`, and lands on 3 at the pass as near
+// the entry as the first, the later; U lands on 3's second pass, `@1`; S
+// starts on 2's second pass, `start@1`:
+//   W R 0 chr >1>2>3>2>3>4
+//   W F 1 f   >1>2>3>2>8>3>4   8 of 2 bp
+//   W U 1 u   >1>9>3>4         9 of 18 bp
+//   W S 1 s   >2>3>4
+test('a walk row takes the passes its :k, @k and start@k name, and the defaults where it names none', async () => {
+  const { fragments } = await reader('copies.R').cut(
+    'R#0#chr',
+    { start: 0, end: 36 },
+    { context: 0 },
+  )
+  expect(fragments.map(f => `${f.name} ${placedSteps(f)}`).sort()).toEqual([
+    'F#1#f >1@0>2@6>3@12>2@18>8@NaN>3@24>4@30',
+    'R#0#chr >1@0>2@6>3@12>2@18>3@24>4@30',
+    'S#1#s >2@18>3@24>4@30',
+    'U#1#u >1@0>9@NaN>3@24>4@30',
+  ])
+})
+
+// Every walk abridged, in one tile (copyends.R.gfa). Y's end is 3 at its
+// second pass, the one nearest its start, and V's is 3 at its second pass
+// too, which `end@1` names as the first is nearer its start:
+//   W R 0 chr >1>2>3>6>7>8>4>2>3>5
+//   W Y 1 y   >4>2>3
+//   W V 1 v   >1>2>3>6>7>8>4>2>3
+test("an abridged row's end takes the pass end@k names, else the one nearest its start", async () => {
+  const cut = (expand?: (name: string) => boolean) =>
+    reader('copyends.R').cut(
+      'R#0#chr',
+      { start: 0, end: 60 },
+      { context: 0, expand },
+    )
+  const { fragments } = await cut()
+  expect(
+    fragments
+      .map(f => `${f.name} ${f.hapStart}-${f.hapEnd} ${placedSteps(f)}`)
+      .sort(),
+  ).toEqual([
+    'R#0#chr 0-60 >1@0>2@6>3@12>6@18>7@24>8@30>4@36>2@42>3@48>5@54',
+    'V#1#v 0-54 >1@0>3@48',
+    'Y#1#y 0-18 >4@36>3@48',
+  ])
+  const expanded = await cut(() => true)
+  expect(
+    expanded.fragments.map(f => `${f.name} ${placedSteps(f)}`).sort(),
+  ).toEqual([
+    'R#0#chr >1@0>2@6>3@12>6@18>7@24>8@30>4@36>2@42>3@48>5@54',
+    'V#1#v >1@0>2@6>3@12>6@18>7@24>8@30>4@36>2@42>3@48',
+    'Y#1#y >4@36>2@42>3@48',
+  ])
+})
+
+// 4 bp reference nodes in 8 bp tiles, with 9 of 0 bp on the reference at 12
+// (zerostep.R.gfa). G jumps from 2 to 9 and from 9 to 6, two records that
+// start at the same base of its contig:
+//   W R 0 chr >1>2>3>9>4>5>6>7
+//   W G 1 g   >1>2>9>6>7
+test('two records of one walk at the same base are both kept', async () => {
+  const { departures } = await reader('zerostep.R').cut(
+    'R#0#chr',
+    { start: 0, end: 28 },
+    { context: 0 },
+  )
+  expect(departures.map(departure)).toEqual([
+    ['G#1#g', 8, 0, 0, '8+', '12+', 'forward', 'record', undefined],
+    ['G#1#g', 8, 0, 0, '12+', '20+', 'forward', 'record', undefined],
+  ])
+})
+
+// hole.R.gfa in one 64 bp tile: H jumps from 1 to 4 across the hole, and J
+// steps straight across it from 2 to 3, which the hole makes adjacent
+test('steps either side of a hole in the reference depart nowhere', async () => {
+  const { fragments, departures } = await reader('holetile.R').cut(
+    'R#0#chr',
+    { start: 0, end: 48 },
+    { context: 0 },
+  )
+  expect(fragments.find(f => f.name === 'J#1#j')?.ids).toEqual(
+    Int32Array.from([1, 2, 3, 4]),
+  )
+  expect(departures.map(departure)).toEqual([
+    ['H#1#h', 4, 0, 0, '4+', '44+', 'forward', 'steps', undefined],
+  ])
+})
+
+// holetile.R's tile with its ref rows written last first: R is the rows in
+// hapOffset order whatever order the tile lists them in
+test("a tile's R joins its ref rows in hapOffset order", async () => {
+  const { fragments } = await inline([
+    '#walks format:i:7 tile:i:64',
+    '#reference R',
+    '#haplotype J#1',
+    '#hole R#0#chr 8 40',
+    'R#0#chr 0 ref R#0#chr 40 40 0 2 6,2 4,4 .',
+    'R#0#chr 0 ref R#0#chr 0 0 0 2 2,2 4,4 .',
+    'R#0#chr 0 walk J#1#j 0 0 0 4 2 .',
+  ]).cut('R#0#chr', { start: 0, end: 48 }, { context: 0 })
+  expect(fragments.map(f => `${f.name} ${placedSteps(f)}`).sort()).toEqual([
+    'J#1#j >1@0>2@4>3@40>4@44',
+    'R#0#chr >1@0>2@4',
+    'R#0#chr >3@40>4@44',
+  ])
+})
+
+// attach.GRCh38's HG003#1 leaves after 2, at 10-20, so its line starts at
+// 10, in the departure block of 0-20
+test.each([
+  { end: 10, names: [] },
+  { end: 11, names: ['HG003#1#chr1'] },
+])(
+  'a cut keeps the departure lines overlapping its window, of the blocks it reads: 0-$end',
+  async ({ end, names }) => {
+    const { departures } = await reader('attach.GRCh38').cut(
+      'GRCh38#0#chr1',
+      { start: 0, end },
+      { context: 0 },
+    )
+    expect(departures.map(d => d.name)).toEqual(names)
+  },
+)
+
+test('a unit that does not start with its #unit line is refused', async () => {
+  const lengthOf = (blocks: Uint8Array[]) =>
+    blocks.reduce((sum, block) => sum + block.length, 0)
+  const walks = '#walks\tformat:i:7\ttile:i:16'
+  const header = bgzf(`${walks}\n#reference\tR\n`)
+  const tile = bgzf('R#0#chr\t0\t4\tref\tR#0#chr\t0\t0\t0\t1\t2\t4\t.\n')
+  const tileAt = lengthOf(header)
+  const tableAt = tileAt + lengthOf(tile)
+  const table = bgzf(
+    `#unit\tR#0#chr\t0\t4\ttable\t.\n#entry\tR#0#chr\t0\t4\ttile\t0\t${tileAt}\t${lengthOf(tile)}\n`,
+  )
+  const parts = [...header, ...tile, ...table]
+  const directory = `${walks}\tbytes:i:${lengthOf(parts)}\n#header\t0\t${tileAt}\nR#0#chr\t${tableAt}\t${lengthOf(table)}\n`
+  const walkFile = WalkReader.fromFilehandles({
+    data: new BlobFile(new Blob(parts)),
+    directory: new BlobFile(new Blob([directory])),
+  })
+  await expect(
+    walkFile.cut('R#0#chr', { start: 0, end: 4 }, { context: 0 }),
+  ).rejects.toThrow(
+    `No #unit line at byte ${tileAt} of the walk file, where R#0#chr's table puts a tile unit`,
+  )
 })

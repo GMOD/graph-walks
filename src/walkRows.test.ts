@@ -421,6 +421,32 @@ test("a node's pass over the window wins over the reference's other passes, whic
   ])
 })
 
+test.each([false, true])(
+  'off the window, a node takes the reference row whose path sorts first, then its earliest start, whichever is read first: reversed %s',
+  reversed => {
+    const g = graph()
+    const at = (refName: string, start: number) => ({
+      rank: 0,
+      refName,
+      start,
+      end: start + 100,
+      passes: 2,
+    })
+    const placements = [
+      at('GRCh38#0#chr1', 900),
+      at('GRCh38#0#chr0', 1500),
+      at('GRCh38#0#chr0', 1200),
+    ]
+    for (const node of reversed ? placements.reverse() : placements) {
+      g.placeNode(11, node)
+    }
+    expect(g.nodes.get(11)).toEqual({
+      ...at('GRCh38#0#chr0', 1200),
+      onWindow: false,
+    })
+  },
+)
+
 test('a cut is written as the GFA its tables stand for, with the departures over it', () => {
   const g = graph()
   const runs = joinPieces([

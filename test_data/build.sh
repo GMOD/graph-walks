@@ -35,3 +35,7 @@ build loop loop.R.gfa --refs R --tile 10
 build ownzero ownzero.R.gfa --refs R --tile 10
 build excursion excursion.R.gfa --refs R --tile 64
 build hole hole.R.gfa --refs R --tile 16
+build holetile hole.R.gfa --refs R --tile 64
+build copies copies.R.gfa --refs R --tile 1000
+build copyends copyends.R.gfa --refs R --tile 1000 --abridge-bytes 1
+build zerostep zerostep.R.gfa --refs R --tile 8
