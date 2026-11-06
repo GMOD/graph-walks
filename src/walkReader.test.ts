@@ -102,15 +102,24 @@ const departure = (d: WalkDeparture) => [
 //   W HG002   1 chr1 >1>2>7>4>5>6   7 replaces 3
 //   W HG002   2 chr1 >1>2>3>4>8>6   8 replaces 5
 //   W HG00097 1 chr1 >1>2>3>4>5>6
-test('the header names the format, the reference, the haplotypes and the tile size', async () => {
-  const header = await reader('header.GRCh38').header()
-  expect(header).toMatchObject({
-    format: 7,
-    tile: 1000,
-    references: ['GRCh38'],
-    haplotypes: ['HG00097#1', 'HG002#1', 'HG002#2'],
-    holes: [],
-  })
+test('the header names the format, the reference, the haplotypes and the tile size, read from byte 0 and no tile', async () => {
+  const read = vi.spyOn(LocalFile.prototype, 'read')
+  try {
+    const header = await reader('header.GRCh38').header()
+    expect(header).toMatchObject({
+      format: 7,
+      tile: 1000,
+      references: ['GRCh38'],
+      haplotypes: ['HG00097#1', 'HG002#1', 'HG002#2'],
+      holes: [],
+    })
+    expect(read).toHaveBeenCalled()
+    expect(read.mock.calls.map(([, position = 0]) => position)).toEqual(
+      read.mock.calls.map(() => 0),
+    )
+  } finally {
+    read.mockRestore()
+  }
 })
 
 // A walk file whose directory's first line is `walks`, with its header
@@ -1713,4 +1722,143 @@ test('a unit that does not start with its #unit line is refused', async () => {
   ).rejects.toThrow(
     `No #unit line at byte ${tileAt} of the walk file, where R#0#chr's table puts a tile unit`,
   )
+})
+
+test("a reader that cannot learn the data's length skips the directory's bytes check", async () => {
+  const path = `${DATA}header.GRCh38.walks.gz`
+  const data = new LocalFile(path)
+  data.stat = async () => ({ size: 0 })
+  const directory = (
+    await new LocalFile(`${path}.idx`).readFile('utf8')
+  ).replace(/\tbytes:i:\d+/, '\tbytes:i:12')
+  const walks = WalkReader.fromFilehandles({
+    data,
+    directory: new BlobFile(new Blob([directory])),
+  })
+  expect((await walks.header()).tile).toBe(1000)
+})
+
+// A unit of a kind this reader does not know, listed in the table between
+// the tile and the table, is a later addition: the cut reads around it
+test('a unit of a kind the reader does not know is skipped', async () => {
+  const lengthOf = (blocks: Uint8Array[]) =>
+    blocks.reduce((sum, block) => sum + block.length, 0)
+  const walks = '#walks\tformat:i:7\ttile:i:16'
+  const header = bgzf(`${walks}\n#reference\tR\n`)
+  const tile = bgzf(
+    '#unit\tR#0#chr\t0\t4\ttile\t0\nR#0#chr\t0\t4\tref\tR#0#chr\t0\t0\t0\t1\t2\t4\t.\n',
+  )
+  const sketch = bgzf(
+    '#unit\tR#0#chr\t0\t4\tsketch\t0\nR#0#chr\t0\t4\tsketch\twhatever a sketch holds\n',
+  )
+  const tileAt = lengthOf(header)
+  const sketchAt = tileAt + lengthOf(tile)
+  const tableAt = sketchAt + lengthOf(sketch)
+  const table = bgzf(
+    [
+      '#unit\tR#0#chr\t0\t4\ttable\t.',
+      `#entry\tR#0#chr\t0\t4\ttile\t0\t${tileAt}\t${lengthOf(tile)}`,
+      `#entry\tR#0#chr\t0\t4\tsketch\t0\t${sketchAt}\t${lengthOf(sketch)}`,
+      '',
+    ].join('\n'),
+  )
+  const parts = [...header, ...tile, ...sketch, ...table]
+  const directory = `${walks}\tbytes:i:${lengthOf(parts)}\n#header\t0\t${tileAt}\nR#0#chr\t${tableAt}\t${lengthOf(table)}\n`
+  const walkFile = WalkReader.fromFilehandles({
+    data: new BlobFile(new Blob(parts)),
+    directory: new BlobFile(new Blob([directory])),
+  })
+  const read = vi.spyOn(BlobFile.prototype, 'read')
+  try {
+    const { fragments } = await walkFile.cut(
+      'R#0#chr',
+      { start: 0, end: 4 },
+      { context: 0 },
+    )
+    expect(fragments.map(fragment)).toEqual([['R#0#chr', 0, 4, '>1', 0, 0]])
+    expect(read.mock.calls.map(([, position]) => position)).not.toContain(
+      sketchAt,
+    )
+  } finally {
+    read.mockRestore()
+  }
+})
+
+// `stays` with a tag the reader does not know on its header lines and every
+// row, before or after an SQ:Z: tag, and `farAttach` likewise on its
+// departure lines: each cuts as the rows without the tag do
+const tagged = (lines: string[]) =>
+  lines.map((line, k) =>
+    line.startsWith('#walks')
+      ? `${line} xx:i:1`
+      : line.startsWith('#')
+        ? `${line} xx:Z:a`
+        : line.endsWith(' SQ:Z:AAAA')
+          ? line.replace(' SQ:Z:AAAA', ' xx:Z:a SQ:Z:AAAA')
+          : `${line} ${k % 2 ? 'xx:i:1' : 'yy:Z:b xx:i:1'}`,
+  )
+
+test('tags a reader does not know are ignored on any row and header line', async () => {
+  const withBases = stays.map(line =>
+    line.includes(' nodes ') ? `${line} SQ:Z:AAAA` : line,
+  )
+  const cut = async (lines: string[]) => {
+    const { graph, kept, fragments, departures } = await inline(lines).cut(
+      'R#0#chr',
+      { start: 4, end: 20 },
+      { context: 0, sequences: true },
+    )
+    return {
+      gfa: graphTablesGFA(graph.tables(kept, fragments, departures)),
+      bases: [...graph.sequences].sort(([a], [b]) => a - b),
+      departures: departures.map(departure),
+    }
+  }
+  expect(tagged(withBases)).not.toEqual(withBases)
+  const plain = await cut(withBases)
+  expect(plain.bases).toEqual([
+    [2, 'AAAA'],
+    [6, 'AAAA'],
+  ])
+  expect(await cut(tagged(withBases))).toEqual(plain)
+  expect(await inline(tagged(stays)).header()).toEqual(
+    await inline(stays).header(),
+  )
+  const attached = async (lines: string[]) => {
+    const { fragments, departures } = await inline(lines).cut(
+      'R#0#chr',
+      { start: 20, end: 28 },
+      { context: 0 },
+    )
+    return [fragments.map(fragment), departures.map(departure)]
+  }
+  expect(await attached(tagged(farAttach))).toEqual(await attached(farAttach))
+})
+
+// R's chr0 is two nodes of 0 bp: its tile states [0, 0), so a window from 0
+// on reads it never, and the sequence's length is 0
+test('a unit of a sequence of 0 bp, stating [0, 0), is read by no window', async () => {
+  const served: number[] = []
+  const walks = inline(
+    [
+      '#walks format:i:7 tile:i:16',
+      '#reference R',
+      '#haplotype H#1',
+      'R#0#chr0 0 ref R#0#chr0 0 0 0 2 2,2 0,0 .',
+      'R#0#chr0 0 walk H#1#h 0 0 0 2 2 .',
+    ],
+    false,
+    served,
+  )
+  expect(
+    (await walks.units('R#0#chr0')).map(u => [u.kind, u.start, u.end]),
+  ).toEqual([['tile', 0, 0]])
+  expect(await walks.sequenceLength('R#0#chr0')).toBe(0)
+  const { fragments } = await walks.cut(
+    'R#0#chr0',
+    { start: 0, end: 16 },
+    { context: 0 },
+  )
+  expect(fragments).toEqual([])
+  expect(served).toEqual([])
 })
