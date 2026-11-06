@@ -1455,3 +1455,44 @@ test.each([
     ['G#1#g', 24, 0, 0, '24+', '0+', 'back', 'record', '>9'],
   ])
 })
+
+// Two reference lines, 0-8 and 40-48, with a hole between, in 16 bp tiles
+// (hole.R.gfa); H jumps from 1 to 4 across it:
+//   W R 0 chr 0  8  >1>2
+//   W R 0 chr 40 48 >3>4
+//   W H 1 h   0  8  >1>4
+test.each([
+  { start: 16, end: 24 },
+  { start: 0, end: 48 },
+])(
+  'a cut returns every record whose line overlaps its window, in a hole too: $start-$end',
+  async ({ start, end }) => {
+    const { departures } = await reader('hole.R').cut(
+      'R#0#chr',
+      { start, end },
+      { context: 0 },
+    )
+    expect(departures.map(departure)).toEqual([
+      ['H#1#h', 4, 0, 0, '4+', '44+', 'forward', 'record', undefined],
+    ])
+  },
+)
+
+// Twelve 4 bp reference nodes in one tile (excursion.R.gfa); H goes from 1
+// to 9, jumps to 11 and comes back to 2, all in one piece:
+//   W R 0 chr >1>2>...>12
+//   W H 1 h   >1>9>11>2
+test('a cut computes no departure outside its drawn stretch, even inside a fragment', async () => {
+  const { fragments, departures } = await reader('excursion.R').cut(
+    'R#0#chr',
+    { start: 0, end: 8 },
+    { context: 0 },
+  )
+  expect(fragments.filter(f => f.name === 'H#1#h').map(fragment)).toEqual([
+    ['H#1#h', 0, 16, '>1>9>11>2', 0, 0],
+  ])
+  expect(departures.map(departure)).toEqual([
+    ['H#1#h', 4, 0, 0, '4+', '32+', 'forward', 'steps', undefined],
+    ['H#1#h', 12, 0, 0, '44+', '4+', 'back', 'steps', undefined],
+  ])
+})

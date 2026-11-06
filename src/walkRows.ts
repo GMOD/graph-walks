@@ -5,7 +5,7 @@ import {
   panSNMatchesPrefix,
 } from './util.ts'
 import { placeAndLink } from './walkChunk.ts'
-import { ATTACH_BP, departureStretch } from './walkDeparture.ts'
+import { ATTACH_BP, adjacentSteps, departureStretch } from './walkDeparture.ts'
 
 import type { DepartureTable, GraphTables } from './util.ts'
 import type { Chunk } from './walkChunk.ts'
@@ -442,12 +442,10 @@ export function walkCut(
       kept.add(id)
     }
   }
-  const spansOf = new Map<WalkRun, { first: number; last: number }[]>()
   for (const span of spans) {
     for (let i = span.first; i <= span.last; i++) {
       kept.add(span.run.ids[i]!)
     }
-    spansOf.set(span.run, [...(spansOf.get(span.run) ?? []), span])
   }
   const runEnd = (run: WalkRun) =>
     run.hapOffset + (run.abridged?.bp ?? before(run)[run.ids.length]!)
@@ -497,25 +495,6 @@ export function walkCut(
       reversed,
     }
   }
-  const overExtent = (d: WalkDeparture) => {
-    const [lo, hi] = departureStretch(d)
-    return lo < windowEnd && hi > windowStart
-  }
-  // where each walk's fragments start and end on its contig
-  const fragmentEdges = new Map<string, Set<number>>()
-  for (const f of fragments) {
-    const edges = fragmentEdges.get(f.name) ?? new Set<number>()
-    edges.add(f.hapStart)
-    edges.add(f.hapEnd)
-    fragmentEdges.set(f.name, edges)
-  }
-  const touchesFragment = (d: WalkDeparture) => {
-    const edges = fragmentEdges.get(d.name)
-    return (
-      edges !== undefined &&
-      (edges.has(d.hapStart) || edges.has(d.hapStart + d.ownBp))
-    )
-  }
   const departures: WalkDeparture[] = []
   for (const run of runs) {
     if (run.abridged || run.name === refName) {
@@ -524,10 +503,6 @@ export function walkCut(
     const { ids, rev, refStarts, against } = run
     const bp = before(run)
     const bounds = pieceBounds(run)
-    const spansHere = spansOf.get(run)
-    const edges = fragmentEdges.get(run.name)
-    const inSpan = (i: number, j: number) =>
-      spansHere?.some(s => s.first <= i && j <= s.last) ?? false
     for (let p = 0; p + 1 < bounds.length; p++) {
       let last = -1
       for (let i = bounds[p]!; i < bounds[p + 1]!; i++) {
@@ -543,25 +518,19 @@ export function walkCut(
             ? refStarts[last]!
             : refStarts[last]! + bp[last + 1]! - bp[last]!
           const rejoinPos = rejoinReversed ? start + bp[i + 1]! - bp[i]! : start
-          const adjacent =
-            ownBp === 0 &&
-            leaveReversed === rejoinReversed &&
-            squeeze(leavePos) === squeeze(rejoinPos)
-          if (!adjacent) {
-            const leaveBase = leaveReversed ? leavePos : leavePos - 1
-            const rejoinBase = rejoinReversed ? rejoinPos - 1 : rejoinPos
-            const lo = Math.max(0, Math.min(leaveBase, rejoinBase))
-            const hi = Math.max(lo, leaveBase, rejoinBase) + 1
-            const hapStart = run.hapOffset + bp[last + 1]!
-            if (
-              (lo < windowEnd && hi > windowStart) ||
-              inSpan(last, i) ||
-              edges?.has(hapStart) === true ||
-              edges?.has(hapStart + ownBp) === true
-            ) {
+          const ends = {
+            ownBp,
+            leavePos,
+            leaveReversed,
+            rejoinPos,
+            rejoinReversed,
+          }
+          if (!adjacentSteps(ends, squeeze)) {
+            const [lo, hi] = departureStretch(ends)
+            if (lo < windowEnd && hi > windowStart) {
               const d: WalkDeparture = {
                 name: run.name,
-                hapStart,
+                hapStart: run.hapOffset + bp[last + 1]!,
                 ownBp,
                 missingBp: 0,
                 leavePos,
@@ -677,9 +646,7 @@ export function walkCut(
         unattached.push({ departure: d })
       }
     }
-    if (overExtent(d) || touchesFragment(d)) {
-      departures.push(d)
-    }
+    departures.push(d)
   }
   departures.sort(
     (a, b) =>

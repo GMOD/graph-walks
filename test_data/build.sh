@@ -33,3 +33,5 @@ build hprc-chrM hprc-chrM.GRCh38.gfa --refs GRCh38 --sequences
 build jumpback jumpback.GRCh38.gfa --refs GRCh38 --tile 20
 build loop loop.R.gfa --refs R --tile 10
 build ownzero ownzero.R.gfa --refs R --tile 10
+build excursion excursion.R.gfa --refs R --tile 64
+build hole hole.R.gfa --refs R --tile 16

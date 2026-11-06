@@ -1,0 +1,8 @@
+H	VN:Z:1.1
+S	1	ACGT
+S	2	ACGT
+S	3	ACGT
+S	4	ACGT
+W	R	0	chr	0	8	>1>2
+W	R	0	chr	40	48	>3>4
+W	H	1	h	0	8	>1>4
