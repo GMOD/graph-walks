@@ -14,19 +14,19 @@ build() {
     mv "$out.idx" "$name.$sample.walks.gz.idx"
   done
 }
-build header header.GRCh38.gfa --refs GRCh38 --chunk 1000
-build maxnode maxnode.GRCh38.gfa --refs GRCh38 --chunk 1000
-build revisit revisit.GRCh38.gfa --refs GRCh38 --chunk 1000
-build farpass farpass.GRCh38.gfa --refs GRCh38 --chunk 1000
-build follow follow.GRCh38.gfa --refs GRCh38 --chunk 1000
-build rejoin follow.GRCh38.gfa --refs GRCh38 --chunk 10000
-build records records.GRCh38.gfa --refs GRCh38 --chunk 1000
-build skip skip.GRCh38.gfa --refs GRCh38 --chunk 10
-build span span.gfa --refs GRCh38 --chunk 20
-build attach attach.GRCh38.gfa --refs GRCh38 --chunk 20
-build unabridged unabridged.R.gfa --refs R --chunk 10
-build abridged unabridged.R.gfa --refs R --chunk 10 --abridge-bytes 1
-build interleaved interleaved.R.gfa --refs R --chunk 10 --stay 0 --abridge-steps 3
-build ownends ownends.R.gfa --refs R --chunk 10 --abridge-bytes 1
-build contigends contigends.R.gfa --refs R --chunk 10 --abridge-bytes 1
+build header header.GRCh38.gfa --refs GRCh38 --tile 1000
+build maxnode maxnode.GRCh38.gfa --refs GRCh38 --tile 1000
+build revisit revisit.GRCh38.gfa --refs GRCh38 --tile 1000
+build farpass farpass.GRCh38.gfa --refs GRCh38 --tile 1000
+build follow follow.GRCh38.gfa --refs GRCh38 --tile 1000
+build rejoin follow.GRCh38.gfa --refs GRCh38 --tile 10000
+build records records.GRCh38.gfa --refs GRCh38 --tile 1000
+build skip skip.GRCh38.gfa --refs GRCh38 --tile 10
+build span span.gfa --refs GRCh38 --tile 20
+build attach attach.GRCh38.gfa --refs GRCh38 --tile 20
+build unabridged unabridged.R.gfa --refs R --tile 10
+build abridged unabridged.R.gfa --refs R --tile 10 --abridge-bytes 1
+build interleaved interleaved.R.gfa --refs R --tile 10 --stay 0 --abridge-steps 3
+build ownends ownends.R.gfa --refs R --tile 10 --abridge-bytes 1
+build contigends contigends.R.gfa --refs R --tile 10 --abridge-bytes 1
 build hprc-chrM hprc-chrM.GRCh38.gfa --refs GRCh38 --sequences
