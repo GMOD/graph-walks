@@ -478,7 +478,14 @@ const gfa = await rgfaCut(
   whose first line differs from the header's `#walks` line or whose `bytes`
   differs from the data's length. Over HTTP the length comes from Content-Range,
   so a server must expose that header to cross-origin readers for the check to
-  hold; where the reader cannot learn the length it skips the check
+  hold; where the reader cannot learn the length it skips the check. Every call
+  that reads the file, `referenceSequences`, `units` and `referenceNodes` among
+  them, waits on this check
+- It refuses, with a `WalkFormatError`, a unit or table that does not hold what
+  lists it: one that is not whole gzip members, one whose text ends partway
+  through a line, a unit whose `#unit` line is not its table entry's, and a row
+  of another sequence or of a kind its unit does not hold. A unit of a kind the
+  format does not give it never reads
 - A cut selects the `tile` and `departures` units whose `start end` overlap the
   window and its context, skipping any of length 0, merges the byte ranges that
   touch, and fetches each as one single-range request. It gunzips each unit,
