@@ -1774,7 +1774,7 @@ const tableOf = (at: number, length: number, kind = 'tile', name = '0') =>
 
 // The filehandles of a walk file whose one sequence, R#0#chr, has one unit
 // over [0, 4), held in `unit`, and a table of `table`'s text listing it
-function oneUnit(unit: Uint8Array[], table = tableOf) {
+function oneUnit(unit: Uint8Array<ArrayBuffer>[], table = tableOf) {
   const walks = '#walks\tformat:i:7\ttile:i:16'
   const header = bgzf(`${walks}\n#reference\tR\n`)
   const unitAt = lengthOf(header)
@@ -1789,7 +1789,7 @@ function oneUnit(unit: Uint8Array[], table = tableOf) {
 }
 
 // A walk file whose one sequence, R#0#chr, has one tile, 0 over [0, 4)
-const oneTile = (tile: Uint8Array[], table = tableOf) =>
+const oneTile = (tile: Uint8Array<ArrayBuffer>[], table = tableOf) =>
   WalkReader.fromFilehandles(oneUnit(tile, table))
 
 const cutAll = (walks: WalkReader) =>
