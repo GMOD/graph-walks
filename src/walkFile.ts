@@ -197,18 +197,30 @@ export class WalkFile {
     return header
   })
 
-  // The reference sequences, in the directory's order
+  // The reference sequences, in the directory's order, once the directory
+  // and the data agree
   async sequences() {
+    await this.header()
     return [...(await this.readDirectory()).tables.keys()]
   }
 
-  // A sequence's units in file order; none for a sequence the file lacks
+  // A sequence's units in file order, once the directory and the data
+  // agree; none for a sequence the file lacks
   async units(refName: string) {
     let read = this.tableReads.get(refName)
     if (!read) {
       read = once(async () => {
         const range = (await this.readDirectory()).tables.get(refName)
-        return range ? this.table(refName, range) : []
+        const [checked, table] = await Promise.allSettled([
+          this.header(),
+          range ? this.table(refName, range) : [],
+        ])
+        if (checked.status === 'rejected') {
+          throw checked.reason
+        } else if (table.status === 'rejected') {
+          throw table.reason
+        }
+        return table.value
       })
       this.tableReads.set(refName, read)
     }
@@ -252,6 +264,8 @@ export class WalkFile {
    * gunzipped on its own.
    */
   async read(units: WalkUnit[], signal?: AbortSignal) {
+    await this.header()
+    signal?.throwIfAborted()
     const byOffset = [...new Map(units.map(u => [u.offset, u])).values()]
       .filter(u => u.length > 0)
       .sort((a, b) => a.offset - b.offset)

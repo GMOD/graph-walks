@@ -202,17 +202,32 @@ async function edited(edit: (directory: string) => string) {
   })
 }
 
-test('a directory and data that disagree are refused', async () => {
-  await expect(
-    (await edited(d => d.replace(/\tbytes:i:\d+/, '\tbytes:i:12'))).header(),
-  ).rejects.toThrow(
-    /directory does not match its data: the directory states 12 bytes, the data holds \d+/,
-  )
-  await expect(
-    (await edited(d => d.replace('stay:i:311', 'stay:i:0'))).header(),
-  ).rejects.toThrow(/directory does not match its data/)
-  expect((await (await edited(d => d)).header()).tile).toBe(1000)
-})
+const region = { start: 0, end: 600 }
+const entryPoints: [string, (walks: WalkReader) => Promise<unknown>][] = [
+  ['header', walks => walks.header()],
+  ['referenceSequences', walks => walks.referenceSequences()],
+  ['sequenceFor', walks => walks.sequenceFor('GRCh38', 'chr1')],
+  ['units', walks => walks.units('GRCh38#0#chr1')],
+  ['sequenceLength', walks => walks.sequenceLength('GRCh38#0#chr1')],
+  ['bytesFor', walks => walks.bytesFor('GRCh38#0#chr1', region)],
+  ['referenceNodes', walks => walks.referenceNodes('GRCh38#0#chr1', region)],
+  ['cut', walks => walks.cut('GRCh38#0#chr1', region)],
+]
+
+test.each(entryPoints)(
+  'a directory and data that disagree are refused by %s',
+  async (_, run) => {
+    await expect(
+      run(await edited(d => d.replace(/\tbytes:i:\d+/, '\tbytes:i:12'))),
+    ).rejects.toThrow(
+      /directory does not match its data: the directory states 12 bytes, the data holds \d+/,
+    )
+    await expect(
+      run(await edited(d => d.replace('stay:i:311', 'stay:i:0'))),
+    ).rejects.toThrow(/directory does not match its data/)
+    await expect(run(await edited(d => d))).resolves.toBeDefined()
+  },
+)
 
 test('a cut keeps the reference and the haplotypes asked for', async () => {
   const names = walkNames(
