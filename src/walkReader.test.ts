@@ -1811,6 +1811,13 @@ test('a unit of a kind the format does not give is read whatever its rows', asyn
   expect(await file.read(await file.units('R#0#chr'))).toEqual([['anything']])
 })
 
+test('a tile cut partway through a gzip member is refused', async () => {
+  const [whole] = bgzf(TILE_HEAD + REF_ROW)
+  await expect(
+    cutAll(oneTile([whole!.subarray(0, whole!.length - 10)])),
+  ).rejects.toThrow(`${TILE_AT} is not whole gzip members`)
+})
+
 test.each([
   [
     'a #unit line of another kind',

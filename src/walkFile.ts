@@ -61,7 +61,14 @@ const ROW_KINDS = new Map([
 ])
 
 async function unitLines(bytes: Uint8Array, unit: string) {
-  const text = decoder.decode(await unzip(bytes))
+  const text = await unzip(bytes).then(
+    unzipped => decoder.decode(unzipped),
+    (error: unknown) => {
+      throw new WalkFormatError(`${unit} is not whole gzip members`, {
+        cause: error,
+      })
+    },
+  )
   if (text !== '' && !text.endsWith('\n')) {
     throw new WalkFormatError(
       `${unit} ends partway through a line: ${JSON.stringify(text.slice(-40))}`,
