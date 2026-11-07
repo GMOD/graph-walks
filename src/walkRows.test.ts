@@ -61,6 +61,26 @@ test('continuation rows join by piece index, and a missing piece splits the walk
   ])
 })
 
+test("pieces join within their W line: a contig's second W line, numbering its pieces from 0 too, joins none of the first's", () => {
+  const rows = [
+    walkRow('H#1#h', 1, 20, forward(3, 4), { fragStart: 100 }),
+    walkRow('H#1#h', 0, 0, forward(1, 2)),
+    walkRow('H#1#h', 0, 0, forward(1, 2), { fragStart: 100 }),
+    walkRow('H#1#h', 1, 20, [
+      [3, true],
+      [4, false],
+    ]),
+  ]
+  expect(
+    joinPieces(rows)
+      .map(r => [r.fragStart, [...r.ids], [...r.rev]])
+      .sort(([a], [b]) => Number(a) - Number(b)),
+  ).toEqual([
+    [0, [1, 2, 3, 4], [0, 0, 1, 0]],
+    [100, [1, 2, 3, 4], [0, 0, 0, 0]],
+  ])
+})
+
 test('the haplotype filter keeps the named walks and the reference', () => {
   expect(walkNameFilter(undefined, 'GRCh38#0')).toBeUndefined()
   expect(walkNameFilter([], 'GRCh38#0')).toBeUndefined()

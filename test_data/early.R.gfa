@@ -1,0 +1,8 @@
+H	VN:Z:1.1
+S	1	ACGTAC
+S	2	ACGTAC
+S	3	ACGTAC
+S	4	ACGTAC
+S	8	TT
+W	R	0	chr	0	36	>1>2>3>2>3>4
+W	E	1	e	0	38	>1>2>8>3>2>3>4

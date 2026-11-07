@@ -39,3 +39,6 @@ build holetile hole.R.gfa --refs R --tile 64
 build copies copies.R.gfa --refs R --tile 1000
 build copyends copyends.R.gfa --refs R --tile 1000 --abridge-bytes 1
 build zerostep zerostep.R.gfa --refs R --tile 8
+build early early.R.gfa --refs R --tile 1000
+build twolines twolines.R.gfa --refs R --tile 20
+build abredge abredge.R.gfa --refs R --tile 20 --abridge-bytes 1

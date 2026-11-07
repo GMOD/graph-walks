@@ -223,6 +223,11 @@ test.each(entryPoints)(
       /directory does not match its data: the directory states 12 bytes, the data holds \d+/,
     )
     await expect(
+      run(await edited(d => d.replace(/\tbytes:i:\d+/, ''))),
+    ).rejects.toThrow(
+      /directory does not match its data: the directory states no bytes, the data holds \d+/,
+    )
+    await expect(
       run(await edited(d => d.replace('stay:i:311', 'stay:i:0'))),
     ).rejects.toThrow(/directory does not match its data/)
     await expect(run(await edited(d => d))).resolves.toBeDefined()
@@ -984,6 +989,19 @@ test('an abridged walk cuts to a fragment from where it leaves R to where it rej
   })
 })
 
+// R over four 5 bp nodes in 20 bp tiles, and H abridged from 3 at 10 to 4
+// at 15 (abredge.R.gfa):
+//   W R 0 chr >1>2>3>4
+//   W H 1 h   >3>5>4   5 of 8 bp
+test('an abridged piece starting where the drawn stretch ends is not cut', async () => {
+  const { fragments } = await reader('abredge.R').cut(
+    'R#0#chr',
+    { start: 0, end: 10 },
+    { context: 0 },
+  )
+  expect(fragments.map(f => f.name)).toEqual(['R#0#chr'])
+})
+
 test('an expanded walk is read from its detail records as the unabridged file cuts it', async () => {
   const all = () => true
   const expanded = await twoRefs('abridged.R', all)
@@ -1586,6 +1604,22 @@ test("a cut's links run the way a walk along the reference takes them", async ()
   expect(links).not.toContain('L\t2\t-\t11\t-\t0M')
 })
 
+// H's two W lines on one contig, each numbering its pieces from 0, over 10 bp
+// nodes in 20 bp tiles (twolines.R.gfa):
+//   W R 0 chr   0  40 >1>2>3>4
+//   W H 1 h     0  40 >1>2<3>4
+//   W H 1 h   100 140 >1>2>3>4
+test("a link between two pieces of one W line holds though the contig's other W line numbers its pieces the same", async () => {
+  const { graph, kept, fragments, departures } = await reader('twolines.R').cut(
+    'R#0#chr',
+    { start: 0, end: 40 },
+    { context: 0 },
+  )
+  expect(
+    graphTablesGFA(graph.tables(kept, fragments, departures)).split('\n'),
+  ).toContain('L\t2\t+\t3\t-\t0M')
+})
+
 const placedSteps = (f: WalkFragment) =>
   [...f.ids]
     .map((id, k) => `${f.rev[k] ? '<' : '>'}${id}@${f.refStarts[k]}`)
@@ -1611,6 +1645,22 @@ test('a walk row takes the passes its :k, @k and start@k name, and the defaults 
     'S#1#s >2@18>3@24>4@30',
     'U#1#u >1@0>9@NaN>3@24>4@30',
   ])
+})
+
+// The reference passes 2 and 3 twice, 6 bp nodes in one tile (early.R.gfa).
+// E's route to 8 names no `:k`, so it leaves from the first pass of 2 its walk
+// reaches, not the last:
+//   W R 0 chr >1>2>3>2>3>4
+//   W E 1 e   >1>2>8>3>2>3>4   8 of 2 bp
+test('a route naming no :k leaves from the first pass of its entry the walk reaches', async () => {
+  const { fragments } = await reader('early.R').cut(
+    'R#0#chr',
+    { start: 0, end: 36 },
+    { context: 0 },
+  )
+  expect(fragments.map(f => `${f.name} ${placedSteps(f)}`)).toContain(
+    'E#1#e >1@0>2@6>8@NaN>3@12>2@18>3@24>4@30',
+  )
 })
 
 // Every walk abridged, in one tile (copyends.R.gfa). Y's end is 3 at its
@@ -1857,7 +1907,8 @@ test("a reader that cannot learn the data's length skips the directory's bytes c
 })
 
 // A unit of a kind this reader does not know, listed in the table between
-// the tile and the table, is a later addition: the cut reads around it
+// the tile and the table, is a later addition: the cut reads around it, and
+// its ref row of node 2 joins nothing
 test('a unit of a kind the reader does not know is skipped', async () => {
   const lengthOf = (blocks: Uint8Array[]) =>
     blocks.reduce((sum, block) => sum + block.length, 0)
@@ -1867,7 +1918,7 @@ test('a unit of a kind the reader does not know is skipped', async () => {
     '#unit\tR#0#chr\t0\t4\ttile\t0\nR#0#chr\t0\t4\tref\tR#0#chr\t0\t0\t0\t1\t2\t4\t.\n',
   )
   const sketch = bgzf(
-    '#unit\tR#0#chr\t0\t4\tsketch\t0\nR#0#chr\t0\t4\tsketch\twhatever a sketch holds\n',
+    '#unit\tR#0#chr\t0\t4\tsketch\t0\nR#0#chr\t0\t4\tref\tR#0#chr\t0\t0\t0\t1\t4\t4\t.\n',
   )
   const tileAt = lengthOf(header)
   const sketchAt = tileAt + lengthOf(tile)
@@ -1888,15 +1939,19 @@ test('a unit of a kind the reader does not know is skipped', async () => {
   })
   const read = vi.spyOn(BlobFile.prototype, 'read')
   try {
-    const { fragments } = await walkFile.cut(
+    const { fragments, kept } = await walkFile.cut(
       'R#0#chr',
       { start: 0, end: 4 },
       { context: 0 },
     )
     expect(fragments.map(fragment)).toEqual([['R#0#chr', 0, 4, '>1', 0, 0]])
-    expect(read.mock.calls.map(([, position]) => position)).not.toContain(
-      sketchAt,
-    )
+    expect([...kept]).toEqual([1])
+    expect(
+      read.mock.calls.filter(
+        ([length, position = 0]) =>
+          position <= sketchAt && sketchAt < position + length,
+      ),
+    ).toEqual([])
   } finally {
     read.mockRestore()
   }
@@ -1951,6 +2006,19 @@ test('tags a reader does not know are ignored on any row and header line', async
     return [fragments.map(fragment), departures.map(departure)]
   }
   expect(await attached(tagged(farAttach))).toEqual(await attached(farAttach))
+})
+
+test("a tag after an abridged row's detail column names no other detail unit", async () => {
+  const { fragments } = await inline([
+    '#walks format:i:7 tile:i:20',
+    '#reference R',
+    '#haplotype H#1',
+    'R#0#chr 0 ref R#0#chr 0 0 0 4 2,2,2,2 5,5,5,5 .',
+    'R#0#chr 0 abridged H#1#h 0 0 0 3 18 6 8 0 xx:i:1',
+  ]).cut('R#0#chr', { start: 0, end: 20 }, { context: 0 })
+  expect(fragments.map(f => f.abridged?.detail.name).filter(Boolean)).toEqual([
+    '0:0',
+  ])
 })
 
 // R's chr0 is two nodes of 0 bp: its tile states [0, 0), so a window from 0
