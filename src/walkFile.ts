@@ -21,7 +21,8 @@ export type WalkFilehandle = Pick<
   'read' | 'readFile' | 'stat' | 'source'
 >
 
-// A walk file in a format other than 7, which the reader refuses
+// A walk file the reader refuses: one in a format other than 7, or one whose
+// units do not hold what its directory and tables say
 export class WalkFormatError extends Error {
   override name = 'WalkFormatError'
 }
@@ -51,9 +52,53 @@ interface Directory {
 
 const decoder = new TextDecoder()
 
-function lines(bytes: Uint8Array) {
-  const text = decoder.decode(bytes)
+// The row kinds each unit kind holds; a unit kind not here is a later
+// addition, whose rows a reader never reads
+const ROW_KINDS = new Map([
+  ['tile', ['ref', 'nodes', 'route', 'walk', 'abridged']],
+  ['departures', ['departure']],
+  ['detail', ['nodes', 'route', 'walk']],
+])
+
+async function unitLines(bytes: Uint8Array, unit: string) {
+  const text = decoder.decode(await unzip(bytes))
+  if (text !== '' && !text.endsWith('\n')) {
+    throw new WalkFormatError(
+      `${unit} ends partway through a line: ${JSON.stringify(text.slice(-40))}`,
+    )
+  }
   return text.split('\n').filter(line => line !== '')
+}
+
+function unitName(unit: WalkUnit) {
+  return `The unit at byte ${unit.offset} of the walk file, ${unit.refName}'s ${unit.kind} ${unit.name} over [${unit.start}, ${unit.end}) as its table lists it,`
+}
+
+function checkUnit(unit: WalkUnit, head: string | undefined, rows: string[]) {
+  const stated = [
+    '#unit',
+    unit.refName,
+    unit.start,
+    unit.end,
+    unit.kind,
+    unit.name,
+  ].join('\t')
+  const kinds = ROW_KINDS.get(unit.kind)
+  const stray = rows.find(row => {
+    const [seq, , , kind = ''] = row.split('\t', 4)
+    return (
+      kinds !== undefined && (seq !== unit.refName || !kinds.includes(kind))
+    )
+  })
+  if (head?.split('\t', 6).join('\t') !== stated) {
+    throw new WalkFormatError(
+      `${unitName(unit)} starts ${JSON.stringify(head?.slice(0, 80) ?? '')}`,
+    )
+  } else if (stray !== undefined) {
+    throw new WalkFormatError(
+      `${unitName(unit)} holds a row that is not one of ${unit.refName}'s ${kinds?.join(', ')} rows: ${JSON.stringify(stray.slice(0, 80))}`,
+    )
+  }
 }
 
 function integerTag(fields: string[], tag: string) {
@@ -183,7 +228,10 @@ export class WalkFile {
   readonly header = once(async () => {
     const directory = await this.readDirectory()
     const { offset, length } = directory.header
-    const header = lines(await unzip(await this.data.read(length, offset)))
+    const header = await unitLines(
+      await this.data.read(length, offset),
+      'The header unit',
+    )
     const { size } = await this.data.stat()
     if (header[0] !== directory.walks.join('\t')) {
       throw new WalkFormatError(
@@ -231,11 +279,25 @@ export class WalkFile {
     refName: string,
     { offset, length }: { offset: number; length: number },
   ) {
-    const [, ...entries] = lines(
-      await unzip(await this.data.read(length, offset)),
+    const [head = '', ...entries] = await unitLines(
+      await this.data.read(length, offset),
+      `${refName}'s table`,
     )
+    const [unitTag, unitSeq, unitStart, , unitKind, unitLabel] =
+      head.split('\t')
+    if (
+      unitTag !== '#unit' ||
+      unitSeq !== refName ||
+      unitStart !== '0' ||
+      unitKind !== 'table' ||
+      unitLabel !== '.'
+    ) {
+      throw new WalkFormatError(
+        `${refName}'s table, at byte ${offset} of the walk file, starts ${JSON.stringify(head.slice(0, 80))}`,
+      )
+    }
     return entries.map(line => {
-      const [, seq = '', start, end, kind = '', name = '', at, size] =
+      const [tag, seq = '', start, end, kind = '', name = '', at, size] =
         line.split('\t')
       const unit = {
         refName: seq,
@@ -247,6 +309,7 @@ export class WalkFile {
         length: Number(size),
       }
       if (
+        tag !== '#entry' ||
         seq !== refName ||
         ![unit.start, unit.end, unit.offset, unit.length].every(
           Number.isSafeInteger,
@@ -288,14 +351,11 @@ export class WalkFile {
         const bytes = await this.data.read(length, first.offset, { signal })
         for (const unit of run) {
           const at = unit.offset - first.offset
-          const [head, ...rest] = lines(
-            await unzip(bytes.subarray(at, at + unit.length)),
+          const [head, ...rest] = await unitLines(
+            bytes.subarray(at, at + unit.length),
+            unitName(unit),
           )
-          if (!head?.startsWith('#unit\t')) {
-            throw new WalkFormatError(
-              `No #unit line at byte ${unit.offset} of the walk file, where ${unit.refName}'s table puts a ${unit.kind} unit`,
-            )
-          }
+          checkUnit(unit, head, rest)
           held.set(unit.offset, rest)
         }
       }),

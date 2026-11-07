@@ -4,7 +4,7 @@ import { bgzf, graphTablesGFA, walkFileOf } from './testing.ts'
 import { RegionTooLargeError, panSNHaplotype } from './util.ts'
 import { WalkRowError, canonicalLink } from './walkChunk.ts'
 import { departureKind, placementChoice } from './walkDeparture.ts'
-import { WalkFormatError } from './walkFile.ts'
+import { WalkFile, WalkFormatError } from './walkFile.ts'
 import {
   DepartureReadError,
   WALK_BUDGETS,
@@ -1715,28 +1715,124 @@ test.each([
   },
 )
 
-test('a unit that does not start with its #unit line is refused', async () => {
-  const lengthOf = (blocks: Uint8Array[]) =>
-    blocks.reduce((sum, block) => sum + block.length, 0)
+const lengthOf = (blocks: Uint8Array[]) =>
+  blocks.reduce((sum, block) => sum + block.length, 0)
+const REF_ROW = 'R#0#chr\t0\t4\tref\tR#0#chr\t0\t0\t0\t1\t2\t4\t.\n'
+const TILE_HEAD = '#unit\tR#0#chr\t0\t4\ttile\t0\n'
+const tableOf = (at: number, length: number, kind = 'tile', name = '0') =>
+  `#unit\tR#0#chr\t0\t4\ttable\t.\n#entry\tR#0#chr\t0\t4\t${kind}\t${name}\t${at}\t${length}\n`
+
+// The filehandles of a walk file whose one sequence, R#0#chr, has one unit
+// over [0, 4), held in `unit`, and a table of `table`'s text listing it
+function oneUnit(unit: Uint8Array[], table = tableOf) {
   const walks = '#walks\tformat:i:7\ttile:i:16'
   const header = bgzf(`${walks}\n#reference\tR\n`)
-  const tile = bgzf('R#0#chr\t0\t4\tref\tR#0#chr\t0\t0\t0\t1\t2\t4\t.\n')
-  const tileAt = lengthOf(header)
-  const tableAt = tileAt + lengthOf(tile)
-  const table = bgzf(
-    `#unit\tR#0#chr\t0\t4\ttable\t.\n#entry\tR#0#chr\t0\t4\ttile\t0\t${tileAt}\t${lengthOf(tile)}\n`,
-  )
-  const parts = [...header, ...tile, ...table]
-  const directory = `${walks}\tbytes:i:${lengthOf(parts)}\n#header\t0\t${tileAt}\nR#0#chr\t${tableAt}\t${lengthOf(table)}\n`
-  const walkFile = WalkReader.fromFilehandles({
+  const unitAt = lengthOf(header)
+  const tableAt = unitAt + lengthOf(unit)
+  const tableUnit = bgzf(table(unitAt, lengthOf(unit)))
+  const parts = [...header, ...unit, ...tableUnit]
+  const directory = `${walks}\tbytes:i:${lengthOf(parts)}\n#header\t0\t${unitAt}\nR#0#chr\t${tableAt}\t${lengthOf(tableUnit)}\n`
+  return {
     data: new BlobFile(new Blob(parts)),
     directory: new BlobFile(new Blob([directory])),
-  })
-  await expect(
-    walkFile.cut('R#0#chr', { start: 0, end: 4 }, { context: 0 }),
-  ).rejects.toThrow(
-    `No #unit line at byte ${tileAt} of the walk file, where R#0#chr's table puts a tile unit`,
+  }
+}
+
+// A walk file whose one sequence, R#0#chr, has one tile, 0 over [0, 4)
+const oneTile = (tile: Uint8Array[], table = tableOf) =>
+  WalkReader.fromFilehandles(oneUnit(tile, table))
+
+const cutAll = (walks: WalkReader) =>
+  walks.cut('R#0#chr', { start: 0, end: 4 }, { context: 0 })
+
+const TILE_AT =
+  "The unit at byte 69 of the walk file, R#0#chr's tile 0 over [0, 4) as its table lists it,"
+
+test('a one-tile file whose tile holds what its table says is read', async () => {
+  const { fragments } = await cutAll(oneTile(bgzf(TILE_HEAD + REF_ROW)))
+  expect(fragments.map(f => f.name)).toEqual(['R#0#chr'])
+})
+
+test.each([
+  ['no #unit line', REF_ROW, `${TILE_AT} starts "R#0#chr\\t0\\t4\\tref`],
+  [
+    "another tile's #unit line, as a table whose entries swapped their byte ranges gives",
+    TILE_HEAD.replace('tile\t0', 'tile\t16') + REF_ROW,
+    `${TILE_AT} starts "#unit\\tR#0#chr\\t0\\t4\\ttile\\t16"`,
+  ],
+  [
+    'a half row, as a table length ending at a member boundary inside the unit gives',
+    `${TILE_HEAD}${REF_ROW}R#0#chr\t0\t4\twa`,
+    `${TILE_AT} ends partway through a line`,
+  ],
+  [
+    'a row kind the format does not give',
+    `${TILE_HEAD}${REF_ROW}R#0#chr\t0\t4\tsketch\t1\n`,
+    `${TILE_AT} holds a row that is not one of R#0#chr's ref, nodes, route, walk, abridged rows: "R#0#chr\\t0\\t4\\tsketch\\t1"`,
+  ],
+  [
+    "another sequence's row",
+    `${TILE_HEAD}${REF_ROW.replace(/^R#0#chr/, 'R#0#chr2')}`,
+    `${TILE_AT} holds a row that is not one of R#0#chr's ref, nodes, route, walk, abridged rows: "R#0#chr2\\t0`,
+  ],
+])('a tile with %s is refused', async (_, text, message) => {
+  await expect(cutAll(oneTile(bgzf(text)))).rejects.toThrow(message)
+})
+
+test.each([
+  ['departures', '.', REF_ROW, "R#0#chr's departure rows"],
+  ['detail', '0:0', REF_ROW, "R#0#chr's nodes, route, walk rows"],
+  [
+    'tile',
+    '0',
+    'R#0#chr\t0\t4\tdeparture\n',
+    "R#0#chr's ref, nodes, route, walk, abridged rows",
+  ],
+])(
+  'a %s unit holding a row of a kind it does not hold is refused',
+  async (kind, name, row, kinds) => {
+    const unit = bgzf(`#unit\tR#0#chr\t0\t4\t${kind}\t${name}\n${row}`)
+    const { data, directory } = oneUnit(unit, (at, length) =>
+      tableOf(at, length, kind, name),
+    )
+    const file = new WalkFile(data, directory)
+    await expect(file.read(await file.units('R#0#chr'))).rejects.toThrow(
+      `holds a row that is not one of ${kinds}`,
+    )
+  },
+)
+
+test('a unit of a kind the format does not give is read whatever its rows', async () => {
+  const unit = bgzf(`#unit\tR#0#chr\t0\t4\tsketch\t.\nanything\n`)
+  const { data, directory } = oneUnit(unit, (at, length) =>
+    tableOf(at, length, 'sketch', '.'),
   )
+  const file = new WalkFile(data, directory)
+  expect(await file.read(await file.units('R#0#chr'))).toEqual([['anything']])
+})
+
+test.each([
+  [
+    'a #unit line of another kind',
+    (at: number, length: number) =>
+      tableOf(at, length).replace('table', 'tile'),
+    'of the walk file, starts "#unit\\tR#0#chr\\t0\\t4\\ttile\\t."',
+  ],
+  [
+    'a line that is not an #entry',
+    (at: number, length: number) =>
+      tableOf(at, length).replace('#entry', 'entry'),
+    "R#0#chr's unit table holds entry\tR#0#chr",
+  ],
+  [
+    'a half line',
+    (at: number, length: number) => tableOf(at, length).slice(0, -3),
+    "R#0#chr's table ends partway through a line",
+  ],
+])('a table with %s is refused', async (_, table, message) => {
+  await expect(
+    oneTile(bgzf(TILE_HEAD + REF_ROW), table).units('R#0#chr'),
+  ).rejects.toThrow(message)
 })
 
 test("a reader that cannot learn the data's length skips the directory's bytes check", async () => {
