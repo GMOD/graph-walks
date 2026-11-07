@@ -69,7 +69,7 @@ async function unitLines(bytes: Uint8Array, unit: string) {
       })
     },
   )
-  if (text !== '' && !text.endsWith('\n')) {
+  if (!text.endsWith('\n')) {
     throw new WalkFormatError(
       `${unit} ends partway through a line: ${JSON.stringify(text.slice(-40))}`,
     )
@@ -79,6 +79,14 @@ async function unitLines(bytes: Uint8Array, unit: string) {
 
 function unitName(unit: WalkUnit) {
   return `The unit at byte ${unit.offset} of the walk file, ${unit.refName}'s ${unit.kind} ${unit.name} over [${unit.start}, ${unit.end}) as its table lists it,`
+}
+
+function isTableHead(head: string, refName: string) {
+  const [tag, seq, start, , kind, name] = head.split('\t', 6)
+  return (
+    [tag, seq, start, kind, name].join('\t') ===
+    ['#unit', refName, '0', 'table', '.'].join('\t')
+  )
 }
 
 function checkUnit(unit: WalkUnit, head: string | undefined, rows: string[]) {
@@ -290,15 +298,7 @@ export class WalkFile {
       await this.data.read(length, offset),
       `${refName}'s table`,
     )
-    const [unitTag, unitSeq, unitStart, , unitKind, unitLabel] =
-      head.split('\t')
-    if (
-      unitTag !== '#unit' ||
-      unitSeq !== refName ||
-      unitStart !== '0' ||
-      unitKind !== 'table' ||
-      unitLabel !== '.'
-    ) {
+    if (!isTableHead(head, refName)) {
       throw new WalkFormatError(
         `${refName}'s table, at byte ${offset} of the walk file, starts ${JSON.stringify(head.slice(0, 80))}`,
       )
@@ -334,8 +334,6 @@ export class WalkFile {
    * gunzipped on its own.
    */
   async read(units: WalkUnit[], signal?: AbortSignal) {
-    await this.header()
-    signal?.throwIfAborted()
     const byOffset = [...new Map(units.map(u => [u.offset, u])).values()]
       .filter(u => u.length > 0)
       .sort((a, b) => a.offset - b.offset)
