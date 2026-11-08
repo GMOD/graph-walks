@@ -151,21 +151,22 @@ const { tables, refName, sample } = await reader.cutRegion(
 
 ## Cut options
 
-| Option                | Effect                                                                              |
-| --------------------- | ----------------------------------------------------------------------------------- |
-| `keep`                | Which walks to decode, by `sample#haplotype#contig`; every one by default           |
-| `context`             | bp of reference kept past each end of the region; default 1000                      |
-| `stepBudget`          | The most steps a cut keeps, departures' own steps included; 4,000,000 by default    |
-| `byteBudget`          | The most compressed bytes the walk and attach reads fetch; 8 MB by default          |
-| `departureByteBudget` | The most compressed bytes the departure read fetches; 2 MB by default               |
-| `attachBp`            | The most bp of own sequence a departure gets its steps attached for; default 65,536 |
-| `nodeLimit`           | The most nodes a cut keeps; no limit by default                                     |
-| `contained`           | `true` keeps each walk within the window; see below                                 |
-| `links`               | `false` lists no links, for a caller that draws no edges                            |
-| `sequences`           | Keep each node's bases in `graph.sequences`, from a `--sequences` file              |
-| `signal`              | An `AbortSignal` that stops the reads                                               |
-| `expand`              | Which abridged walks to read in full, by `sample#haplotype#contig`; none by default |
-| `budgetNames`         | The words a `RegionTooLargeError` message uses for the step and byte budgets        |
+| Option                | Effect                                                                                  |
+| --------------------- | --------------------------------------------------------------------------------------- |
+| `keep`                | Which walks to decode, by `sample#haplotype#contig`; every one by default               |
+| `context`             | bp of reference kept past each end of the region; default 1000                          |
+| `stepBudget`          | The most steps a cut keeps, departures' own steps included; 4,000,000 by default        |
+| `byteBudget`          | The most compressed bytes the walk and attach reads fetch; 8 MB by default              |
+| `departureByteBudget` | The most compressed bytes the departure read fetches; 2 MB by default                   |
+| `attachBp`            | The most bp of own sequence a departure gets its steps attached for; default 65,536     |
+| `attachFetches`       | Deprecated and ignored: every eligible record's tiles are fetched, against `byteBudget` |
+| `nodeLimit`           | The most nodes a cut keeps; no limit by default                                         |
+| `contained`           | `true` keeps each walk within the window; see below                                     |
+| `links`               | `false` lists no links, for a caller that draws no edges                                |
+| `sequences`           | Keep each node's bases in `graph.sequences`, from a `--sequences` file                  |
+| `signal`              | An `AbortSignal` that stops the reads                                                   |
+| `expand`              | Which abridged walks to read in full, by `sample#haplotype#contig`; none by default     |
+| `budgetNames`         | The words a `RegionTooLargeError` message uses for the step and byte budgets            |
 
 - A cut over a budget or its node limit throws a `RegionTooLargeError`. The
   error's `fitsBp` holds about how wide a window would fit, and JBrowse shows it

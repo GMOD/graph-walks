@@ -1175,7 +1175,8 @@ function keptOverError(
  * bytes of the tiles a read from the window's first base to `end` fetches;
  * the span that fits grows a tile at a time from the tile holding the
  * window's start, and when the tiles that reaches are over on their own, no
- * zoom fits.
+ * zoom fits. `attaching` marks bytes the tiles fetched for records' own
+ * steps take past the budget.
  */
 export function byteBudgetError(
   bytesTo: (end: number) => number,
@@ -1183,6 +1184,7 @@ export function byteBudgetError(
   window: { start: number; end: number },
   tile: number,
   names = BUDGET_NAMES,
+  attaching = false,
 ) {
   const bytes = bytesTo(window.end)
   if (bytes <= budget) {
@@ -1212,7 +1214,9 @@ export function byteBudgetError(
         { bytes, zoomHelps: true },
       )
     : new RegionTooLargeError(
-        `Too much graph here to fetch, even zoomed in (${megabytes(least ?? bytes)} against ${names.bytes} ${megabytes(budget)}). A satellite or rDNA array usually causes this: the graph folds the repeat into a few nodes that each haplotype loops through many times`,
+        attaching
+          ? `Too many departures here whose own steps the cut must fetch, even zoomed in (${megabytes(least ?? bytes)} against ${names.bytes} ${megabytes(budget)}); choose fewer haplotypes or a smaller attachBp`
+          : `Too much graph here to fetch, even zoomed in (${megabytes(least ?? bytes)} against ${names.bytes} ${megabytes(budget)}). A satellite or rDNA array usually causes this: the graph folds the repeat into a few nodes that each haplotype loops through many times`,
         budget,
         windowBp,
         1,

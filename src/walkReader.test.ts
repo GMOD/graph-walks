@@ -1501,6 +1501,7 @@ const farAttach = [
 test.each([
   { opts: {}, steps: '>14' },
   { opts: { keep: (name: string) => name !== 'G#1#g' }, steps: '>14' },
+  { opts: { attachFetches: 0 }, steps: '>14' },
 ])(
   'a tile fetched to attach gives its record the own steps and nothing else: $opts',
   async ({ opts, steps }) => {
@@ -1552,17 +1553,38 @@ test('a cut attaches the own steps of every record within attachBp, however many
 test('a cut whose attach fetches take it past the byte budget attaches none and says so', async () => {
   const walks = reader('attachmany.R')
   const tiles = (await walks.units('R#0#chr')).filter(u => u.kind === 'tile')
-  const bytes = tiles
-    .filter(u => u.start < 100 || (u.start < 205 && u.end > 195))
+  const bytesOf = (starts: (start: number) => boolean) =>
+    tiles.filter(u => starts(u.start)).reduce((sum, u) => sum + u.length, 0)
+  const bytes = bytesOf(start => start < 100 || start === 190 || start === 200)
+  const cut = (byteBudget: number) =>
+    walks.cut('R#0#chr', attachMany, { context: 0, byteBudget })
+  expect((await cut(bytes)).departures.every(d => d.steps !== undefined)).toBe(
+    true,
+  )
+  await expect(cut(bytes - 1)).rejects.toMatchObject({
+    regionTooLarge: true,
+    zoomHelps: true,
+  })
+  const firstTile = bytesOf(start => start < 100 || start === 190)
+  await expect(cut(firstTile - 1)).rejects.toMatchObject({
+    regionTooLarge: true,
+    zoomHelps: false,
+    message: expect.stringMatching(
+      /^Too many departures here whose own steps the cut must fetch.*choose fewer haplotypes or a smaller attachBp$/,
+    ),
+  })
+})
+
+test('the byte budget counts the tiles of the context past the window', async () => {
+  const walks = reader('attachmany.R')
+  const opts = { context: 10, attachBp: 0 }
+  const bytes = (await walks.units('R#0#chr'))
+    .filter(u => u.kind === 'tile' && u.start >= 180 && u.start <= 210)
     .reduce((sum, u) => sum + u.length, 0)
-  expect(
-    (
-      await walks.cut('R#0#chr', attachMany, { context: 0, byteBudget: bytes })
-    ).departures.every(d => d.steps !== undefined),
-  ).toBe(true)
+  await walks.cut('R#0#chr', attachMany, { ...opts, byteBudget: bytes })
   await expect(
-    walks.cut('R#0#chr', attachMany, { context: 0, byteBudget: bytes - 1 }),
-  ).rejects.toMatchObject({ regionTooLarge: true, limit: bytes - 1 })
+    walks.cut('R#0#chr', attachMany, { ...opts, byteBudget: bytes - 1 }),
+  ).rejects.toBeInstanceOf(RegionTooLargeError)
 })
 
 // Four 6 bp reference nodes in 10 bp tiles (ownzero.R.gfa); G jumps back

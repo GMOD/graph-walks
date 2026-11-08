@@ -123,6 +123,11 @@ export interface WalkCutOptions {
   // such a record that its read lacks, which gives those records their steps
   // and nothing else
   attachBp?: number
+  /**
+   * @deprecated Ignored: every eligible record's tiles are fetched, their
+   * bytes counted against byteBudget
+   */
+  attachFetches?: number
   context?: number
   // false lists no links, for a caller that draws no edges
   links?: boolean
@@ -373,8 +378,11 @@ export class WalkReader {
       u => u.kind === 'departures' && overlaps(u, drawn),
     )
     const tileBytesTo = (end: number) =>
-      bytesOf(tiles.filter(u => u.start < end))
-    const checkBytes = (bytesTo: (end: number) => number) => {
+      bytesOf(tiles.filter(u => u.start < end + context))
+    const checkBytes = (
+      bytesTo: (end: number) => number,
+      attaching = false,
+    ) => {
       if (Number.isFinite(byteBudget)) {
         const tooLarge = byteBudgetError(
           bytesTo,
@@ -382,6 +390,7 @@ export class WalkReader {
           region,
           tile,
           opts.budgetNames,
+          attaching,
         )
         if (tooLarge) {
           throw tooLarge
@@ -575,41 +584,41 @@ export class WalkReader {
           attach: joinPieces(attachRows),
         })
       cut = cutRows()
-      // the tiles holding the own steps of records the read lacks, each
-      // fetched once for the records wanting it, and counted for a window
-      // reaching the first of their ends
+      // the tiles holding own steps the read lacks, the walks wanting each,
+      // and where on R the first record wanting it starts
       const fetches = new Map<WalkUnit, { names: Set<string>; from: number }>()
       for (const { departure } of cut.unattached) {
         const { name } = departure
         const from = Math.min(
           departure.leavePos,
           departure.rejoinPos,
-          region.end - 1,
+          region.end + context - 1,
         )
         for (const unit of attachTiles(units, ownTiles.get(departure) ?? [])) {
           if (!decodedFor(unit, name)) {
-            const fetch = fetches.get(unit)
+            const wanting = fetches.get(unit)
             fetches.set(unit, {
-              names: (fetch?.names ?? new Set()).add(name),
-              from: Math.min(fetch?.from ?? from, from),
+              names: (wanting?.names ?? new Set()).add(name),
+              from: Math.min(wanting?.from ?? from, from),
             })
           }
         }
       }
-      const wanted = [...fetches]
-      if (wanted.length > 0) {
+      if (fetches.size > 0) {
         checkBytes(
           end =>
             tileBytesTo(end) +
-            bytesOf(wanted.filter(([, f]) => f.from < end).map(([u]) => u)),
+            bytesOf(
+              [...fetches]
+                .filter(([, w]) => w.from < end + context)
+                .map(([unit]) => unit),
+            ),
+          true,
         )
-        const fetched = await this.file.read(
-          wanted.map(([unit]) => unit),
-          reads.signal,
-        )
-        wanted.forEach(([unit, { names }], k) => {
+        const fetched = await this.file.read([...fetches.keys()], reads.signal)
+        for (const [k, [unit, { names }]] of [...fetches].entries()) {
           decode(unit, fetched[k]!, attachRows, name => names.has(name))
-        })
+        }
         await finish()
         cut = cutRows()
       }
