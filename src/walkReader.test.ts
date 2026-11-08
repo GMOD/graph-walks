@@ -563,9 +563,28 @@ test('a cut on a signal already aborted reads no row', async () => {
   read.mockRestore()
 })
 
-test('a range that is not finite queries nothing', async () => {
+test.each([
+  [
+    'cut',
+    (walks: WalkReader, r: { start: number; end: number }) =>
+      walks.cut('GRCh38#0#chr1', r),
+  ],
+  [
+    'referenceNodes',
+    (walks: WalkReader, r: { start: number; end: number }) =>
+      walks.referenceNodes('GRCh38#0#chr1', r),
+  ],
+  [
+    'bytesFor',
+    (walks: WalkReader, r: { start: number; end: number }) =>
+      walks.bytesFor('GRCh38#0#chr1', r),
+  ],
+])('a range that is not finite queries nothing by %s', async (_, run) => {
   await expect(
-    reader('header.GRCh38').cut('GRCh38#0#chr1', { start: NaN, end: 2600 }),
+    run(reader('header.GRCh38'), { start: NaN, end: 2600 }),
+  ).rejects.toThrow("is not a finite range to query the graph's index for")
+  await expect(
+    run(reader('header.GRCh38'), { start: 0, end: Infinity }),
   ).rejects.toThrow("is not a finite range to query the graph's index for")
 })
 

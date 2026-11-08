@@ -315,6 +315,7 @@ export class WalkReader {
     region: { start: number; end: number },
     opts: { signal?: AbortSignal; context?: number } = {},
   ) {
+    checkRange(refName, region.start, region.end)
     const drawn = drawnSpan(region, opts.context ?? WALK_CONTEXT)
     const units = await this.units(refName, opts)
     return bytesOf(
