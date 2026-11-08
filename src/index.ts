@@ -95,7 +95,7 @@ export {
   panSNMatchesPrefix,
   panSNSample,
 } from './util.ts'
-export type { DepartureTable, GraphTables } from './util.ts'
+export type { DepartureTable, GapTable, GraphTables } from './util.ts'
 export {
   MOVED_TAG,
   carrierNames,
@@ -118,3 +118,5 @@ export { rgfaCut } from './rgfaCut.ts'
 export type { RgfaFiles } from './rgfaCut.ts'
 export { formContradictions } from './formsCheck.ts'
 export type { Contradiction, ContradictionKind } from './formsCheck.ts'
+export { GAP_KINDS } from './walkGaps.ts'
+export type { GapKind, GapSegment, WalkGap } from './walkGaps.ts'

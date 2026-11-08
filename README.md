@@ -202,8 +202,10 @@ const { tables, refName, sample } = await reader.cutRegion(
 Each of `fragments` is one walk's stretch through the cut: `name`, `fragStart`
 (the W line's start), `hapStart`/`hapEnd`, and its steps, from the walk's first
 step on the drawn stretch of the reference, the window and its context, to its
-last. `trimmedBefore` and `trimmedAfter` count the bp of the walk the cut read
-but kept out past either end, so they depend on the tiles the cut read.
+last. `trimmedBefore` and `trimmedAfter` count the bp of the walk's run past
+either end of the fragment, so they depend on the tiles the cut read. They
+include own steps the cut attaches to a departure there, so they say how far the
+run goes, not what lies there: [Gaps](#gaps) does.
 
 - Fragments come from the tiles overlapping the drawn stretch alone. A tile the
   cut fetches for a record's own steps (see [Departures](#departures)) gives
@@ -216,6 +218,35 @@ but kept out past either end, so they depend on the tiles the cut read.
   alone: not on which other walks the cut keeps, nor on `attachFetches`
 - `graph.tables(kept, fragments, departures)` keeps `trimmedBefore` and
   `trimmedAfter` as columns of `walks`
+
+## Gaps
+
+`gaps` states what lies on each walk's contig between its fragments, past its
+first and last, and in its departures outside them, as
+[ADR 0001](docs/adr/0001-a-cut-states-what-lies-between-fragments.md) decides.
+Each has `name`, `edge` (0 between two fragments, 1 a row's start, 2 its end, 3
+a departure outside the row), `start`/`end` on the contig, the `fragment` it
+follows (or precedes, for a row's start), and `segments` in contig order whose
+`bp` sum to `end - start`:
+
+- `steps`: own steps the cut attached to a departure, with their `ids` and
+  `rev`; these nodes are in the cut
+- `read`: steps of the walk's runs over the window's tiles that the cut kept
+  out, such as reference steps off the drawn stretch or own steps of a departure
+  over `attachBp`
+- `abridged`: an abridged run of those tiles that is not a fragment
+- `own`: a record's own sequence the cut did not read, with its `missingBp`, in
+  no stated order, and `abridged` set where the record's leave or rejoin piece
+  is an abridged run
+- `unread`: pieces the cut did not read, with the reference breakpoints the cut
+  knows `before` and `after` them
+
+A row end runs over the bp of the run past the fragment, and over the whole of
+any record that reaches it. Tiles fetched for a record's own steps give `steps`
+alone, so the other kinds do not depend on `attachFetches`.
+`graph.tables(kept, fragments, departures, gaps)` writes them as a `gaps` table,
+each stretch's walk by its fragment's index in `walks`, and each step as a node
+index.
 
 ## Departures
 

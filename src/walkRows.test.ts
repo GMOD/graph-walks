@@ -717,3 +717,347 @@ test('the reference walk is written first, whatever order the rows came in', () 
     'HG002#2#chr1',
   ])
 })
+
+describe('the stretches between and past a walk’s fragments', () => {
+  const record = (more: Partial<WalkDeparture>): WalkDeparture => ({
+    name: 'HG002#1#chr1',
+    hapStart: 200,
+    ownBp: 300,
+    missingBp: 200,
+    leavePos: 200,
+    leaveReversed: false,
+    leavePasses: 1,
+    rejoinPos: 200,
+    rejoinReversed: false,
+    rejoinPasses: 1,
+    fromSteps: false,
+    ...more,
+  })
+  const segments = (gaps: ReturnType<ReturnType<typeof walkCut>['gapsOf']>) =>
+    gaps.map(g => [
+      g.edge,
+      g.start,
+      g.end,
+      g.segments.map(x =>
+        x.kind === 'steps'
+          ? [x.kind, x.bp, x.ids]
+          : x.kind === 'own'
+            ? [x.kind, x.bp, x.missingBp]
+            : x.kind === 'unread'
+              ? [x.kind, x.bp, x.before, x.after]
+              : [x.kind, x.bp],
+      ),
+    ])
+  // a W line that leaves at 2 for allele 5 and ends, 200 bp the graph lacks,
+  // and the next W line rejoining at 3, as HG00097#1 does at the amylase locus
+  const lineEnd = (g: WalkGraph) =>
+    joinPieces([
+      run(g, 'HG002#1#chr1', 100, [2, 5]),
+      run(g, 'HG002#1#chr1', 500, [3], { fragStart: 500 }),
+    ])
+
+  test('a record’s attached steps, then its missing bp, fill the stretch between two W lines', () => {
+    const g = graph()
+    const { gapsOf } = walkCut(lineEnd(g), g.nodes, 'GRCh38#0#chr1', [
+      record({}),
+    ])
+    expect(segments(gapsOf())).toEqual([
+      [
+        0,
+        200,
+        500,
+        [
+          ['steps', 100, [5]],
+          ['own', 200, 200],
+        ],
+      ],
+    ])
+  })
+
+  test('a record over attachBp leaves its steps read and kept out', () => {
+    const g = graph()
+    const { gapsOf } = walkCut(
+      lineEnd(g),
+      g.nodes,
+      'GRCh38#0#chr1',
+      [record({})],
+      { attachBp: 50 },
+    )
+    expect(segments(gapsOf())).toEqual([
+      [
+        0,
+        200,
+        500,
+        [
+          ['read', 100],
+          ['own', 200, 200],
+        ],
+      ],
+    ])
+  })
+
+  test('pieces the cut did not read, with no record over them, are unread between the breakpoints either side', () => {
+    const g = graph()
+    const runs = joinPieces([
+      run(g, 'HG002#1#chr1', 100, [2]),
+      walkRow('HG002#1#chr1', 5, 1000, forward(3), {}, g.nodes),
+    ])
+    const { gapsOf } = walkCut(runs, g.nodes, 'GRCh38#0#chr1', [])
+    expect(segments(gapsOf())).toEqual([
+      [0, 200, 1000, [['unread', 800, 200, 200]]],
+    ])
+  })
+
+  test('a row’s end reaches over a record leaving at it, and a record past the row stands alone', () => {
+    const g = graph()
+    const { gapsOf } = walkCut(
+      joinPieces([run(g, 'HG002#1#chr1', 100, [2])]),
+      g.nodes,
+      'GRCh38#0#chr1',
+      [
+        record({ missingBp: 0, rejoinPos: 300 }),
+        record({
+          hapStart: 900,
+          ownBp: 50,
+          missingBp: 0,
+          leavePos: 300,
+          rejoinPos: 400,
+        }),
+      ],
+    )
+    expect(segments(gapsOf())).toEqual([
+      [2, 200, 500, [['own', 300, 0]]],
+      [3, 900, 950, [['own', 50, 0]]],
+    ])
+  })
+
+  test('a walk with no fragment has a stretch for each of its records', () => {
+    const g = graph()
+    const { gapsOf } = walkCut([], g.nodes, 'GRCh38#0#chr1', [record({})])
+    expect(segments(gapsOf())).toEqual([[3, 200, 500, [['own', 300, 200]]]])
+  })
+
+  test('the tables key each stretch to its fragment’s walk and its steps to node indices', () => {
+    const g = graph()
+    const { kept, fragments, departures, gapsOf } = walkCut(
+      lineEnd(g),
+      g.nodes,
+      'GRCh38#0#chr1',
+      [record({})],
+    )
+    const tables = g.tables(kept, fragments, departures, gapsOf())
+    const t = tables.gaps!
+    expect(tables.walks.names).toEqual(['HG002#1#chr1', 'HG002#1#chr1'])
+    expect([...t.walks]).toEqual([0])
+    expect([...t.segments.kinds]).toEqual([0, 3])
+    expect([...t.segments.steps].map(i => tables.nodes.names[i])).toEqual(['5'])
+  })
+
+  test('a computed departure’s steps past the row’s last fragment are its steps, and the reference past them is read', () => {
+    const g = graph()
+    const { gapsOf } = walkCut(
+      joinPieces([run(g, 'HG002#1#chr1', 100, [2, 5, 4])]),
+      g.nodes,
+      'GRCh38#0#chr1',
+      [],
+    )
+    expect(segments(gapsOf())).toEqual([
+      [
+        2,
+        200,
+        400,
+        [
+          ['steps', 100, [5]],
+          ['read', 100],
+        ],
+      ],
+    ])
+  })
+
+  test('a tile fetched for a record’s own steps gives those steps and nothing read', () => {
+    const g = graph()
+    const { gapsOf } = walkCut(
+      joinPieces([run(g, 'HG002#1#chr1', 100, [2, 5])]),
+      g.nodes,
+      'GRCh38#0#chr1',
+      [record({ missingBp: 100 })],
+      {
+        attach: joinPieces([
+          run(g, 'HG002#1#chr1', 400, [6, 3], { fragStart: 400 }),
+        ]),
+      },
+    )
+    expect(segments(gapsOf())).toEqual([
+      [
+        2,
+        200,
+        500,
+        [
+          ['steps', 100, [5]],
+          ['own', 100, 100],
+          ['steps', 100, [6]],
+        ],
+      ],
+    ])
+  })
+
+  test('an abridged run between fragments is abridged, and its handles are where the walk was last and next seen', () => {
+    const g = graph()
+    for (const [id, start] of [
+      [7, 400],
+      [8, 500],
+    ] as const) {
+      g.placeNode(id, {
+        rank: 0,
+        refName: 'GRCh38#0#chr1',
+        start,
+        end: start + 100,
+        passes: 1,
+      })
+    }
+    const detail = { refName: 'GRCh38#0#chr1', start: 400, name: '400:0' }
+    const runs = joinPieces([
+      run(g, 'HG002#1#chr1', 100, [2]),
+      walkRow(
+        'HG002#1#chr1',
+        3,
+        1000,
+        forward(7, 8),
+        { abridged: { steps: 4, bp: 200, detail } },
+        g.nodes,
+      ),
+      walkRow('HG002#1#chr1', 6, 2000, forward(3), {}, g.nodes),
+    ])
+    const { gapsOf } = walkCut(runs, g.nodes, 'GRCh38#0#chr1', [])
+    expect(segments(gapsOf())).toEqual([
+      [
+        0,
+        200,
+        2000,
+        [
+          ['unread', 800, 200, 400],
+          ['abridged', 200],
+          ['unread', 800, 600, 200],
+        ],
+      ],
+    ])
+  })
+
+  test('a 0 bp step a record attaches at the stretch’s end is kept as a 0 bp segment', () => {
+    const g = graph()
+    g.placeNode(9, {
+      rank: 1,
+      refName: 'HG002#1#chr1',
+      start: 3000,
+      end: 3000,
+      passes: 0,
+    })
+    const { gapsOf } = walkCut(
+      joinPieces([
+        run(g, 'HG002#1#chr1', 100, [2, 5]),
+        run(g, 'HG002#1#chr1', 500, [9, 3], { fragStart: 500 }),
+      ]),
+      g.nodes,
+      'GRCh38#0#chr1',
+      [record({})],
+    )
+    expect(segments(gapsOf())).toEqual([
+      [
+        0,
+        200,
+        500,
+        [
+          ['steps', 100, [5]],
+          ['own', 200, 200],
+          ['steps', 0, [9]],
+        ],
+      ],
+    ])
+  })
+
+  test('records of 0 bp mark where the walk was inside unread pieces, and make no stretch at a row’s edge', () => {
+    const g = graph()
+    const runs = joinPieces([
+      run(g, 'HG002#1#chr1', 100, [2]),
+      walkRow('HG002#1#chr1', 5, 1000, forward(3), {}, g.nodes),
+    ])
+    const { gapsOf } = walkCut(runs, g.nodes, 'GRCh38#0#chr1', [
+      record({ ownBp: 0, missingBp: 0 }),
+      record({
+        hapStart: 600,
+        ownBp: 0,
+        missingBp: 0,
+        leavePos: 300,
+        rejoinPos: 400,
+      }),
+    ])
+    expect(segments(gapsOf())).toEqual([
+      [
+        0,
+        200,
+        1000,
+        [
+          ['unread', 400, 200, 300],
+          ['own', 0, 0],
+          ['unread', 400, 400, 200],
+        ],
+      ],
+    ])
+  })
+
+  test('a row’s start reaches back over a record rejoining at it', () => {
+    const g = graph()
+    const { gapsOf } = walkCut(
+      joinPieces([run(g, 'HG002#1#chr1', 500, [3], { fragStart: 500 })]),
+      g.nodes,
+      'GRCh38#0#chr1',
+      [record({})],
+    )
+    expect(segments(gapsOf())).toEqual([[1, 200, 500, [['own', 300, 200]]]])
+  })
+
+  test('several records in one stretch each keep their own sequence, with what lies between them unread', () => {
+    const g = graph()
+    const runs = joinPieces([
+      run(g, 'HG002#1#chr1', 100, [2]),
+      walkRow('HG002#1#chr1', 5, 2000, forward(3), {}, g.nodes),
+    ])
+    const { gapsOf } = walkCut(runs, g.nodes, 'GRCh38#0#chr1', [
+      record({ ownBp: 100, missingBp: 0, rejoinPos: 300 }),
+      record({
+        hapStart: 1000,
+        ownBp: 100,
+        missingBp: 0,
+        leavePos: 400,
+        rejoinPos: 500,
+      }),
+    ])
+    expect(segments(gapsOf())).toEqual([
+      [
+        0,
+        200,
+        2000,
+        [
+          ['own', 100, 0],
+          ['unread', 700, 300, 400],
+          ['own', 100, 0],
+          ['unread', 900, 500, 200],
+        ],
+      ],
+    ])
+  })
+
+  test('between two fragments of one run in a contained cut lie the steps the cut read', () => {
+    const g = graph()
+    const { gapsOf } = walkCut(
+      joinPieces([run(g, 'HG002#1#chr1', 0, [2, 3, 1, 2, 4])]),
+      g.nodes,
+      'GRCh38#0#chr1',
+      [],
+      { contained: true },
+    )
+    expect(segments(gapsOf()).filter(([edge]) => edge === 0)).toEqual([
+      [0, 200, 300, [['read', 100]]],
+    ])
+  })
+})

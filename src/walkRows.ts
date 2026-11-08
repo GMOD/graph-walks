@@ -6,10 +6,12 @@ import {
 } from './util.ts'
 import { placeAndLink } from './walkChunk.ts'
 import { ATTACH_BP, adjacentSteps, departureStretch } from './walkDeparture.ts'
+import { GAP_KINDS, walkGaps } from './walkGaps.ts'
 
-import type { DepartureTable, GraphTables } from './util.ts'
+import type { DepartureTable, GapTable, GraphTables } from './util.ts'
 import type { Chunk } from './walkChunk.ts'
 import type { Hole, WalkDeparture } from './walkDeparture.ts'
+import type { WalkGap } from './walkGaps.ts'
 
 // A walk row of gfa-to-tabix's format 6, its steps decoded with its chunk
 // (walkChunk.ts). A haplotype path is cut into pieces, one per chunk it
@@ -504,6 +506,15 @@ export function walkCut(
     }
   }
   const departures: WalkDeparture[] = []
+  const attached = new Map<WalkRun, Set<number>>()
+  const markAttached = (run: WalkRun, from: number, to: number) => {
+    const marks = attached.get(run) ?? new Set<number>()
+    attached.set(run, marks)
+    for (let k = from; k < to; k++) {
+      marks.add(k)
+      kept.add(run.ids[k]!)
+    }
+  }
   for (const run of runs) {
     if (run.abridged || run.name === refName) {
       continue
@@ -554,9 +565,7 @@ export function walkCut(
                   ids: ids.subarray(last + 1, i),
                   rev: rev.subarray(last + 1, i),
                 }
-                for (let k = last + 1; k < i; k++) {
-                  kept.add(ids[k]!)
-                }
+                markAttached(run, last + 1, i)
               }
               departures.push(d)
             }
@@ -633,6 +642,7 @@ export function walkCut(
           ids.push(run.ids[k]!)
           rev.push(run.rev[k]!)
         }
+        markAttached(run, i + 1, end)
       }
       const rejoin = rejoins.get(
         edgeKey(d.name, d.rejoinPos, d.rejoinReversed, d.hapStart + d.ownBp),
@@ -643,12 +653,10 @@ export function walkCut(
           ids.push(run.ids[k]!)
           rev.push(run.rev[k]!)
         }
+        markAttached(run, start, i)
       }
       if (ids.length > 0) {
         d.steps = { ids: Int32Array.from(ids), rev: Uint8Array.from(rev) }
-        for (const id of ids) {
-          kept.add(id)
-        }
       }
       if (!leave || !rejoin) {
         unattached.push({ departure: d })
@@ -662,7 +670,23 @@ export function walkCut(
       a.hapStart - b.hapStart ||
       a.leavePos - b.leavePos,
   )
-  return { kept, fragments, departures, unattached }
+  let gaps: WalkGap[] | undefined
+  const gapsOf = () => {
+    gaps ??= walkGaps({
+      runs,
+      attach,
+      fragments,
+      departures,
+      refName,
+      before,
+      length,
+      attached,
+      breakpoint,
+      spans,
+    })
+    return gaps
+  }
+  return { kept, fragments, departures, unattached, gapsOf }
 }
 
 // Where each of a run's pieces starts, and where the last ends
@@ -794,6 +818,7 @@ export class WalkGraph {
     kept: Set<number>,
     fragments: WalkFragment[],
     departures: WalkDeparture[],
+    gaps: WalkGap[] = [],
   ): GraphTables {
     if (this.chunks.length > 0) {
       placeAndLink(
@@ -915,6 +940,7 @@ export class WalkGraph {
         abridgedBp: Float64Array.from(walks, f => f.abridged?.bp ?? NaN),
       },
       departures: departureTable(departures, nodeIndex),
+      gaps: gapTable(gaps, new Map(walks.map((f, p) => [f, p])), nodeIndex),
     }
   }
 
@@ -928,6 +954,52 @@ export class WalkGraph {
         Number(b.name === refName) - Number(a.name === refName) ||
         (a.name < b.name ? -1 : a.name > b.name ? 1 : a.hapStart - b.hapStart),
     )
+  }
+}
+
+function gapTable(
+  gaps: WalkGap[],
+  walkIndex: Map<WalkFragment, number>,
+  nodeIndex: (id: number) => number,
+): GapTable {
+  const segments = gaps.flatMap(g => g.segments)
+  const segmentOffsets = new Int32Array(gaps.length + 1)
+  gaps.forEach((g, k) => {
+    segmentOffsets[k + 1] = segmentOffsets[k]! + g.segments.length
+  })
+  const stepOffsets = new Int32Array(segments.length + 1)
+  segments.forEach((x, k) => {
+    stepOffsets[k + 1] = stepOffsets[k]! + x.ids.length
+  })
+  const steps = new Int32Array(stepOffsets[segments.length]!)
+  const reversed = new Uint8Array(steps.length)
+  segments.forEach((x, k) => {
+    const at = stepOffsets[k]!
+    x.ids.forEach((id, j) => {
+      steps[at + j] = nodeIndex(id)
+    })
+    reversed.set(x.rev, at)
+  })
+  return {
+    names: gaps.map(g => g.name),
+    walks: Int32Array.from(gaps, g =>
+      g.fragment ? (walkIndex.get(g.fragment) ?? -1) : -1,
+    ),
+    edges: Uint8Array.from(gaps, g => g.edge),
+    starts: Float64Array.from(gaps, g => g.start),
+    ends: Float64Array.from(gaps, g => g.end),
+    segmentOffsets,
+    segments: {
+      kinds: Uint8Array.from(segments, x => GAP_KINDS.indexOf(x.kind)),
+      bp: Float64Array.from(segments, x => x.bp),
+      missingBp: Float64Array.from(segments, x => x.missingBp),
+      abridged: Uint8Array.from(segments, x => (x.abridged ? 1 : 0)),
+      before: Float64Array.from(segments, x => x.before),
+      after: Float64Array.from(segments, x => x.after),
+      stepOffsets,
+      steps,
+      reversed,
+    },
   }
 }
 

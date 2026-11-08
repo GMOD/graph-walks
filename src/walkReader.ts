@@ -617,7 +617,7 @@ export class WalkReader {
       throw tooMany
     }
     const { kept, fragments, departures } = cut
-    return { graph, kept, fragments, departures }
+    return { graph, kept, fragments, departures, gaps: cut.gapsOf() }
   }
 
   /**
@@ -641,13 +641,13 @@ export class WalkReader {
         `The walk file has no sequence ${region.refName} on ${sample}; it holds ${names.slice(0, 5).join(', ')}${names.length > 5 ? ', …' : ''}`,
       )
     }
-    const { graph, kept, fragments, departures } = await this.cut(
+    const { graph, kept, fragments, departures, gaps } = await this.cut(
       refName,
       region,
       { ...rest, keep: walksKept(haplotypes, refName) },
     )
     return {
-      tables: graph.tables(kept, fragments, departures),
+      tables: graph.tables(kept, fragments, departures, gaps),
       refName,
       sample,
     }

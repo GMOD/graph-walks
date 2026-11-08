@@ -39,6 +39,37 @@ export interface GraphTables {
   }
   // every departure from the reference over the cut, each once
   departures: DepartureTable
+  // what lies between each walk's fragments, past its ends and in its
+  // departures outside them, as docs/adr/0001 decides; absent from tables
+  // another source builds
+  gaps?: GapTable
+}
+
+// A stretch per row, in walk then contig order: `walks` the walk-table index
+// of the fragment it follows, or precedes for a row's start, -1 for a
+// departure outside the row; `edges` 0 between two fragments, 1 a row's start,
+// 2 its end, 3 a departure outside it; its segments at `segmentOffsets[g]` up
+// to `segmentOffsets[g + 1]`, each a kind of GAP_KINDS, with the steps of a
+// `steps` segment as node indices at `stepOffsets[k]` up to
+// `stepOffsets[k + 1]`
+export interface GapTable {
+  names: string[]
+  walks: Int32Array
+  edges: Uint8Array
+  starts: Float64Array
+  ends: Float64Array
+  segmentOffsets: Int32Array
+  segments: {
+    kinds: Uint8Array
+    bp: Float64Array
+    missingBp: Float64Array
+    abridged: Uint8Array
+    before: Float64Array
+    after: Float64Array
+    stepOffsets: Int32Array
+    steps: Int32Array
+    reversed: Uint8Array
+  }
 }
 
 // A WalkDeparture per row: its ends as breakpoints on the reference, with
