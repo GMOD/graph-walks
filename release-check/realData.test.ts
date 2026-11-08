@@ -8,6 +8,11 @@ import { WalkReader } from '../src/walkReader.ts'
 
 import type { HaplotypeDepartures } from '../src/walkDepartures.ts'
 
+// The unexpanded and expanded reads are compared on each window snapped to
+// the extents of the tiles its drawn stretch overlaps, so that no abridged
+// piece straddles the drawn stretch's edge: such a piece is netted over its
+// whole stretch unexpanded and trimmed to the drawn stretch expanded
+
 // The 28 MC chr22 windows of gfa-to-tabix's
 // docs/departures/results/minimal/mc22.forms-compare-review.txt
 const WINDOWS = [
@@ -63,9 +68,21 @@ const summary = (h: HaplotypeDepartures) =>
   `${net(h)} ${JSON.stringify(h.covered)}`
 
 test.runIf(walks !== '').each(WINDOWS)(
-  '%i-%i: abridged pieces read unexpanded as expanded, context on both sides, and no form contradicts a member',
+  '%i-%i: abridged pieces read unexpanded as expanded over the tiles the drawn stretch overlaps, context on both sides, and no form contradicts a member',
   async (start, end) => {
-    const region = { refName, start, end }
+    const sequence =
+      (await reader().sequenceFor(
+        (await reader().header()).references[0] ?? '',
+        refName,
+      )) ?? refName
+    const tiles = (await reader().units(sequence)).filter(
+      u => u.kind === 'tile' && u.start < end + 1000 && u.end > start - 1000,
+    )
+    const region = {
+      refName,
+      start: tiles[0]!.start + 1000,
+      end: tiles.at(-1)!.end - 1000,
+    }
     const cut = (expand: boolean) =>
       formsCut(reader(), region, { ...lifted, expand, partial: false })
     const [unexpanded, expanded] = [await cut(false), await cut(true)]
@@ -73,11 +90,6 @@ test.runIf(walks !== '').each(WINDOWS)(
       new Map(expanded.map(h => [h.haplotype, summary(h)])),
     )
 
-    const sequence =
-      (await reader().sequenceFor(
-        (await reader().header()).references[0] ?? '',
-        refName,
-      )) ?? refName
     const reference = async (from: number, to: number, context: number) =>
       (
         await reader().cut(

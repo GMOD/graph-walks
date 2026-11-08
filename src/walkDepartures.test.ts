@@ -722,6 +722,40 @@ describe('a forms cut', () => {
     expect(net(abridged!['H#1']!)).toBe(net(whole))
   })
 
+  // G#1's one abridged piece walks R from 10000 to 20000 and drops 1000 bp
+  // of it for 300 of its own at 16000, past the drawn stretch 8000-15000 of
+  // the window 10500-13500. Unexpanded it nets -700 over its whole stretch,
+  // as the format says: "a reader that leaves the piece unexpanded nets
+  // `bp` against the R between `start` and `end`"; expanded it is trimmed to
+  // the drawn stretch, where it follows R
+  test('an abridged piece reaching past the drawn stretch nets over its whole stretch unexpanded, and over the drawn stretch alone expanded', async () => {
+    const window = { refName: 'chr', start: 10_500, end: 13_500 }
+    const [abridged, expanded] = await Promise.all(
+      [false, true].map(async expand =>
+        byHaplotype(await formsCut(reader('drawnedge.R'), window, { expand })),
+      ),
+    )
+    expect(abridged!['G#1']).toEqual({
+      haplotype: 'G#1',
+      covered: [[8000, 20_000]],
+      departures: [
+        {
+          refStart: 10_000,
+          refEnd: 20_000,
+          altLength: 9300,
+          invertedBp: 0,
+          repeatedBp: 0,
+          abridged: true,
+        },
+      ],
+    })
+    expect(expanded!['G#1']).toEqual({
+      haplotype: 'G#1',
+      covered: [[8000, 15_000]],
+      departures: [],
+    })
+  })
+
   test('throws RegionTooLargeError past its byte budget', async () => {
     await expect(
       formsCut(reader('abridged.R'), region, { byteBudget: 1 }),

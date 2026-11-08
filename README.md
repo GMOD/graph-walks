@@ -310,6 +310,10 @@ for (const d of departures) {
   `abridgedBp` columns, NaN for every other walk
 - With `expand` naming a walk, the cut reads its detail records and cuts it in
   full, as a file without abridging would
+- `walkDepartures` nets an unexpanded piece over its whole stretch, `bp` against
+  the reference between its handles, which may reach past the window; an
+  expanded one is trimmed to the drawn stretch like any walk, so the two reads
+  differ over a piece straddling the drawn stretch's edge
 
 ## Moved components
 
