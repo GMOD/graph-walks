@@ -181,17 +181,14 @@ function fragmentItem(f: WalkFragment, length: (id: number) => number): Item {
  * piece's first, so its own bp and the stretch share no base.
  */
 function pathChains(items: Item[], length: (id: number) => number) {
-  // where each item starts and ends on the contig
-  const edges = (item: Item): [number, number] =>
-    'fragment' in item && !item.fragment.abridged
-      ? [item.fragment.hapStart, item.fragment.hapEnd]
-      : item.hap
   // items chain where one's contig stretch touches another's: a departure's
   // leave at a fragment's last step or inside it, its rejoin at the first,
   // or two fragments abutting. In start order, an item touches the chain so
-  // far when it starts no later than the chain's furthest end
+  // far when it starts no later than the chain's furthest end. A fragment's
+  // stretch holds the steps the cut trimmed, so a record's rejoin chains to
+  // a piece whose first steps lie outside the drawn stretch
   const all = items
-    .map(item => ({ item, edges: edges(item) }))
+    .map(item => ({ item, edges: item.hap }))
     .sort((a, b) => a.edges[0] - b.edges[0])
   const chains: Item[][] = []
   let chainEnd = -Infinity

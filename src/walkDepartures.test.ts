@@ -690,6 +690,38 @@ describe('a forms cut', () => {
     expect(abridged!.map(h => ({ ...h, abridged: false }))).toEqual(expanded)
   })
 
+  // R over five 2000 bp nodes in tile 0 and 1000 bp nodes from 10000
+  // (drawnedge.R.gfa). H#1 walks R to 13000, runs 600 bp of its own, rejoins
+  // R at 4000 and walks it again to 14000; its pieces in tile 10000 are
+  // abridged. Over 10500-13500 the drawn stretch is 8000-15000, so the
+  // piece after the rejoin starts outside it and the cut trims its first
+  // steps
+  test("chains a departure record's rejoin to a piece whose first steps lie outside the drawn stretch, as the expanded read does", async () => {
+    const window = { refName: 'chr', start: 10_500, end: 13_500 }
+    const [abridged, expanded] = await Promise.all(
+      [false, true].map(async expand =>
+        byHaplotype(await formsCut(reader('drawnedge.R'), window, { expand })),
+      ),
+    )
+    const whole = expanded!['H#1']!
+    expect(whole).toEqual({
+      haplotype: 'H#1',
+      covered: [[8000, 14_000]],
+      departures: [
+        {
+          refStart: 13_000,
+          refEnd: 13_000,
+          altLength: 9600,
+          invertedBp: 0,
+          repeatedBp: 9000,
+          copied: [4000, 13_000],
+        },
+      ],
+    })
+    expect(abridged!['H#1']!.covered).toEqual(whole.covered)
+    expect(net(abridged!['H#1']!)).toBe(net(whole))
+  })
+
   test('throws RegionTooLargeError past its byte budget', async () => {
     await expect(
       formsCut(reader('abridged.R'), region, { byteBudget: 1 }),
