@@ -58,8 +58,9 @@ const tables = graph.tables(kept, fragments, departures)
   already open: `data` the `.walks.gz`, `directory` its `.idx`. Any object with
   a generic-filehandle2 handle's `read`, `readFile`, `stat` and `source` will do
 - A file gfa-to-tabix 4.0 or later wrote; a format 6 `.walks.bed.gz` has no
-  directory, and the reader says to rebuild it. The HPRC files jbrowse.org hosts
-  are format 5, which graph-walks 4 reads
+  directory, and the reader says to rebuild it. jbrowse.org hosts the HPRC
+  release 2.1 graph's walk file in format 7,
+  `https://jbrowse.org/demos/hprc/hprc-v2.1-mc-grch38.GRCh38.walks.gz`
 - `tables` lists the nodes with their lengths and reference positions, the links
   between them, each walk's steps, and every departure from the reference over
   the window ([Departures](#departures)). `graphTablesGFA` in
