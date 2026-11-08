@@ -1238,7 +1238,7 @@ test("a record under the attach threshold carries the walk's own steps from the 
   ])
 })
 
-test('a leave piece the read lacks is fetched for the own steps, once per tile, within the fetch cap', async () => {
+test('a leave piece the read lacks is fetched for the own steps, once per tile, within the byte budget', async () => {
   let departures: WalkDeparture[] = []
   const reads = await unitsRead('span.GRCh38', 'GRCh38#0#chr1', async walks => {
     departures = (await spanCut('HG003#1', {}, walks)).departures
@@ -1247,10 +1247,16 @@ test('a leave piece the read lacks is fetched for the own steps, once per tile, 
     ['HG003#1#chr1', 30, 30, 0, '70-', '40-', 'forward', 'record', '<22<21<20'],
   ])
   expect(reads).toEqual([['tile 40', 'departures 40'], ['tile 60']])
-  const capped = await spanCut('HG003#1', { attachFetches: 0 })
-  expect(capped.departures.map(departure)).toEqual([
-    ['HG003#1#chr1', 30, 30, 0, '70-', '40-', 'forward', 'record', undefined],
-  ])
+  const units = await reader('span.GRCh38').units('GRCh38#0#chr1')
+  const bytes = units
+    .filter(u => u.kind === 'tile' && (u.name === '40' || u.name === '60'))
+    .reduce((sum, u) => sum + u.length, 0)
+  expect(
+    (await spanCut('HG003#1', { byteBudget: bytes })).departures.map(departure),
+  ).toEqual(departures.map(departure))
+  await expect(
+    spanCut('HG003#1', { byteBudget: bytes - 1 }),
+  ).rejects.toBeInstanceOf(RegionTooLargeError)
 })
 
 test('a record over the attach threshold carries no steps', async () => {
@@ -1494,12 +1500,7 @@ const farAttach = [
 
 test.each([
   { opts: {}, steps: '>14' },
-  { opts: { attachFetches: 0 }, steps: undefined },
-  { opts: { attachFetches: 1 }, steps: undefined },
-  {
-    opts: { attachFetches: 1, keep: (name: string) => name !== 'G#1#g' },
-    steps: '>14',
-  },
+  { opts: { keep: (name: string) => name !== 'G#1#g' }, steps: '>14' },
 ])(
   'a tile fetched to attach gives its record the own steps and nothing else: $opts',
   async ({ opts, steps }) => {
@@ -1518,6 +1519,51 @@ test.each([
     ])
   },
 )
+
+// Forty 10 bp reference nodes in 10 bp tiles (attachmany.R.gfa). Each Hk,
+// k from 1 to 10, leaves R after node k for its own 5 bp node 100+k and
+// rejoins at 41-k, so a cut in the middle holds none of their pieces and
+// fetches tiles 0 to 90 for their own steps:
+//   W R  0 chr >1>2>...>40
+//   W Hk 1 h   >1>...>k>(100+k)>(41-k)>...>40
+const attachMany = { start: 195, end: 205 }
+
+test('a cut attaches the own steps of every record within attachBp, however many tiles hold them', async () => {
+  let departures: WalkDeparture[] = []
+  const reads = await unitsRead('attachmany.R', 'R#0#chr', async walks => {
+    departures = (await walks.cut('R#0#chr', attachMany, { context: 0 }))
+      .departures
+  })
+  expect(departures.map(d => `${d.name} ${departure(d)[8]}`).sort()).toEqual(
+    Array.from({ length: 10 }, (_, k) => `H${k + 1}#1#h >${101 + k}`).sort(),
+  )
+  expect(
+    reads
+      .flat()
+      .filter(unit => unit.startsWith('tile'))
+      .sort(),
+  ).toEqual(
+    [190, 200, ...Array.from({ length: 10 }, (_, k) => 10 * k)]
+      .map(start => `tile ${start}`)
+      .sort(),
+  )
+})
+
+test('a cut whose attach fetches take it past the byte budget attaches none and says so', async () => {
+  const walks = reader('attachmany.R')
+  const tiles = (await walks.units('R#0#chr')).filter(u => u.kind === 'tile')
+  const bytes = tiles
+    .filter(u => u.start < 100 || (u.start < 205 && u.end > 195))
+    .reduce((sum, u) => sum + u.length, 0)
+  expect(
+    (
+      await walks.cut('R#0#chr', attachMany, { context: 0, byteBudget: bytes })
+    ).departures.every(d => d.steps !== undefined),
+  ).toBe(true)
+  await expect(
+    walks.cut('R#0#chr', attachMany, { context: 0, byteBudget: bytes - 1 }),
+  ).rejects.toMatchObject({ regionTooLarge: true, limit: bytes - 1 })
+})
 
 // Four 6 bp reference nodes in 10 bp tiles (ownzero.R.gfa); G jumps back
 // from 4 to 1 over node 9 of 0 bp, an own step of a record with no own bp,

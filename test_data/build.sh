@@ -43,3 +43,4 @@ build early early.R.gfa --refs R --tile 1000
 build twolines twolines.R.gfa --refs R --tile 20
 build abredge abredge.R.gfa --refs R --tile 20 --abridge-bytes 1
 build drawnedge drawnedge.R.gfa --refs R --tile 10000 --abridge-steps 3
+build attachmany attachmany.R.gfa --refs R --tile 10

@@ -130,11 +130,13 @@ index.
   walks, then an `own` segment of 19,156 bp carrying 19,156 missing bp.
 - Every `read` and `unread` segment depends only on the walk's runs over the
   window's tiles and on the records returned. `steps` and `own` also depend on
-  `attachBp`, and on one more thing: the attach-fetch cap (`attachFetches`,
-  first come) decides which records' far pieces the cut fetches. A record whose
-  piece the cap leaves unfetched shows its unread bp as `own`, which is true,
-  but the same event can look different for two haplotypes. That conflicts with
-  gfa-to-tabix ADR 0009's "never from budget order" and is filed separately.
+  `attachBp`. They once depended on the attach-fetch cap as well
+  (`attachFetches`, first come), which decided which records' far pieces the cut
+  fetched, so the same event could look different for two haplotypes, against
+  gfa-to-tabix ADR 0009's "never from budget order". This is resolved. The cap
+  is gone, the cut fetches the far pieces of every record within `attachBp`, and
+  those bytes count against `byteBudget`; a window past it throws a
+  `RegionTooLargeError` and attaches no record's far pieces.
 - A contained cut, whose fragments end `context` bp into a run, follows the same
   rules. Steps between two fragments of one run are read, so they fall in
   `steps` or `read`.

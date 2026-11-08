@@ -47,10 +47,6 @@ const WALK_CONTEXT = 1000
 // detail records an expanding cut reads at once
 const DETAIL_READS = 16
 
-// tiles a cut fetches for the own steps of departure records whose leave
-// piece its read lacks
-const ATTACH_FETCHES = 8
-
 // The budgets a cut keeps to unless its caller passes others: what a browser
 // window can hold. Infinity lifts one
 export const WALK_BUDGETS = {
@@ -115,21 +111,18 @@ export interface WalkCutOptions {
   // steps are not counted
   stepBudget?: number
   // the most compressed bytes a cut fetches from the tiles under its window
-  // and context, WALK_BUDGETS' by default; Infinity has no limit. The detail
-  // records `expand` reads count only against stepBudget, and the tiles
-  // fetched for records' own steps against no budget
+  // and context and the tiles fetched for records' own steps, WALK_BUDGETS'
+  // by default; Infinity has no limit. The detail records `expand` reads
+  // count only against stepBudget
   byteBudget?: number
   // the most compressed bytes the departure read fetches, WALK_BUDGETS' by
   // default; Infinity has no limit
   departureByteBudget?: number
   // the most bp of own sequence a departure gets its steps attached for,
-  // ATTACH_BP by default
-  attachBp?: number
-  // the most tiles the cut fetches for the own steps of records whose leave
-  // or rejoin piece its read lacks, ATTACH_FETCHES by default; when more are
-  // wanted, the first in record order. They give those records their steps
+  // ATTACH_BP by default. The cut fetches every tile holding own steps of
+  // such a record that its read lacks, which gives those records their steps
   // and nothing else
-  attachFetches?: number
+  attachBp?: number
   context?: number
   // false lists no links, for a caller that draws no edges
   links?: boolean
@@ -215,12 +208,14 @@ function departureRecords(
  * time. At open the directory, the header and the sequence's unit table; for
  * a window, the tiles and departure blocks overlapping the window and its
  * context, in one read wherever their bytes touch, each tile decoded once;
- * then at most `attachFetches` tiles holding the own steps of records the
+ * then every tile holding the own steps of records within `attachBp` the
  * read lacks, which give those steps alone, and the detail records of the
- * walks `expand` names. The table gives each read's bytes before it is made,
- * and a window past a budget reads no row. Only the walks `keep` accepts are
- * decoded. The step budget bounds the steps the cut keeps, and rows of the
- * window holding READ_STEPS_PER_KEPT times as many stop the read.
+ * walks `expand` names. The table gives each read's bytes before it is made;
+ * a window whose tiles are past the byte budget reads no row, and one whose
+ * attach tiles take it past reads none of them. Only the walks `keep`
+ * accepts are decoded. The step budget bounds the steps the cut keeps, and
+ * rows of the window holding READ_STEPS_PER_KEPT times as many stop the
+ * read.
  */
 export class WalkReader {
   private readonly file: WalkFile
@@ -361,7 +356,6 @@ export class WalkReader {
       byteBudget = WALK_BUDGETS.byteBudget,
       departureByteBudget = WALK_BUDGETS.departureByteBudget,
       attachBp = ATTACH_BP,
-      attachFetches = ATTACH_FETCHES,
       links = true,
       contained = false,
       nodeLimit = Infinity,
@@ -378,18 +372,23 @@ export class WalkReader {
     const blocks = units.filter(
       u => u.kind === 'departures' && overlaps(u, drawn),
     )
-    if (Number.isFinite(byteBudget)) {
-      const tooLarge = byteBudgetError(
-        end => bytesOf(tiles.filter(u => u.start < end)),
-        byteBudget,
-        region,
-        tile,
-        opts.budgetNames,
-      )
-      if (tooLarge) {
-        throw tooLarge
+    const tileBytesTo = (end: number) =>
+      bytesOf(tiles.filter(u => u.start < end))
+    const checkBytes = (bytesTo: (end: number) => number) => {
+      if (Number.isFinite(byteBudget)) {
+        const tooLarge = byteBudgetError(
+          bytesTo,
+          byteBudget,
+          region,
+          tile,
+          opts.budgetNames,
+        )
+        if (tooLarge) {
+          throw tooLarge
+        }
       }
     }
+    checkBytes(tileBytesTo)
     const departureBytes = bytesOf(blocks)
     if (departureBytes > departureByteBudget) {
       throw new DepartureReadError(departureBytes, departureByteBudget)
@@ -577,23 +576,38 @@ export class WalkReader {
         })
       cut = cutRows()
       // the tiles holding the own steps of records the read lacks, each
-      // fetched once for the records wanting it
-      const fetches = new Map<WalkUnit, Set<string>>()
+      // fetched once for the records wanting it, and counted for a window
+      // reaching the first of their ends
+      const fetches = new Map<WalkUnit, { names: Set<string>; from: number }>()
       for (const { departure } of cut.unattached) {
         const { name } = departure
+        const from = Math.min(
+          departure.leavePos,
+          departure.rejoinPos,
+          region.end - 1,
+        )
         for (const unit of attachTiles(units, ownTiles.get(departure) ?? [])) {
           if (!decodedFor(unit, name)) {
-            fetches.set(unit, (fetches.get(unit) ?? new Set()).add(name))
+            const fetch = fetches.get(unit)
+            fetches.set(unit, {
+              names: (fetch?.names ?? new Set()).add(name),
+              from: Math.min(fetch?.from ?? from, from),
+            })
           }
         }
       }
-      const wanted = [...fetches].slice(0, attachFetches)
+      const wanted = [...fetches]
       if (wanted.length > 0) {
+        checkBytes(
+          end =>
+            tileBytesTo(end) +
+            bytesOf(wanted.filter(([, f]) => f.from < end).map(([u]) => u)),
+        )
         const fetched = await this.file.read(
           wanted.map(([unit]) => unit),
           reads.signal,
         )
-        wanted.forEach(([unit, names], k) => {
+        wanted.forEach(([unit, { names }], k) => {
           decode(unit, fetched[k]!, attachRows, name => names.has(name))
         })
         await finish()
